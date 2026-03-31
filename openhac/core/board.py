@@ -28,6 +28,17 @@ class Board:
         self.constraints.append({'type': 'edge', 'args': (mod, edge)})
 
     def compile(self, project_name: str = "board", generate_bom: bool = True, auto_route: bool = True):
+        # 0. Hardware Physics Engines
+        print(f"Executing Pre-Compilation Rule Verification...")
+        try:
+            from openhac.compiler.rule_check import run_erc, run_drc
+            run_erc(self)
+            run_drc(self)
+        except Exception as e:
+            print(f"COMPILER ABORTED DUE TO PHYSICS RULES!")
+            raise e
+        
+        # 1. Logic Compiler (SKiDL -> .net)
         try:
             from openhac.compiler.netlist_gen import generate_logic_and_bom
             generate_logic_and_bom(project_name, generate_bom)
@@ -48,3 +59,18 @@ class Board:
                 run_freerouting(f"{project_name}.kicad_pcb")
             except ImportError:
                 print("Auto-router module missing.")
+
+    def simulate(self, project_name: str = "simulation"):
+        print(f"Preparing to simulate analog hardware graph: {project_name}")
+        
+        # 0. Physics ERC
+        try:
+            from openhac.compiler.rule_check import run_erc
+            run_erc(self)
+        except Exception as e:
+            print(f"SIMULATION ABORTED DUE TO PHYSICS RULES!")
+            raise e
+            
+        # 1. SPICE Generation
+        from openhac.compiler.spice_gen import generate_spice
+        generate_spice(project_name)

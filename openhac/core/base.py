@@ -57,6 +57,10 @@ class Module:
         self.placed_x = None
         self.placed_y = None
         
+        # Physics / ERC / DRC properties
+        self.max_current_draw_ma = 0.0
+        self.source_current_max_ma = 0.0
+        
     def add(self, component):
         self.components.append(component)
         return component

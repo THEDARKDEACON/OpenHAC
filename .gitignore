@@ -20,3 +20,6 @@ build.log
 skidl_REPL.log
 build.erc
 skidl_REPL.erc
+
+# Catalog cache
+.cache/
