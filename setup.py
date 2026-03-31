@@ -6,5 +6,6 @@ setup(
     packages=find_packages(),
     install_requires=[
         "skidl>=1.0.0",
+        "z3-solver>=4.13.0",
     ],
 )

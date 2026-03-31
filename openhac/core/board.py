@@ -7,12 +7,25 @@ class Board:
         self.size_mm = size_mm
         self.layers = layers
         self.modules = []
+        self.constraints = []
 
     def connect(self, intf1, intf2):
         if hasattr(intf1, 'connect') and hasattr(intf2, 'connect'):
             intf1.connect(intf2)
         else:
             intf1 += intf2
+
+    def add_module(self, module):
+        self.modules.append(module)
+
+    def constrain_distance_min(self, mod_a, mod_b, min_mm):
+        self.constraints.append({'type': 'distance_min', 'args': (mod_a, mod_b, min_mm)})
+
+    def constrain_distance_max(self, mod_a, mod_b, max_mm):
+        self.constraints.append({'type': 'distance_max', 'args': (mod_a, mod_b, max_mm)})
+
+    def constrain_edge(self, mod, edge):
+        self.constraints.append({'type': 'edge', 'args': (mod, edge)})
 
     def compile(self, project_name: str = "board", generate_bom: bool = True, auto_route: bool = True):
         try:
@@ -24,7 +37,7 @@ class Board:
         print(f"Applying geometric layout constraints. Target: {self.size_mm[0]}x{self.size_mm[1]}mm, {self.layers} Layers")
         try:
             from openhac.compiler.layout_gen import generate_layout
-            generate_layout(f"{project_name}.net", f"{project_name}.kicad_pcb", self.size_mm)
+            generate_layout(f"{project_name}.net", f"{project_name}.kicad_pcb", self)
         except ImportError as e:
             print(f"Could not import layout_gen. {e}")
         

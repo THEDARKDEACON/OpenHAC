@@ -49,8 +49,13 @@ class Interface:
             sig1 += sig2
 
 class Module:
-    def __init__(self):
+    def __init__(self, name=None):
+        self.name = name or self.__class__.__name__
         self.components = []
+        self.width = 10.0
+        self.height = 10.0
+        self.placed_x = None
+        self.placed_y = None
         
     def add(self, component):
         self.components.append(component)

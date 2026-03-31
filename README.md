@@ -23,11 +23,13 @@ The front-facing API that wraps raw `SKiDL` pins in intuitive Object-Oriented pa
 The compiler runtime translates abstract objects into physical manufacturing files across three sequential phases:
 - **Logic & BOM Compiler**: Generates SKiDL `.net` netlists and exports a manufactured `.csv` BOM with resolved absolute MPNs.
 - **Geometric Layout Compiler**: Utilizes `pcbnew` (the KiCad API) to define physical board constraints and outlines.
+- **SMT Spatial Constraint Solver**: Uses the `z3-solver` to mathematically prove non-overlapping placement coordinates based on user-defined algebraic/spatial rules (e.g. keeping hot components isolated) before dropping them on the board.
 - **Routing Compiler**: Operates as a CLI wrapper to invoke `FreeRouting` to route out copper traces out-of-the-box.
 
 ## Features
 - **Headless Execution**: Compiles everything exclusively from the Python command line without ever starting the KiCad layout GUI.
 - **Declarative Hardware Design**: Clean, explicit layout interfaces mimicking standard coding structures (Object-Oriented interfaces, module components).
+- **Mathematical Layout Proofs**: Declare geometric constraints (`constrain_distance_min`, `constrain_edge`) and let the Z3 engine resolve the perfect X/Y board coordinates automatically.
 - **Graceful Fallbacks**: Automatically generates synthetic SKiDL dummy parts upon missing local KiCad footprint libraries (very useful in headless CI/CD integration pipelines).
 
 ## Getting Started
