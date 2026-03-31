@@ -1,0 +1,22 @@
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# Database
+openhac.db
+
+# Logs and outputs
+*.log
+*.net
+*.csv
+*.kicad_pcb
+*.erc
+.skidl/
+
+# Ignore test results and local traces
+out.log
+build.log
+skidl_REPL.log
+build.erc
+skidl_REPL.erc
