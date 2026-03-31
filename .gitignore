@@ -23,3 +23,12 @@ skidl_REPL.erc
 
 # Catalog cache
 .cache/
+
+# Local Test Scripts
+test_simulate.py
+test_complex.py
+smart_sensor_vx.*
+complex_compile_results.log
+test_massive.py
+massive_led_matrix.*
+massive_compile.log

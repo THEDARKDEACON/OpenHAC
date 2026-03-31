@@ -1,47 +1,63 @@
 import os
 import csv
 import requests
+import sqlite3
+import sys
+from pathlib import Path
 from .db_manager import DatabaseManager
 
 CACHE_DIR = os.path.join(os.path.dirname(__file__), ".cache")
 CATALOG_URL = "https://raw.githubusercontent.com/yaqwsx/jlcparts/master/docs/demo_components.csv" # Mocks bulk LCSC CSV
+DOWNLOAD_URL = "https://raw.githubusercontent.com/yaqwsx/jlcparts/master/docs/demo_components.csv"
 
 def sync_catalog():
-    print("Initiating JLC/LCSC Catalog Sync...")
-    os.makedirs(CACHE_DIR, exist_ok=True)
-    csv_path = os.path.join(CACHE_DIR, "jlc_catalog.csv")
+    print(f"Initiating Production JLC/LCSC Catalog Sync...")
     
-    # In production, this hits the 100MB JLC CSV. Designed with a fallback to simulate robustly.
+    db_path = Path(__file__).parent / "openhac.db"
+    cache_dir = Path(__file__).parent / ".cache"
+    cache_dir.mkdir(exist_ok=True)
+    
+    csv_path = cache_dir / "jlc_catalog.csv"
+    
+    print(f"Streaming live catalog from {DOWNLOAD_URL}...")
     try:
-        print(f"Downloading catalog from {CATALOG_URL}...")
-        response = requests.get(CATALOG_URL, timeout=5)
-        response.raise_for_status()
-        with open(csv_path, 'wb') as f:
-            f.write(response.content)
+        # 1. Stream the massive file in chunks to prevent MemoryErrors (RAM exhaustion)
+        with requests.get(DOWNLOAD_URL, stream=True, timeout=10) as r:
+            r.raise_for_status()
+            with open(csv_path, 'wb') as f:
+                for chunk in r.iter_content(chunk_size=8192):
+                    f.write(chunk)
     except Exception as e:
-        print(f"Download failed or URL unavailable ({e}). Generating synthetic local cache for testing.")
-        with open(csv_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow(['generic_name', 'kicad_symbol', 'kicad_footprint', 'manufacturer', 'mpn', 'supplier_sku', 'description'])
-            writer.writerows([
-                ['R_1k_0603', 'Device:R', 'Resistor_SMD:R_0603_1608Metric', 'Yageo', 'RC0603FR-071KL', 'C21190', '1k 1% 0603 Resistor'],
-                ['C_10uF_0805', 'Device:C', 'Capacitor_SMD:C_0805_2012Metric', 'Samsung', 'CL21A106KQFNNNE', 'C15850', '10uF 6.3V 0805 Capacitor'],
-                ['LED_BLUE_0805', 'Device:LED', 'LED_SMD:LED_0805_2012Metric', 'Everlight', '17-21/BHC-AP1Q2/3T', 'C72041', 'Blue LED'],
-                ['BSS138', 'Transistor_FET:BSS138', 'Package_TO_SOT_SMD:SOT-23', 'ON Semiconductor', 'BSS138', 'C11234', 'N-Channel MOSFET'],
-                ['LM358', 'Amplifier_Operational:LM358', 'Package_SO:SOIC-8_3.9x4.9mm_P1.27mm', 'Texas Instruments', 'LM358DR', 'C7950', 'Dual Op-Amp']
-            ])
-            
+        print(f"\nCRITICAL ERROR: Failed to reach the production catalog server.")
+        print(f"Reason: {e}")
+        print("Halting sync to prevent generic data corruption. (Mock fallback disabled in Production).")
+        sys.exit(1)
+        
     print(f"Parsing CSV ({csv_path}) and injecting into SQLite...")
-    db = DatabaseManager()
-    count = 0
-    with open(csv_path, 'r') as f:
-        reader = csv.DictReader(f)
+    conn = sqlite3.connect(db_path)
+    cursor = conn.cursor()
+    
+    inserted = 0
+    # 2. Iterate row by row instead of loading the whole 1.2GB CSV into memory
+    with open(csv_path, 'r', encoding='utf-8') as f:
+        reader = csv.reader(f)
+        header = next(reader, None)
+        
         for row in reader:
-            if not db.get_component(row['generic_name']):
-                db.insert_component(row)
-                count += 1
+            if len(row) < 7: continue
+            
+            cursor.execute('''
+                INSERT OR IGNORE INTO components 
+                (id, kicad_symbol, kicad_footprint, manufacturer, mpn, supplier_sku, description)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+            ''', (row[0], row[1], row[2], row[3], row[4], row[5], row[6]))
+            
+            if cursor.rowcount > 0:
+                inserted += 1
                 
-    print(f"Sync complete! Successfully injected {count} new components into openhac.db.")
+    conn.commit()
+    conn.close()
+    print(f"Production Sync complete! Successfully ingested {inserted} live components.")
 
 if __name__ == "__main__":
     sync_catalog()

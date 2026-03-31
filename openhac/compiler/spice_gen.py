@@ -17,9 +17,9 @@ def generate_spice(project_name: str):
             for part in circuit.parts:
                 # Assign a valid SPICE reference designator (R for Resistor, C for Capacitor, V for Source)
                 refs = part.ref
-                if "Resistor" in str(part.description) or "R" in str(part.value):
+                if not refs.upper().startswith('R') and ("Resistor" in str(part.description) or "R" in str(part.value)):
                     refs = "R" + refs
-                elif "Capacitor" in str(part.description) or "uF" in str(part.value):
+                elif not refs.upper().startswith('C') and ("Capacitor" in str(part.description) or "uF" in str(part.value)):
                     refs = "C" + refs
                     
                 nodes_list = []

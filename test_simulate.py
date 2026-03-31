@@ -23,8 +23,10 @@ class RC_Filter(Module):
         self.c['2'] += self.gnd
         
         # Inject SPICE parameters strictly for the computational engine
-        self.r.value = '1k'
-        self.c.value = '10uF'
+        self.r.part.ref = 'R1'
+        self.r.part.value = '1k'
+        self.c.part.ref = 'C1'
+        self.c.part.value = '10uF'
 
 rc = RC_Filter()
 board.add_module(rc)

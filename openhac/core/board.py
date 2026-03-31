@@ -27,7 +27,7 @@ class Board:
     def constrain_edge(self, mod, edge):
         self.constraints.append({'type': 'edge', 'args': (mod, edge)})
 
-    def compile(self, project_name: str = "board", generate_bom: bool = True, auto_route: bool = True):
+    def compile(self, project_name: str = "board", generate_bom: bool = True, auto_route: bool = True, export_schematic: bool = False):
         # 0. Hardware Physics Engines
         print(f"Executing Pre-Compilation Rule Verification...")
         try:
@@ -59,6 +59,15 @@ class Board:
                 run_freerouting(f"{project_name}.kicad_pcb")
             except ImportError:
                 print("Auto-router module missing.")
+                
+        if export_schematic:
+            try:
+                from openhac.compiler.schematic_gen import generate_schematic
+                from openhac.compiler.project_gen import generate_project_file
+                generate_schematic(f"{project_name}.kicad_sch", self)
+                generate_project_file(f"{project_name}.kicad_pro")
+            except ImportError as e:
+                print(f"Failed to load interop libraries: {e}")
 
     def simulate(self, project_name: str = "simulation"):
         print(f"Preparing to simulate analog hardware graph: {project_name}")
