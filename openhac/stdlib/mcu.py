@@ -1,4 +1,4 @@
-from openhac.core.base import Module, Component, Interface
+from openhac.core.base import Module, Component
 from skidl import Net
 
 class ESP32_WROOM(Module):
@@ -14,4 +14,4 @@ class ESP32_WROOM(Module):
         self.mcu['15'] += self.gnd
         self.mcu['38'] += self.gnd
         
-        self.power = Interface("MCU_POWER", self.vcc, self.gnd)
+        self.power = self.declare_interface("power", self.vcc, self.gnd)

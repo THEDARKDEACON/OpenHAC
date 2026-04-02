@@ -1,4 +1,4 @@
-from openhac.core.base import Module, Component, Interface
+from openhac.core.base import Module, Component
 from skidl import Net
 
 class XT60_Input(Module):
@@ -11,7 +11,7 @@ class XT60_Input(Module):
         self.connector['1'] += self.vcc
         self.connector['2'] += self.gnd
         
-        self.v_out = Interface("XT60_VOUT", self.vcc, self.gnd)
+        self.v_out = self.declare_interface("v_out", self.vcc, self.gnd)
 
 class LDO_5V(Module):
     def __init__(self):
@@ -29,5 +29,5 @@ class LDO_5V(Module):
         self.ldo['2'] += self.vout, self.c_out['1']
         self.ldo['4'] += self.vout
         
-        self.v_in = Interface("LDO_VIN", self.vin, self.gnd)
-        self.v_out = Interface("LDO_VOUT", self.vout, self.gnd)
+        self.v_in = self.declare_interface("v_in", self.vin, self.gnd)
+        self.v_out = self.declare_interface("v_out", self.vout, self.gnd)

@@ -1,6 +1,6 @@
 import os
 from skidl import Net, Bus
-from .base import Module
+from .base import Module, UnconnectedInterfaceError
 
 class Board:
     def __init__(self, size_mm: tuple, layers: int = 2):
@@ -27,6 +27,17 @@ class Board:
     def constrain_edge(self, mod, edge):
         self.constraints.append({'type': 'edge', 'args': (mod, edge)})
 
+    def _validate_interfaces(self):
+        """Check that every net in every required interface has >= 2 pins attached."""
+        for module in self.modules:
+            for iface_name, interface in module.required_interfaces.items():
+                for net in interface.signals:
+                    if len(net.get_pins()) < 2:
+                        raise UnconnectedInterfaceError(
+                            f"Module '{module.name}', interface '{iface_name}': "
+                            f"net '{net.name}' has fewer than 2 pins attached."
+                        )
+
     def compile(self, project_name: str = "board", generate_bom: bool = True, auto_route: bool = True, export_schematic: bool = False):
         # 0. Hardware Physics Engines
         print(f"Executing Pre-Compilation Rule Verification...")
@@ -37,7 +48,10 @@ class Board:
         except Exception as e:
             print(f"COMPILER ABORTED DUE TO PHYSICS RULES!")
             raise e
-        
+
+        # 0.5. Interface Validation
+        self._validate_interfaces()
+
         # 1. Logic Compiler (SKiDL -> .net)
         try:
             from openhac.compiler.netlist_gen import generate_logic_and_bom
