@@ -1,5 +1,0 @@
-* SPICE Simulation Graph: analog_filter
-.tran 1m 100m
-R1 VIN VOUT 1k
-CC1 VOUT 0 10uF
-.end
