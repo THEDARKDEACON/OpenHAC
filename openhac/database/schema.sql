@@ -8,5 +8,9 @@ CREATE TABLE IF NOT EXISTS components (
     supplier_sku TEXT,
     description TEXT,
     category TEXT,
-    attributes_json TEXT
+    attributes_json TEXT,
+    tolerance TEXT,
+    voltage_rating REAL,
+    power_watts REAL,
+    jlc_class TEXT DEFAULT 'Basic'
 );
