@@ -192,6 +192,9 @@ DEFAULT_COMPILE_PHASES: tuple[Callable[[CompileState], None], ...] = (
     phase_release_zip,
 )
 
+# Stable ordered names for manifest / audit (STR-002 / SW-006).
+COMPILE_PIPELINE_PHASE_NAMES: tuple[str, ...] = tuple(fn.__name__ for fn in DEFAULT_COMPILE_PHASES)
+
 
 def run_compile_phases(state: CompileState, phases: tuple[Callable[[CompileState], None], ...]) -> None:
     for fn in phases:

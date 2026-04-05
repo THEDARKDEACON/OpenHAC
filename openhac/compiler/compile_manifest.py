@@ -12,6 +12,7 @@ import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
+from openhac.compiler.compile_pipeline import COMPILE_PIPELINE_PHASE_NAMES
 from openhac.compiler.release_bundle import _RELEASE_SUFFIXES
 from openhac.version_info import get_version
 
@@ -76,6 +77,24 @@ def _try_git_branch(cwd: Path) -> str | None:
         if r.returncode == 0:
             b = r.stdout.strip()
             return b if b and b != "HEAD" else None
+    except (OSError, subprocess.TimeoutExpired):
+        pass
+    return None
+
+
+def _try_git_describe(cwd: Path) -> str | None:
+    """Human-readable ref from ``git describe --always --dirty`` when cwd is a git worktree (STR-002)."""
+    try:
+        r = subprocess.run(
+            ["git", "describe", "--always", "--dirty"],
+            capture_output=True,
+            text=True,
+            timeout=8,
+            cwd=cwd,
+        )
+        if r.returncode == 0:
+            d = (r.stdout or "").strip()
+            return d or None
     except (OSError, subprocess.TimeoutExpired):
         pass
     return None
@@ -266,7 +285,14 @@ def _write_bom_expand_hint_md(base: Path, project_name: str, board) -> None:
         "# BOM alternates — CM handoff (LIB-002)",
         "",
         f"Machine list: `{project_name}.openhac-bom-alternates.json` (schema `openhac.bom_alternates.v1`).",
-        "Use it to expand ranked alternates per `generic_name` into separate BOM rows or CM-specific templates.",
+        "",
+        "## Suggested CM workflows",
+        "",
+        "1. **Single approved build** — keep one `generic_name` per BOM line; use alternates JSON only as reference for procurement substitutions.",
+        "2. **Expanded pick list** — generate one row per ranked alternate with `alternate_group_id` / rank for the CM’s MRP system.",
+        "3. **Avl-only** — filter JSON rows against your approved vendor list before merging into the master BOM.",
+        "",
+        "OpenHaC does not emit CM-specific CSV templates; map JSON fields to your house format.",
         "",
     ]
     out.write_text("\n".join(lines), encoding="utf-8")
@@ -281,13 +307,21 @@ def _write_spice_model_hint_md(base: Path, project_name: str, board) -> None:
     ):
         return
     out = base / f"{project_name}.openhac-spice-model-hint.md"
+    n_inc = int(s.get("parts_with_spice_include", 0) or 0)
+    n_sub = int(s.get("parts_with_spice_subckt", 0) or 0)
     lines = [
         "# SPICE model handoff (SIM-001)",
         "",
-        f"- Parts with **Spice_Include**: {s.get('parts_with_spice_include', 0)}",
-        f"- Parts with **Spice_Subckt**: {s.get('parts_with_spice_subckt', 0)}",
+        f"- Parts with **Spice_Include**: {n_inc}",
+        f"- Parts with **Spice_Subckt**: {n_sub}",
         "",
         "Place vendor `.lib` / `.subckt` files on disk paths referenced by BOM fields; verify ngspice/Xyce compatibility.",
+        "",
+        "## Checklist",
+        "",
+        "- [ ] `.include` paths resolve from the directory you run the simulator in.",
+        "- [ ] Subcircuit pin order matches the instantiated element line in the generated `.cir`.",
+        "- [ ] Temperature / corner models aligned with REL-001 passive ratings if you rely on `.cir` sign-off.",
         "",
     ]
     out.write_text("\n".join(lines), encoding="utf-8")
@@ -476,6 +510,23 @@ def _source_input_record(path: str | os.PathLike[str] | None) -> dict | None:
     }
 
 
+def _fab_profile_json_keys(profile_name: str) -> list[str] | None:
+    """Top-level keys from ``openhac.fab_profiles/<name>.json`` for manifest traceability (MFG-004)."""
+    try:
+        from importlib.resources import files
+
+        root = files("openhac.fab_profiles")
+        path = root / f"{profile_name}.json"
+        if not path.is_file():
+            return None
+        data = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(data, dict):
+            return None
+        return sorted(str(k) for k in data.keys())
+    except Exception:
+        return None
+
+
 def _write_fab_stackup_handoff_md(base: Path, project_name: str, board) -> None:
     """Human-editable fab stackup stub when ``declare_stackup_reference`` was used (MFG-003)."""
     stack = getattr(board, "_stackup_references", None) or []
@@ -569,6 +620,7 @@ def write_compile_manifest(
 
     gh = _try_git_head(cwd)
     gbr = _try_git_branch(cwd)
+    gdesc = _try_git_describe(cwd)
     dirty = _try_git_worktree_dirty(cwd)
     manifest: dict = {
         "manifest_schema_version": "1.0",
@@ -582,6 +634,8 @@ def write_compile_manifest(
     }
     if gbr:
         manifest["git_branch"] = gbr
+    if gdesc:
+        manifest["git_describe"] = gdesc
     if int(board.layers) > 2:
         manifest["pcb_stackup_layer_note"] = (
             f"PCB-003: {int(board.layers)} copper layers declared; OpenHaC does not emit KiCad stackup metadata. "
@@ -692,6 +746,24 @@ def write_compile_manifest(
         spice_sum.get("parts_with_spice_include", 0) or spice_sum.get("parts_with_spice_subckt", 0)
     ):
         manifest["spice_annotation_summary"] = spice_sum
+
+    manifest["compile_pipeline_phases"] = list(COMPILE_PIPELINE_PHASE_NAMES)
+    manifest["pcb_routing_handoff_schema"] = "openhac.pcb_routing_handoff.v1"
+    if (base / f"{project_name}.openhac-pcb-routing-handoff.json").is_file():
+        manifest["pcb_routing_handoff_json_present"] = True
+
+    alt_json = base / f"{project_name}.openhac-bom-alternates.json"
+    if alt_json.is_file():
+        manifest["bom_alternates_handoff"] = {
+            "alternates_json": f"{project_name}.openhac-bom-alternates.json",
+            "expand_hint_markdown": f"{project_name}.openhac-bom-expand-hint.md",
+        }
+
+    fp_name = getattr(board, "fab_profile", None)
+    if fp_name:
+        gkeys = _fab_profile_json_keys(str(fp_name))
+        if gkeys is not None:
+            manifest["fab_profile_geometry_keys"] = gkeys
 
     manifest["release_bundle_suffixes"] = list(_RELEASE_SUFFIXES)
 

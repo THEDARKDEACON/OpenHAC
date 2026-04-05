@@ -130,6 +130,10 @@ def test_compile_writes_net_csv_and_manifest(tmp_path, seeded_resistor_db, monke
     assert isinstance(data.get("sch_kicad_symbol_dirs_configured"), bool)
     assert isinstance(data.get("pcb_pipeline_handoff"), dict)
     assert isinstance(data.get("release_bundle_suffixes"), list)
+    phases = data.get("compile_pipeline_phases") or []
+    assert phases and phases[0] == "phase_warn_multilayer_stackup"
+    assert phases[-1] == "phase_release_zip"
+    assert data.get("pcb_routing_handoff_schema") == "openhac.pcb_routing_handoff.v1"
     assert any(s.endswith(".net") for s in data["release_bundle_suffixes"])
     assert all(r["JLC_Class"] == "Extended" for r in r_rows)
     for o in data["outputs"]:
@@ -446,6 +450,92 @@ def test_bom_lists_alternate_skus_from_db(tmp_path, tmp_db, monkeypatch):
     aj = json.loads(altj.read_text(encoding="utf-8"))
     assert aj.get("schema") == "openhac.bom_alternates.v1"
     assert "R_10k_0805" in (aj.get("by_generic") or {})
+    mf = json.loads((tmp_path / "alt_bom.openhac-manifest.json").read_text(encoding="utf-8"))
+    bah = mf.get("bom_alternates_handoff") or {}
+    assert bah.get("alternates_json") == "alt_bom.openhac-bom-alternates.json"
+    assert bah.get("expand_hint_markdown") == "alt_bom.openhac-bom-expand-hint.md"
+    hint_md = (tmp_path / "alt_bom.openhac-bom-expand-hint.md").read_text(encoding="utf-8")
+    assert "CM workflows" in hint_md
+
+
+def test_manifest_includes_fab_profile_geometry_keys(tmp_path, seeded_resistor_db, monkeypatch):
+    """MFG-004: manifest lists top-level keys from fab profile JSON when fab_profile is set."""
+    monkeypatch.chdir(tmp_path)
+    design_py = tmp_path / "design.py"
+    design_py.write_text("# fab prof manifest\n", encoding="utf-8")
+
+    vcc, gnd = Net("3V3"), Net("GND")
+    Part("power", "PWR_FLAG")[1] += vcc
+    Part("power", "PWR_FLAG")[1] += gnd
+
+    class Node(Module):
+        def __init__(self, name: str):
+            super().__init__(name)
+            r = self.add(Component("R_10k_0805"))
+            r["1"] += vcc
+            r["2"] += gnd
+            self.declare_interface("power", vcc, gnd)
+
+    a, b = Node("A"), Node("B")
+    board = Board(size_mm=(40.0, 40.0), fab_profile="jlc")
+    board.add_module(a)
+    board.add_module(b)
+    board.connect(a.expose_interface("power"), b.expose_interface("power"))
+
+    with patch("openhac.compiler.layout_gen.generate_layout"):
+        board.compile(
+            project_name="fabmf",
+            generate_bom=True,
+            auto_route=False,
+            export_schematic=False,
+            source_script_path=design_py,
+        )
+
+    data = json.loads((tmp_path / "fabmf.openhac-manifest.json").read_text(encoding="utf-8"))
+    keys = data.get("fab_profile_geometry_keys") or []
+    assert "min_trace_width_mm" in keys
+    assert "comment" in keys
+
+
+def test_manifest_includes_git_describe_when_git_reports(tmp_path, seeded_resistor_db, monkeypatch):
+    """STR-002: optional git_describe from git describe --always --dirty."""
+    monkeypatch.chdir(tmp_path)
+    design_py = tmp_path / "design.py"
+    design_py.write_text("# git describe manifest\n", encoding="utf-8")
+
+    vcc, gnd = Net("3V3"), Net("GND")
+    Part("power", "PWR_FLAG")[1] += vcc
+    Part("power", "PWR_FLAG")[1] += gnd
+
+    class Node(Module):
+        def __init__(self, name: str):
+            super().__init__(name)
+            r = self.add(Component("R_10k_0805"))
+            r["1"] += vcc
+            r["2"] += gnd
+            self.declare_interface("power", vcc, gnd)
+
+    a, b = Node("A"), Node("B")
+    board = Board(size_mm=(40.0, 40.0))
+    board.add_module(a)
+    board.add_module(b)
+    board.connect(a.expose_interface("power"), b.expose_interface("power"))
+
+    with patch("openhac.compiler.layout_gen.generate_layout"):
+        with patch(
+            "openhac.compiler.compile_manifest._try_git_describe",
+            return_value="v0.0-test-1-gabc1234-dirty",
+        ):
+            board.compile(
+                project_name="gdesc",
+                generate_bom=True,
+                auto_route=False,
+                export_schematic=False,
+                source_script_path=design_py,
+            )
+
+    data = json.loads((tmp_path / "gdesc.openhac-manifest.json").read_text(encoding="utf-8"))
+    assert data.get("git_describe") == "v0.0-test-1-gabc1234-dirty"
 
 
 def test_bom_profile_prod_omits_internal_columns(tmp_path, tmp_db, monkeypatch):

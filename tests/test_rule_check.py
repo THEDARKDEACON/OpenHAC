@@ -19,11 +19,13 @@ from openhac.compiler.rule_check import (
 )
 from openhac.stdlib.erc_rules import (
     i2c_pullup_erc_hook,
+    jtag_tms_pullup_erc_hook,
     mdio_pullup_erc_hook,
     missing_footprint_erc_hook,
     one_wire_pullup_erc_hook,
     reset_pullup_erc_hook,
     spi_cs_pullup_erc_hook,
+    swd_swdio_pullup_erc_hook,
     uart_rx_pullup_erc_hook,
 )
 
@@ -724,6 +726,146 @@ class TestSCH005ErcHooks:
         board = Board(size_mm=(10, 10))
         board.register_erc_hook(uart_rx_pullup_erc_hook(rx))
         with pytest.raises(ERCPluginError, match="UART"):
+            run_erc(board)
+
+    def test_swd_swdio_pullup_example_passes_with_resistor(self, tmp_db, monkeypatch):
+        import openhac.core  # noqa: F401
+        from skidl import Net, Part
+
+        from openhac.core.base import Component
+
+        _, dm = tmp_db
+        dm.insert_component(
+            {
+                "generic_name": "R_10k_0805",
+                "kicad_symbol": "Device:R",
+                "kicad_footprint": "Resistor_SMD:R_0805_2012Metric",
+                "manufacturer": "",
+                "mpn": "X",
+                "supplier_sku": "",
+                "description": "",
+            }
+        )
+        monkeypatch.setattr(Component, "db", dm)
+
+        vcc, gnd = Net("3V3"), Net("GND")
+        swdio = Net("SWDIO")
+        Part("power", "PWR_FLAG")[1] += vcc
+        Part("power", "PWR_FLAG")[1] += gnd
+        for ref, net in (("U_DBG", swdio), ("U_MCU", swdio)):
+            u = Part("Device", "R", value="0", ref=ref)
+            u[1] += net
+            u[2] += gnd
+        pu = Component("R_10k_0805")
+        pu["1"] += vcc
+        pu["2"] += swdio
+
+        board = Board(size_mm=(10, 10))
+        board.register_erc_hook(swd_swdio_pullup_erc_hook(swdio))
+        run_erc(board)
+
+    def test_swd_swdio_pullup_example_fails_without_pullup(self, tmp_db, monkeypatch):
+        import openhac.core  # noqa: F401
+        from skidl import Net, Part
+
+        from openhac.core.base import Component
+
+        _, dm = tmp_db
+        dm.insert_component(
+            {
+                "generic_name": "R_10k_0805",
+                "kicad_symbol": "Device:R",
+                "kicad_footprint": "Resistor_SMD:R_0805_2012Metric",
+                "manufacturer": "",
+                "mpn": "X",
+                "supplier_sku": "",
+                "description": "",
+            }
+        )
+        monkeypatch.setattr(Component, "db", dm)
+
+        vcc, gnd = Net("3V3"), Net("GND")
+        swdio = Net("SWDIO")
+        Part("power", "PWR_FLAG")[1] += vcc
+        Part("power", "PWR_FLAG")[1] += gnd
+        for ref, net in (("U_DBG", swdio), ("U_MCU", swdio)):
+            u = Part("Device", "R", value="0", ref=ref)
+            u[1] += net
+            u[2] += gnd
+
+        board = Board(size_mm=(10, 10))
+        board.register_erc_hook(swd_swdio_pullup_erc_hook(swdio))
+        with pytest.raises(ERCPluginError, match="SWDIO"):
+            run_erc(board)
+
+    def test_jtag_tms_pullup_example_passes_with_resistor(self, tmp_db, monkeypatch):
+        import openhac.core  # noqa: F401
+        from skidl import Net, Part
+
+        from openhac.core.base import Component
+
+        _, dm = tmp_db
+        dm.insert_component(
+            {
+                "generic_name": "R_10k_0805",
+                "kicad_symbol": "Device:R",
+                "kicad_footprint": "Resistor_SMD:R_0805_2012Metric",
+                "manufacturer": "",
+                "mpn": "X",
+                "supplier_sku": "",
+                "description": "",
+            }
+        )
+        monkeypatch.setattr(Component, "db", dm)
+
+        vcc, gnd = Net("3V3"), Net("GND")
+        tms = Net("TMS")
+        Part("power", "PWR_FLAG")[1] += vcc
+        Part("power", "PWR_FLAG")[1] += gnd
+        for ref, net in (("U_TAP", tms), ("U_MCU", tms)):
+            u = Part("Device", "R", value="0", ref=ref)
+            u[1] += net
+            u[2] += gnd
+        pu = Component("R_10k_0805")
+        pu["1"] += vcc
+        pu["2"] += tms
+
+        board = Board(size_mm=(10, 10))
+        board.register_erc_hook(jtag_tms_pullup_erc_hook(tms))
+        run_erc(board)
+
+    def test_jtag_tms_pullup_example_fails_without_pullup(self, tmp_db, monkeypatch):
+        import openhac.core  # noqa: F401
+        from skidl import Net, Part
+
+        from openhac.core.base import Component
+
+        _, dm = tmp_db
+        dm.insert_component(
+            {
+                "generic_name": "R_10k_0805",
+                "kicad_symbol": "Device:R",
+                "kicad_footprint": "Resistor_SMD:R_0805_2012Metric",
+                "manufacturer": "",
+                "mpn": "X",
+                "supplier_sku": "",
+                "description": "",
+            }
+        )
+        monkeypatch.setattr(Component, "db", dm)
+
+        vcc, gnd = Net("3V3"), Net("GND")
+        tms = Net("TMS")
+        Part("power", "PWR_FLAG")[1] += vcc
+        Part("power", "PWR_FLAG")[1] += gnd
+        for ref, net in (("U_TAP", tms), ("U_MCU", tms)):
+            u = Part("Device", "R", value="0", ref=ref)
+            u[1] += net
+            u[2] += gnd
+
+        board = Board(size_mm=(10, 10))
+        board.register_erc_hook(jtag_tms_pullup_erc_hook(tms))
+        with pytest.raises(ERCPluginError, match="JTAG TMS"):
             run_erc(board)
 
 

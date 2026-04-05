@@ -89,6 +89,38 @@ def uart_rx_pullup_erc_hook(rx_net):
     return _hook
 
 
+def swd_swdio_pullup_erc_hook(swdio_net):
+    """Build ``fn(board)`` expecting **SWDIO** to have a pull-up (many debug connectors leave SWDIO open-drain, SCH-005)."""
+
+    def _hook(board):
+        _ = board
+        msgs = []
+        if not net_has_resistor_pullup_to_rail(swdio_net):
+            msgs.append(
+                f"SWDIO net {getattr(swdio_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
+                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
+            )
+        return msgs
+
+    return _hook
+
+
+def jtag_tms_pullup_erc_hook(tms_net):
+    """Build ``fn(board)`` expecting **TMS** to have a pull-up (idle-high / shared JTAG buses, SCH-005)."""
+
+    def _hook(board):
+        _ = board
+        msgs = []
+        if not net_has_resistor_pullup_to_rail(tms_net):
+            msgs.append(
+                f"JTAG TMS net {getattr(tms_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
+                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
+            )
+        return msgs
+
+    return _hook
+
+
 def i2c_pullup_erc_hook(sda_net, scl_net):
     """Build ``fn(board)`` that requires pull-up resistors from *sda_net* / *scl_net* to a supply-named net."""
 

@@ -60,3 +60,6 @@ def test_manifest_includes_spice_annotation_summary(tmp_path, tmp_db, monkeypatc
     data = json.loads((tmp_path / "spsum.openhac-manifest.json").read_text(encoding="utf-8"))
     s = data.get("spice_annotation_summary") or {}
     assert s.get("parts_with_spice_subckt", 0) >= 1
+    hint = (tmp_path / "spsum.openhac-spice-model-hint.md").read_text(encoding="utf-8")
+    assert "Checklist" in hint
+    assert "Spice_Subckt" in hint

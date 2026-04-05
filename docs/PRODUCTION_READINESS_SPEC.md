@@ -42,7 +42,7 @@ Each requirement includes: **problem**, **current state** (as of this spec), **t
 |-------|---------|
 | **Severity** | P2 |
 | **Problem** | Production requires reproducible builds, audit trails, and explicit human sign-off where automation cannot prove safety/EMC. |
-| **Current state** | **``manifest_schema_version``** (e.g. ``1.0``); **sorted JSON keys**; optional **``release_tag``** / **``build_profile``** (``Board`` attrs or **``OPENHAC_RELEASE_TAG``** / **``OPENHAC_BUILD_PROFILE``**); optional **``net_roles``** / **``length_match_groups``**; **``compile(..., output_dir=...)``** / **``openhac compile -o``**; **``output_directory``** when set. |
+| **Current state** | **``manifest_schema_version``** (e.g. ``1.0``); **sorted JSON keys**; optional **``release_tag``** / **``build_profile``** (``Board`` attrs or **``OPENHAC_RELEASE_TAG``** / **``OPENHAC_BUILD_PROFILE``**); optional **``git_describe``** (``git describe --always --dirty`` when cwd is a git worktree); optional **``net_roles``** / **``length_match_groups``**; **``compile(..., output_dir=...)``** / **``openhac compile -o``**; **``output_directory``** when set. |
 | **Target state** | Optional **human approval**; CI golden deterministic hashes; pinned **``dist/<project>/<version>/``** convention in tooling. |
 | **Acceptance criteria** | CI produces deterministic artifact list; manifest is machine-readable (JSON). |
 | **Approach** | Phase 1: manifest + hashes; Phase 2: signing / optional approval workflow. |
@@ -171,7 +171,7 @@ Each requirement includes: **problem**, **current state** (as of this spec), **t
 |-------|---------|
 | **Severity** | P2 |
 | **Problem** | `>= 2 pins per net` is necessary but insufficient (wrong domain, missing pulls). |
-| **Current state** | **`Board.register_erc_hook`** during **`run_erc`**; **`openhac.stdlib.erc_rules`** includes I2C / 1-Wire / UART RX / SPI CS / reset / MDIO pull-up examples + **`missing_footprint_erc_hook`**. |
+| **Current state** | **`Board.register_erc_hook`** during **`run_erc`**; **`openhac.stdlib.erc_rules`** includes I2C / 1-Wire / UART RX / SPI CS / reset / MDIO / SWDIO / JTAG TMS pull-up examples + **`missing_footprint_erc_hook`**. |
 | **Target state** | **Built-in** rule packs (digital vs analog, max fanout, …). |
 | **Acceptance criteria** | At least one plugin example (e.g. “I2C must have pull-ups”). |
 | **Approach** | Hook after net-level ERC; extend `stdlib/erc_rules.py` with more examples. |
