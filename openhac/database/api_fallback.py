@@ -8,13 +8,24 @@ lookups are instant.
 """
 
 import json
+import logging
 import re
 import urllib.parse
 import urllib.request
 import warnings
 
+from openhac.version_info import user_agent
+from openhac.database.lookup_meta import (
+    CONFIDENCE_HIGH,
+    CONFIDENCE_LOW,
+    CONFIDENCE_MEDIUM,
+    LOOKUP_CONFIDENCE_KEY,
+)
+
+logger = logging.getLogger("openhac.jit")
+
 API_BASE = "https://jlcsearch.tscircuit.com"
-HEADERS = {"User-Agent": "OpenHaC/2.0", "Accept": "application/json"}
+HEADERS = {"User-Agent": user_agent(), "Accept": "application/json"}
 TIMEOUT_SECONDS = 5
 
 
@@ -136,6 +147,72 @@ def _infer_category(query_params: dict) -> str:
     return "components"
 
 
+def _item_category_blob(item: dict) -> str:
+    """Concatenate API category fields for functional matching (LIB-003)."""
+    chunks: list[str] = []
+    for key in ("second_level_category", "first_level_category", "category", "categories"):
+        v = item.get(key)
+        if isinstance(v, str) and v.strip():
+            chunks.append(v.lower())
+        elif isinstance(v, list):
+            chunks.extend(str(x).lower() for x in v if str(x).strip())
+    return " ".join(chunks)
+
+
+def _query_matches_item(
+    search_query: str,
+    item: dict,
+    *,
+    expected_category_slug: str | None = None,
+) -> bool:
+    """True if the API item plausibly matches the search (manufacturer, bounded description tokens).
+
+    When *expected_category_slug* is set (non-generic), require it to appear in item category metadata
+    unless the manufacturer string already contains the full query (strong MPN hit).
+    """
+    q = search_query.lower().strip()
+    mfr = (item.get("mfr") or "").lower()
+    desc = (item.get("description") or "").lower()
+    cat_blob = _item_category_blob(item)
+
+    if (
+        expected_category_slug
+        and expected_category_slug.strip().lower() not in ("", "components")
+        and cat_blob.strip()
+    ):
+        slug = expected_category_slug.strip().lower().replace("_", " ")
+        slug_us = slug.replace(" ", "_")
+        cat_ok = slug in cat_blob or slug_us in cat_blob.replace(" ", "_")
+        if not cat_ok and q not in mfr:
+            return False
+
+    if q in mfr:
+        return True
+    if len(q) >= 4 and q in desc:
+        return True
+    for tok in q.split():
+        if len(tok) < 3:
+            continue
+        if tok in mfr:
+            return True
+        try:
+            if re.search(rf"(?<![a-z0-9]){re.escape(tok)}(?![a-z0-9])", desc):
+                return True
+        except re.error:
+            continue
+    return False
+
+
+def _jit_lookup_confidence(category: str, package: str, matched_item: bool) -> str:
+    """Classify JIT mapping quality for LIB-003 (only *low* is blocked by default)."""
+    if not matched_item:
+        return CONFIDENCE_LOW
+    fp_map = _FOOTPRINT_MAP.get(category, {})
+    if package and package in fp_map:
+        return CONFIDENCE_HIGH
+    return CONFIDENCE_MEDIUM
+
+
 def _build_search_query(query_params: dict) -> str:
     """Build a search string from parametric params."""
     parts = []
@@ -186,14 +263,13 @@ def fetch_and_map_part(query_params: dict) -> dict | None:
     if not items:
         return None
 
-    # Pick best match
+    # Pick best match; require token/substring overlap for confidence scoring
     best = None
-    query_lower = search_query.lower()
+    matched_item = False
     for item in items:
-        mfr = (item.get("mfr") or "").lower()
-        desc = (item.get("description") or "").lower()
-        if query_lower in mfr or query_lower in desc:
+        if _query_matches_item(search_query, item, expected_category_slug=category):
             best = item
+            matched_item = True
             break
     if best is None:
         best = items[0]
@@ -232,12 +308,16 @@ def fetch_and_map_part(query_params: dict) -> dict | None:
             if k not in ("lcsc", "mfr", "description", "package", "manufacturer")
         }),
         "jlc_class": best.get("stock", 0) > 1000 and "Basic" or "Extended",
+        "mouser_sku": "",
+        "digikey_sku": "",
+        "spice_include": "",
+        LOOKUP_CONFIDENCE_KEY: _jit_lookup_confidence(category, package, matched_item),
     }
 
     # Emit visible terminal notice
     sku = comp_data["supplier_sku"]
-    print(
-        f"\033[96m[JIT]\033[0m Fetched '{generic_name}' from live API → "
+    logger.info(
+        f"JIT: Fetched '{generic_name}' from live API → "
         f"{mpn} ({sku}), footprint: {footprint}"
     )
 

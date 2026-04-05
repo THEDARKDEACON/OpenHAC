@@ -1,13 +1,159 @@
+import logging
 import os
+from pathlib import Path
+
 from skidl import Net, Bus
+
 from .base import Module, UnconnectedInterfaceError
 
+logger = logging.getLogger("openhac.board")
+
+
+def _artifact_path(project_name: str, suffix: str, output_dir: str | os.PathLike[str] | None) -> str:
+    stem = f"{project_name}{suffix}"
+    if output_dir is None:
+        return stem
+    p = Path(output_dir)
+    p.mkdir(parents=True, exist_ok=True)
+    return str(p / stem)
+
+
 class Board:
-    def __init__(self, size_mm: tuple, layers: int = 2):
+    def __init__(
+        self,
+        size_mm: tuple,
+        layers: int = 2,
+        *,
+        strict: bool = False,
+        strict_kicad: bool = False,
+        fab_profile: str | None = None,
+        require_passive_voltage_ratings: bool = False,
+        require_passive_power_ratings: bool = False,
+        strict_jit_lookups: bool = False,
+        strict_passive_catalog_fields: bool = False,
+        min_test_points: int | None = None,
+        release_tag: str | None = None,
+        build_profile: str | None = None,
+        bom_profile: str | None = None,
+        strict_footprint_pin_pad_match: bool = False,
+        max_jlc_extended_parts: int | None = None,
+        warn_jlc_extended_parts: bool = False,
+        write_manifest_sha256_sidecar: bool = False,
+        declared_supply_voltages_v: dict[str, float] | None = None,
+        require_cap_voltage_derating_ratio: float | None = None,
+        require_inductor_voltage_ratings: bool = False,
+        require_test_point_on_nets: tuple[str, ...] | list[str] | None = None,
+        strict_passive_attributes_json: bool = False,
+        require_resistor_voltage_ratings: bool = False,
+        max_jlc_basic_parts: int | None = None,
+        power_net_prefixes: tuple[str, ...] | list[str] | None = None,
+    ):
+        if strict:
+            strict_kicad = True
+            strict_jit_lookups = True
         self.size_mm = size_mm
         self.layers = layers
         self.modules = []
         self.constraints = []
+        #: When True, :attr:`strict_kicad` and :attr:`strict_jit_lookups` were both enabled (LIB-003 umbrella).
+        self.strict: bool = bool(strict)
+        #: Optional fab pack name (e.g. ``"jlc"``) merged into DRC geometry defaults (MFG-004).
+        self.fab_profile = fab_profile
+        #: When True, :func:`run_drc` requires DB ``voltage_rating`` for capacitor-class parts (REL-001).
+        self.require_passive_voltage_ratings = require_passive_voltage_ratings
+        #: Optional map **net name (case-insensitive)** → nominal DC volts for REL-001 derating (see :attr:`require_cap_voltage_derating_ratio`).
+        self.declared_supply_voltages_v: dict[str, float] | None = (
+            dict(declared_supply_voltages_v) if declared_supply_voltages_v else None
+        )
+        #: When set (>0), :func:`run_drc` requires cap ``voltage_rating`` ≥ ratio × nominal rail for caps on declared nets (REL-001).
+        self.require_cap_voltage_derating_ratio: float | None = (
+            float(require_cap_voltage_derating_ratio)
+            if require_cap_voltage_derating_ratio is not None
+            else None
+        )
+        #: When True, :func:`run_drc` requires DB ``power_watts`` for resistor-class parts (REL-001).
+        self.require_passive_power_ratings = require_passive_power_ratings
+        #: When True, :func:`run_drc` requires positive DB ``voltage_rating`` for inductor-class parts (REL-001).
+        self.require_inductor_voltage_ratings = bool(require_inductor_voltage_ratings)
+        #: When True, medium-confidence JIT parts raise unless risky lookups are allowed (LIB-003).
+        self.strict_jit_lookups = strict_jit_lookups
+        #: When True, :func:`run_drc` requires DB ``tolerance`` for resistor-class parts (LIB-006).
+        self.strict_passive_catalog_fields = strict_passive_catalog_fields
+        #: When True, :func:`run_drc` requires parseable JSON in DB ``attributes_json`` for R/C/L-class parts (LIB-006).
+        self.strict_passive_attributes_json = bool(strict_passive_attributes_json)
+        #: When True, :func:`run_drc` requires positive DB ``voltage_rating`` for resistor-class parts (REL-001).
+        self.require_resistor_voltage_ratings = bool(require_resistor_voltage_ratings)
+        #: When set (>= 0), :func:`run_drc` requires at least this many test-point components (REL-003).
+        self.min_test_points: int | None = min_test_points
+        #: Optional release label for compile manifest (STR-002); env ``OPENHAC_RELEASE_TAG`` overrides if set in manifest writer.
+        self.release_tag: str | None = release_tag
+        #: Optional profile name for manifest (e.g. ``production``); env ``OPENHAC_BUILD_PROFILE`` also supported.
+        self.build_profile: str | None = build_profile
+        #: Optional BOM labeling profile: ``prod`` / ``production`` / ``cm`` strips internal & alternate columns from CSV (LIB-004).
+        _bp = bom_profile
+        if isinstance(_bp, str):
+            _bp = _bp.strip() or None
+        else:
+            _bp = None
+        self.bom_profile: str | None = _bp
+        rtp = require_test_point_on_nets
+        if not rtp:
+            self.require_test_point_on_nets: tuple[str, ...] = ()
+        else:
+            self.require_test_point_on_nets = tuple(
+                str(x).strip().lower() for x in rtp if str(x).strip()
+            )
+        #: Copper pour intent for manifest / PCB handoff (PCB-009): ``net``, ``layer``, ``purpose``.
+        self._copper_pour_intents: list[dict] = []
+        #: Mounting hole intent (PCB-010): ``x_mm``, ``y_mm``, ``diameter_mm``, optional ``note``.
+        self._mounting_hole_intents: list[dict] = []
+        #: External DFM checklist paths (MFG-004): ``path``, ``role``, optional ``documentation_note``.
+        self._dfm_references: list[dict] = []
+        #: Optional net roles for documentation / manifest (SIG-006): list of ``{"net", "role"}``.
+        self._net_roles: list[dict] = []
+        #: Optional length-match groups for manifest (SIG-005): list of ``{"name", "nets"}``.
+        self._length_match_groups: list[dict] = []
+        #: Optional stackup / dielectric handoff paths for manifest (PCB-004 / SIG-001): ``{"path", "role"}``.
+        self._stackup_references: list[dict] = []
+        #: Optional analog/mixed-signal merge handoff for manifest (SIG-006): ``{"net_a", "net_b", "via"}``.
+        self._net_merge_hints: list[dict] = []
+        #: Net object identities (`id(net)`) that require PWR_FLAG in ERC (SCH-004).
+        self._explicit_power_net_ids: set[int] = set()
+        #: Callables ``fn(board) -> list[str]`` appended to ERC violations (SCH-005).
+        self._erc_hooks: list = []
+        #: Net names that must not be autorouted (PCB-007); when non-empty, :meth:`compile` skips FreeRouting.
+        self._no_autoroute_net_names: list[str] = []
+        #: If set, DRC IPC check uses this as the design minimum trace width (mm) instead of the global default.
+        self.min_trace_width_mm: float | None = None
+        #: If set, :func:`run_drc` fails when the BOM/SKiDL graph has more than this many **Extended** JLC
+        #: assembly-class line items (``JLC_Class`` field, case-insensitive) — LIB-005 optional policy.
+        self.max_jlc_extended_parts: int | None = max_jlc_extended_parts
+        #: If set, DRC fails when BOM lines with **Basic** JLC class exceed this count (LIB-005).
+        self.max_jlc_basic_parts: int | None = max_jlc_basic_parts
+        #: When True, :func:`generate_layout` raises if any SKiDL pin number is missing from the footprint
+        #: ``.kicad_mod`` pad list (PCB-002 strict pin↔pad parity).
+        self.strict_footprint_pin_pad_match = bool(strict_footprint_pin_pad_match)
+        #: When True, :func:`run_drc` logs a warning if any BOM line has JLC_Class Extended (LIB-005).
+        self.warn_jlc_extended_parts = bool(warn_jlc_extended_parts)
+        #: When True (or env ``OPENHAC_MANIFEST_SHA256_SIDECAR``), emit ``*.openhac-manifest.json.sha256``.
+        self.write_manifest_sha256_sidecar = bool(write_manifest_sha256_sidecar)
+        #: When True, KiCad symbol load failures raise instead of synthetic parts (LIB-004). Does **not** mutate
+        #: :class:`Component` class attributes; use :meth:`Module.add_part` or CLI/env so construction sees policy.
+        self.strict_kicad = strict_kicad
+        pnp = power_net_prefixes
+        if pnp:
+            self.power_net_prefixes: tuple[str, ...] = tuple(str(x).strip().lower() for x in pnp if str(x).strip())
+        else:
+            self.power_net_prefixes = ()
+
+    def _propagate_board_ref(self, module):
+        """Stamp *module* and nested :class:`Module` children with ``_openhac_host_board`` (this board)."""
+        from openhac.core.base import Module
+
+        module._openhac_host_board = self
+        for c in module:
+            if isinstance(c, Module):
+                self._propagate_board_ref(c)
 
     def connect(self, intf1, intf2):
         if hasattr(intf1, 'connect') and hasattr(intf2, 'connect'):
@@ -16,10 +162,114 @@ class Board:
             intf1 += intf2
 
     def add_module(self, module):
+        self._propagate_board_ref(module)
         self.modules.append(module)
 
-    def constrain_distance_min(self, mod_a, mod_b, min_mm):
-        self.constraints.append({'type': 'distance_min', 'args': (mod_a, mod_b, min_mm)})
+    def declare_power_rail(self, rail_name: str, net):
+        """Mark *net* as a power rail for ERC (SCH-004). *rail_name* is for documentation only.
+
+        Nets registered here are subject to the same PWR_FLAG requirement as prefix-named rails.
+        """
+        _ = rail_name
+        self._explicit_power_net_ids.add(id(net))
+        return net
+
+    def register_erc_hook(self, fn):
+        """Register ``fn(board) -> list[str]``; returned messages become ERC failures (SCH-005)."""
+        self._erc_hooks.append(fn)
+
+    def declare_net_role(self, net, role: str):
+        """Record a semantic role for *net* (e.g. ``analog_ground``) for the compile manifest (SIG-006)."""
+        self._net_roles.append({"net": str(getattr(net, "name", "?")), "role": str(role)})
+        return net
+
+    def declare_net_merge_hint(self, net_a, net_b, via: str):
+        """Document intended star-point / ferrite merge between two nets; manifest handoff only (SIG-006)."""
+        self._net_merge_hints.append(
+            {
+                "net_a": str(getattr(net_a, "name", net_a)),
+                "net_b": str(getattr(net_b, "name", net_b)),
+                "via": str(via),
+            }
+        )
+        return (net_a, net_b)
+
+    def register_length_match_group(self, name: str, nets: list):
+        """Declare nets intended for length matching; emitted in manifest only (SIG-005)."""
+        self._length_match_groups.append(
+            {
+                "name": str(name),
+                "nets": [str(getattr(n, "name", "?")) for n in nets],
+            }
+        )
+
+    def declare_stackup_reference(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        role: str = "stackup_documentation",
+        documentation_note: str | None = None,
+    ):
+        """Record a human-edited stackup or fab dielectric file for the compile manifest (PCB-004 / SIG-001)."""
+        rec: dict = {"path": str(Path(path)), "role": str(role)}
+        if documentation_note is not None and str(documentation_note).strip():
+            rec["documentation_note"] = str(documentation_note).strip()
+        self._stackup_references.append(rec)
+        return path
+
+    def declare_no_autoroute_net(self, net):
+        """Mark *net* as off-limits to OpenHaC FreeRouting (PCB-007); compile skips autoroute if any are set."""
+        self._no_autoroute_net_names.append(str(getattr(net, "name", net)))
+        return net
+
+    def declare_copper_pour_intent(self, net, *, layer: str = "F.Cu", purpose: str = "ground"):
+        """Record GND/pour intent for KiCad zone authoring (PCB-009); documentation handoff only."""
+        self._copper_pour_intents.append(
+            {
+                "net": str(getattr(net, "name", net)),
+                "layer": str(layer),
+                "purpose": str(purpose),
+            }
+        )
+        return net
+
+    def declare_mounting_hole(self, x_mm: float, y_mm: float, diameter_mm: float, *, note: str | None = None):
+        """Record mechanical hole intent for fab drawing / KiCad (PCB-010); no geometry emitted yet."""
+        rec: dict = {
+            "x_mm": float(x_mm),
+            "y_mm": float(y_mm),
+            "diameter_mm": float(diameter_mm),
+        }
+        if note is not None and str(note).strip():
+            rec["note"] = str(note).strip()
+        self._mounting_hole_intents.append(rec)
+        return rec
+
+    def declare_dfm_reference(
+        self,
+        path: str | os.PathLike[str],
+        *,
+        role: str = "dfm_checklist",
+        documentation_note: str | None = None,
+    ):
+        """Link an external DFM / fab checklist file (MFG-004); manifest handoff only."""
+        rec: dict = {"path": str(Path(path)), "role": str(role)}
+        if documentation_note is not None and str(documentation_note).strip():
+            rec["documentation_note"] = str(documentation_note).strip()
+        self._dfm_references.append(rec)
+        return path
+
+    def constrain_distance_min(self, item_a, item_b, min_distance_mm):
+        self.constraints.append({'type': 'distance_min', 'args': (item_a, item_b, min_distance_mm)})
+
+    def constrain_exact_center(self, item):
+        self.constraints.append({'type': 'exact_center', 'args': (item,)})
+
+    def route_differential_pair(self, p_net, n_net, target_impedance_ohms=90):
+        self.constraints.append({
+            'type': 'diff_pair', 
+            'args': (p_net, n_net, target_impedance_ohms)
+        })
 
     def constrain_distance_max(self, mod_a, mod_b, max_mm):
         self.constraints.append({'type': 'distance_max', 'args': (mod_a, mod_b, max_mm)})
@@ -32,68 +282,115 @@ class Board:
         for module in self.modules:
             for iface_name, interface in module.required_interfaces.items():
                 for net in interface.signals:
-                    if len(net.get_pins()) < 2:
+                    try:
+                        pins = list(net.get_pins()) if hasattr(net, "get_pins") else [net]
+                    except Exception:
+                        pins = []
+                    if len(pins) < 2:
                         raise UnconnectedInterfaceError(
                             f"Module '{module.name}', interface '{iface_name}': "
-                            f"net '{net.name}' has fewer than 2 pins attached."
+                            f"net '{getattr(net, 'name', '?')}' has fewer than 2 pins attached."
                         )
 
-    def compile(self, project_name: str = "board", generate_bom: bool = True, auto_route: bool = True, export_schematic: bool = False):
-        # 0. Hardware Physics Engines
-        print(f"Executing Pre-Compilation Rule Verification...")
+    def _get_all_modules(self):
+        """Recursively gather all unique Module instances in the design."""
+        all_mods = []
+        seen = set()
+
+        def _walk(mod):
+            if id(mod) in seen:
+                return
+            seen.add(id(mod))
+            all_mods.append(mod)
+            for child in mod:
+                if isinstance(child, Module):
+                    _walk(child)
+
+        for m in self.modules:
+            _walk(m)
+        return all_mods
+
+    def compile(
+        self,
+        project_name: str = "board",
+        generate_bom: bool = True,
+        auto_route: bool = True,
+        export_schematic: bool = False,
+        *,
+        allow_risky_part_lookups: bool = False,
+        kicad_sch_erc: bool = False,
+        kicad_sch_erc_format: str = "report",
+        source_script_path: str | os.PathLike[str] | None = None,
+        output_dir: str | os.PathLike[str] | None = None,
+        release_zip_path: str | os.PathLike[str] | None = None,
+    ):
+        if kicad_sch_erc and not export_schematic:
+            raise ValueError("kicad_sch_erc=True requires export_schematic=True")
+        self.all_modules = self._get_all_modules()
+
+        from openhac.core.compile_context import OpenHaCCompileContext, compile_context_reset, compile_context_set
+        from openhac.compiler.compile_pipeline import DEFAULT_COMPILE_PHASES, CompileState, run_compile_phases
+
+        ctx = OpenHaCCompileContext(self, allow_risky_part_lookups=allow_risky_part_lookups)
+        tok = compile_context_set(ctx)
         try:
-            from openhac.compiler.rule_check import run_erc, run_drc
-            run_erc(self)
-            run_drc(self)
+            state = CompileState(
+                board=self,
+                project_name=project_name,
+                generate_bom=generate_bom,
+                auto_route=auto_route,
+                export_schematic=export_schematic,
+                allow_risky_part_lookups=allow_risky_part_lookups,
+                kicad_sch_erc=kicad_sch_erc,
+                kicad_sch_erc_format=kicad_sch_erc_format,
+                source_script_path=source_script_path,
+                output_dir=output_dir,
+                release_zip_path=release_zip_path,
+            )
+            run_compile_phases(state, DEFAULT_COMPILE_PHASES)
         except Exception as e:
-            print(f"COMPILER ABORTED DUE TO PHYSICS RULES!")
-            raise e
+            logger.error("COMPILER ABORTED DUE TO PHYSICS RULES OR PIPELINE ERROR: %s", e)
+            raise
+        finally:
+            compile_context_reset(tok)
 
-        # 0.5. Interface Validation
-        self._validate_interfaces()
+    def simulate(
+        self,
+        project_name: str = "simulation",
+        *,
+        allow_risky_part_lookups: bool = False,
+        spice_analysis_lines: list[str] | None = None,
+        spice_analysis_json_path: str | os.PathLike[str] | None = None,
+        output_dir: str | os.PathLike[str] | None = None,
+    ):
+        logger.info(f"Preparing to simulate analog hardware graph: {project_name}")
 
-        # 1. Logic Compiler (SKiDL -> .net)
-        try:
-            from openhac.compiler.netlist_gen import generate_logic_and_bom
-            generate_logic_and_bom(project_name, generate_bom)
-        except ImportError as e:
-            print(f"Could not import netlist_gen. {e}")
+        from openhac.core.compile_context import OpenHaCCompileContext, compile_context_reset, compile_context_set
 
-        print(f"Applying geometric layout constraints. Target: {self.size_mm[0]}x{self.size_mm[1]}mm, {self.layers} Layers")
-        try:
-            from openhac.compiler.layout_gen import generate_layout
-            generate_layout(f"{project_name}.net", f"{project_name}.kicad_pcb", self)
-        except ImportError as e:
-            print(f"Could not import layout_gen. {e}")
-        
-        if auto_route:
-            try:
-                from openhac.compiler.autoroute_cli import run_freerouting
-                print("Running auto-router...")
-                run_freerouting(f"{project_name}.kicad_pcb")
-            except ImportError:
-                print("Auto-router module missing.")
-                
-        if export_schematic:
-            try:
-                from openhac.compiler.schematic_gen import generate_schematic
-                from openhac.compiler.project_gen import generate_project_file
-                generate_schematic(f"{project_name}.kicad_sch", self)
-                generate_project_file(f"{project_name}.kicad_pro")
-            except ImportError as e:
-                print(f"Failed to load interop libraries: {e}")
-
-    def simulate(self, project_name: str = "simulation"):
-        print(f"Preparing to simulate analog hardware graph: {project_name}")
-        
-        # 0. Physics ERC
+        ctx = OpenHaCCompileContext(self, allow_risky_part_lookups=allow_risky_part_lookups)
+        tok = compile_context_set(ctx)
         try:
             from openhac.compiler.rule_check import run_erc
+
             run_erc(self)
+            from openhac.compiler.spice_gen import generate_spice
+
+            analysis_lines = spice_analysis_lines
+            if analysis_lines is None and spice_analysis_json_path is not None:
+                import json
+
+                raw = json.loads(Path(spice_analysis_json_path).read_text(encoding="utf-8"))
+                al = raw.get("analysis_lines")
+                if not isinstance(al, list) or not all(isinstance(x, str) for x in al):
+                    raise ValueError(
+                        "spice_analysis_json_path must point to JSON with analysis_lines: [str, ...]"
+                    )
+                analysis_lines = list(al)
+
+            cir_path = _artifact_path(project_name, ".cir", output_dir)
+            generate_spice(cir_path, analysis_lines=analysis_lines)
         except Exception as e:
-            print(f"SIMULATION ABORTED DUE TO PHYSICS RULES!")
+            logger.error("SIMULATION ABORTED DUE TO PHYSICS RULES!")
             raise e
-            
-        # 1. SPICE Generation
-        from openhac.compiler.spice_gen import generate_spice
-        generate_spice(project_name)
+        finally:
+            compile_context_reset(tok)

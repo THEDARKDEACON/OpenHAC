@@ -49,6 +49,7 @@ include = ["openhac*"]
 
 [tool.setuptools.package-data]
 "openhac.database" = ["schema.sql", "*.db"]
+"openhac.fab_profiles" = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

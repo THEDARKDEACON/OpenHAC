@@ -1,8 +1,11 @@
 import json
+import logging
 import os
 
+logger = logging.getLogger("openhac.project")
+
 def generate_project_file(output_path: str):
-    print(f"Synthesizing KiCad Project Directory Matrix -> {output_path}")
+    logger.info(f"Synthesizing KiCad Project Directory Matrix -> {output_path}")
     
     # The modern .kicad_pro file is a strict JSON wrapper stitching the ecosystem together
     project_payload = {
@@ -26,4 +29,4 @@ def generate_project_file(output_path: str):
     with open(output_path, 'w', encoding='utf-8') as f:
         json.dump(project_payload, f, indent=2)
         
-    print("Project Directory configuration locked.")
+    logger.info("Project Directory configuration locked.")

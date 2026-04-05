@@ -1,0 +1,42 @@
+# Example stackup handoff (SIG-001) — not consumed by OpenHaC yet.
+# Copy and edit for your fab; use with KiCad layer/stackup or external SI tools.
+#
+# units: mm unless noted
+
+board:
+  layer_count: 4
+  overall_thickness_mm: 1.6
+
+layers:
+  - index: 0
+    name: F.Cu
+    type: signal
+    copper_oz: 1
+  - index: 1
+    name: In1.Cu
+    type: plane
+    net: GND
+    copper_oz: 1
+  - index: 2
+    name: In2.Cu
+    type: plane
+    net: "3V3"
+    copper_oz: 1
+  - index: 3
+    name: B.Cu
+    type: signal
+    copper_oz: 1
+
+dielectrics:
+  - between: [F.Cu, In1.Cu]
+    material: FR-4
+    dk: 4.5
+    thickness_mm: 0.1
+  - between: [In1.Cu, In2.Cu]
+    material: FR-4
+    dk: 4.5
+    thickness_mm: 0.8
+  - between: [In2.Cu, B.Cu]
+    material: FR-4
+    dk: 4.5
+    thickness_mm: 0.1

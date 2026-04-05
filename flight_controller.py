@@ -5,7 +5,11 @@ from skidl import *
 # No manual KICAD8_SYMBOL_DIR or lib_search_paths hacks needed.
 
 from openhac.core import Board
-from openhac.core.base import Module, Component
+from openhac.core.base import Module
+from openhac.stdlib.passives import Resistor, Capacitor
+from openhac.stdlib.power import VoltageRegulator, Connector
+from openhac.stdlib.mcu import MCU
+from openhac.stdlib.sensors import IMU
 from skidl import Net
 
 # ==========================================
@@ -21,11 +25,11 @@ class PowerManagementUnit(Module):
     def __init__(self):
         super().__init__("PMU")
         
-        # High-power components (DB will pull exact LCSC parts)
-        self.batt_in = self.add(Component("XT60_Vertical"))
-        self.buck_5v = self.add(Component("LDO_5V_TO-252")) # 3A Switching Regulator
-        self.ldo_3v3 = self.add(Component("LDO_3.3V_SOT-223"))  # Clean 3.3V LDO
-        self.bulk_cap = self.add(Component("C_10uF_0805"))
+        # Parametric components
+        self.batt_in = self.add(Connector(type="XT60", orientation="Vertical"))
+        self.buck_5v = self.add(VoltageRegulator(v_out=5.0, package="TO-252"))
+        self.ldo_3v3 = self.add(VoltageRegulator(v_out=3.3, package="SOT-223"))
+        self.bulk_cap = self.add(Capacitor(value="10uF", package="0805", voltage_rating=25.0))
 
         # Internal Net Logic
         v_batt = Net("V_BATT")
@@ -65,8 +69,8 @@ class RedundantSensorArray(Module):
         super().__init__("SensorArray")
         
         # Two different gyro architectures to prevent resonant frequency overlap
-        self.imu_primary = self.add(Component("ACCEL_X,Y,ZAXIS_LGA-16(3x3)")) # TDK InvenSense
-        self.imu_backup = self.add(Component("ACCEL_X,Y,ZAXIS_LGA-14(3x5)"))       # Bosch
+        self.imu_primary = self.add(IMU(axes=3, package="LGA-16")) # TDK InvenSense
+        self.imu_backup = self.add(IMU(axes=3, package="LGA-14"))       # Bosch
         vcc = Net("3V3")
         gnd = Net("GND")
         
@@ -75,8 +79,8 @@ class RedundantSensorArray(Module):
         self.imu_primary['GND'] += gnd
         self.imu_backup['GND'] += gnd
 
-        # ERC Constraint
-        self.max_current_draw_ma = 50
+        # ERC Constraint (rail must match PMU source_current_max_ma keys)
+        self.max_current_draw_ma = {"3V3": 50}
 
         self.power = self.declare_interface("power", vcc, gnd)
         self.spi_1 = self.declare_interface("spi_1", self.imu_primary['SCK', 'MISO', 'MOSI', 'CS'])
@@ -91,19 +95,19 @@ class FlightComputeCore(Module):
         super().__init__("ComputeCore")
         
         # 480MHz ARM Cortex-M7
-        self.mcu = self.add(Component("MCU_STM32F407VET6_C28730"))
-        self.usb = self.add(Component("Conn_USB_C_Receptacle"))
+        self.mcu = self.add(MCU(family="STM32F4", mpn="STM32F407VET6"))
+        self.usb = self.add(Connector(type="USB-C", pin_count=16))
 
         vcc = Net("3V3")
         gnd = Net("GND")
         self.mcu['VDD'] += vcc
         self.mcu['VSS'] += gnd
 
-        self.max_current_draw_ma = 400
+        self.max_current_draw_ma = {"3V3": 400}
 
         self.power = self.declare_interface("power", vcc, gnd)
-        self.spi_1 = self.declare_interface("spi_1", self.mcu['PA5', 'PA6', 'PA7', 'PA4'])
-        self.spi_2 = self.declare_interface("spi_2", self.mcu['PB13', 'PB14', 'PB15', 'PB12'])
+        self.spi_1 = self.declare_interface("spi_1", *self.mcu['PA5', 'PA6', 'PA7', 'PA4'])
+        self.spi_2 = self.declare_interface("spi_2", *self.mcu['PB13', 'PB14', 'PB15', 'PB12'])
         
         # Differential USB Interface
         self.usb_dp = self.mcu['PA12']
@@ -151,10 +155,18 @@ board.constrain_edge(pmu, edge="TOP")
 # ==========================================
 # 3. Compile Hardware
 # ==========================================
+# Use:  openhac compile flight_controller.py [--name ...]
+# Or:   python flight_controller.py
 
-board.compile(
-    project_name="dojo_flight_controller",
-    generate_bom=True,
-    export_schematic=True,
-    auto_route=True
-)
+
+def main():
+    board.compile(
+        project_name="dojo_flight_controller",
+        generate_bom=True,
+        export_schematic=True,
+        auto_route=False,  # Set to True for production with FreeRouting.jar
+    )
+
+
+if __name__ == "__main__":
+    main()

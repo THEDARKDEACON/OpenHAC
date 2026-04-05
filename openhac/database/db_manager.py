@@ -1,8 +1,13 @@
+import logging
 import sqlite3
 import os
 import warnings
 
-DB_PATH = os.path.join(os.path.dirname(__file__), "openhac.db")
+logger = logging.getLogger("openhac.db")
+
+_default_db = os.path.join(os.path.dirname(__file__), "openhac.db")
+_env_db = (os.environ.get("OPENHAC_DB_PATH") or "").strip()
+DB_PATH = os.path.abspath(os.path.expanduser(_env_db)) if _env_db else _default_db
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schema.sql")
 
 # Columns added in schema v2 (Phase 2 — Parametric Abstraction)
@@ -11,6 +16,13 @@ _V2_COLUMNS = {
     "voltage_rating": "REAL",
     "power_watts": "REAL",
     "jlc_class": "TEXT DEFAULT 'Basic'",
+    "spice_include": "TEXT",
+    "mouser_sku": "TEXT",
+    "digikey_sku": "TEXT",
+}
+
+_V3_COLUMNS = {
+    "spice_subckt": "TEXT",
 }
 
 
@@ -26,6 +38,9 @@ class DatabaseManager:
                 conn.executescript(f.read())
             # Run v2 migration — add parametric columns if they don't exist
             self._migrate_v2(conn)
+            self._migrate_v3(conn)
+            self._migrate_v4(conn)
+            self._migrate_v5_part_alternates_group(conn)
             conn.commit()
 
     @staticmethod
@@ -36,6 +51,41 @@ class DatabaseManager:
         for col_name, col_def in _V2_COLUMNS.items():
             if col_name not in existing:
                 conn.execute(f"ALTER TABLE components ADD COLUMN {col_name} {col_def}")
+
+    @staticmethod
+    def _migrate_v3(conn):
+        """Add SIM-001 columns (idempotent)."""
+        cursor = conn.execute("PRAGMA table_info(components)")
+        existing = {row[1] for row in cursor.fetchall()}
+        for col_name, col_def in _V3_COLUMNS.items():
+            if col_name not in existing:
+                conn.execute(f"ALTER TABLE components ADD COLUMN {col_name} {col_def}")
+
+    @staticmethod
+    def _migrate_v4(conn):
+        """LIB-001: ``part_offers`` for ranked distributor rows (idempotent)."""
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS part_offers (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                generic_name TEXT NOT NULL,
+                rank INTEGER NOT NULL DEFAULT 1,
+                supplier TEXT NOT NULL,
+                supplier_sku TEXT,
+                mpn TEXT,
+                note TEXT,
+                UNIQUE(generic_name, rank)
+            )
+            """
+        )
+
+    @staticmethod
+    def _migrate_v5_part_alternates_group(conn):
+        """LIB-002: optional ``alternate_group_id`` on ``part_alternates`` (idempotent)."""
+        cur = conn.execute("PRAGMA table_info(part_alternates)")
+        existing = {row[1] for row in cur.fetchall()}
+        if "alternate_group_id" not in existing:
+            conn.execute("ALTER TABLE part_alternates ADD COLUMN alternate_group_id TEXT")
 
     def get_component(self, generic_name: str) -> dict:
         """Fetches a component by its generic name."""
@@ -58,6 +108,9 @@ class DatabaseManager:
         Returns:
             lastrowid on insert, or None if the row was ignored.
         """
+        from openhac.database.lookup_meta import strip_openhac_internal_fields
+
+        component_data = strip_openhac_internal_fields(dict(component_data))
         with sqlite3.connect(self.db_path) as conn:
             cursor = conn.cursor()
             columns = ', '.join(component_data.keys())
@@ -66,6 +119,62 @@ class DatabaseManager:
             verb = "INSERT OR IGNORE" if ignore_duplicate else "INSERT"
             cursor.execute(
                 f"{verb} INTO components ({columns}) VALUES ({placeholders})",
+                values,
+            )
+            conn.commit()
+            return cursor.lastrowid if cursor.rowcount > 0 else None
+
+    def list_part_alternates(self, primary_generic: str) -> list[dict]:
+        """Return ranked alternate offers for a primary ``generic_name`` (LIB-002)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT rank, alternate_mpn, alternate_supplier_sku, note, alternate_group_id "
+                "FROM part_alternates WHERE primary_generic = ? ORDER BY rank ASC",
+                (primary_generic,),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+    def list_part_offers(self, generic_name: str) -> list[dict]:
+        """Return ranked distributor offers for a ``generic_name`` (LIB-001)."""
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute(
+                "SELECT rank, supplier, supplier_sku, mpn, note FROM part_offers "
+                "WHERE generic_name = ? ORDER BY rank ASC",
+                (generic_name,),
+            )
+            return [dict(row) for row in cur.fetchall()]
+
+    def insert_part_offer(self, data: dict, ignore_duplicate: bool = False) -> int | None:
+        """Insert one offer row; *data* must include ``generic_name``, ``supplier``, and ``rank``."""
+        row = dict(data)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            columns = ", ".join(row.keys())
+            placeholders = ", ".join("?" * len(row))
+            values = tuple(row.values())
+            verb = "INSERT OR IGNORE" if ignore_duplicate else "INSERT"
+            cursor.execute(
+                f"{verb} INTO part_offers ({columns}) VALUES ({placeholders})",
+                values,
+            )
+            conn.commit()
+            return cursor.lastrowid if cursor.rowcount > 0 else None
+
+    def insert_part_alternate(self, data: dict, ignore_duplicate: bool = False) -> int | None:
+        """Insert one alternate row; *data* must include ``primary_generic`` and ``rank``."""
+        row = dict(data)
+        with sqlite3.connect(self.db_path) as conn:
+            cursor = conn.cursor()
+            columns = ", ".join(row.keys())
+            placeholders = ", ".join("?" * len(row))
+            values = tuple(row.values())
+            verb = "INSERT OR IGNORE" if ignore_duplicate else "INSERT"
+            cursor.execute(
+                f"{verb} INTO part_alternates ({columns}) VALUES ({placeholders})",
                 values,
             )
             conn.commit()
@@ -259,9 +368,8 @@ class DatabaseManager:
                 # Strip None values
                 query_params = {k: v for k, v in query_params.items() if v is not None}
 
-                print(
-                    f"\033[96m[INFO]\033[0m Part not found locally. "
-                    f"Searching live supply chain..."
+                logger.info(
+                    "Part not found locally. Searching live supply chain..."
                 )
                 new_part = fetch_and_map_part(query_params)
                 if new_part:

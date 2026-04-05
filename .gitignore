@@ -22,10 +22,27 @@ env/
 *.kicad_pcb
 *.kicad_sch
 *.kicad_pro
+*.openhac-manifest.json
+# KiCad CLI schematic ERC (SCH-003) and default *.rpt naming
+*.kicad_sch.erc.txt
+*-erc.rpt
+*.kicad_sch.erc.json
 *.kicad_prl
+# KiCad / editor lock files (e.g. ~project.kicad_pcb.lck)
+*.lck
 *.erc
 _autosave-*
 fp-info-cache
+# IPC-2581 (kicad-cli pcb export ipc2581, MFG-001)
+*.ipc2581
+# KiCad 6+ project backups folder (if created locally)
+*-backups/
+*-backups-*/
+# Optional local convention: custom DB path or scratch (see README / OPENHAC_DB_PATH)
+.openhac/
+openhac_local.db
+# OpenHaC compile --zip-release default naming
+*-release.zip
 
 # =============================================================================
 # SPICE outputs
@@ -79,19 +96,77 @@ Thumbs.db
 
 
 # =============================================================================
-# Pytest / coverage
+# Pytest / coverage / test tooling outputs
 # =============================================================================
 .pytest_cache/
 .coverage
+.coverage.*
+coverage.xml
 htmlcov/
+.tox/
+.nox/
+.pytest_tmp/
+junit.xml
 *.cover
 *.py,cover
+pytestdebug.log
+.pytest_exec/
+*.pytest_session.sqlite
+
+# =============================================================================
+# Tests — generated / local only (KEEP tests/**/*.py TRACKED for CI)
+# =============================================================================
+tests/__pycache__/
+tests/**/__pycache__/
+tests/.hypothesis/
+tests/.hypothesis_tmp/
+tests/.benchmarks/
+tests/tmp/
+tests/**/tmp/
+tests/**/.tmp/
+tests/.pytest_cache/
+tests/.coverage
+tests/htmlcov/
+tests/junit.xml
+# Optional local fixtures you generate (do not commit)
+tests/fixtures/generated/
+
+# =============================================================================
+# Hypothesis / benchmarks (repo root)
+# =============================================================================
+.hypothesis/
+.benchmarks/
+prof/
+*.prof
 
 # =============================================================================
 # mypy / ruff caches
 # =============================================================================
 .mypy_cache/
 .ruff_cache/
+
+# =============================================================================
+# Jupyter / notebooks checkpoints
+# =============================================================================
+.ipynb_checkpoints/
+*.ipynb_checkpoints
+
+# =============================================================================
+# Editor / merge backup files
+# =============================================================================
+*~
+.#*
+\#*\#
+*.orig
+*.bak
+*.tmp
+*.temp
+
+# =============================================================================
+# OS junk (extra patterns)
+# =============================================================================
+Desktop.ini
+ehthumbs.db
 
 # =============================================================================
 # Compiled components file (large, regenerated)
@@ -105,6 +180,9 @@ components.txt
 *.ses
 
 # =============================================================================
-# IMPORTANT: The tests/ directory is NOT ignored.
-# All files under tests/ are tracked in version control.
+# Policy: what stays in git
+# =============================================================================
+# - Track: tests/**/*.py, tests/conftest.py (CI requires them).
+# - Ignore: everything above under tests/ that is cache, Hypothesis, tmp, or coverage.
+# - Do NOT add a blanket "tests/*.py" rule — that would break CI and code review.
 # =============================================================================

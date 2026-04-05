@@ -8,9 +8,12 @@ Workflow:
   4. Verify SES output exists, then import it back via kicad-cli
 """
 
+import logging
 import os
 import subprocess
 from pathlib import Path
+
+logger = logging.getLogger("openhac.autoroute")
 
 from openhac.core.base import FreeRoutingNotFoundError, AutorouterFailedError
 
@@ -48,7 +51,7 @@ def run_freerouting(pcb_path: str, freerouting_jar_path: str = None) -> None:
     dsn_path = pcb.with_suffix(".dsn")
     ses_path = pcb.with_suffix(".ses")
 
-    print(f"Exporting DSN from {pcb_path} ...")
+    logger.info(f"Exporting DSN from {pcb_path} ...")
     dsn_result = subprocess.run(
         ["kicad-cli", "pcb", "export-dsn", str(pcb), "--output", str(dsn_path)],
         capture_output=True,
@@ -61,7 +64,7 @@ def run_freerouting(pcb_path: str, freerouting_jar_path: str = None) -> None:
         )
 
     # --- 9.3: Invoke FreeRouting with real-time stdout streaming ---
-    print(f"Starting FreeRouting: java -jar {jar} ...")
+    logger.info(f"Starting FreeRouting: java -jar {jar} ...")
     with subprocess.Popen(
         ["java", "-jar", jar, "-input", str(dsn_path), "-output", str(ses_path)],
         stdout=subprocess.PIPE,
@@ -70,7 +73,7 @@ def run_freerouting(pcb_path: str, freerouting_jar_path: str = None) -> None:
         bufsize=1,  # line-buffered
     ) as proc:
         for line in proc.stdout:
-            print(line, end="", flush=True)
+            logger.debug(line.rstrip())
         proc.wait()
         stderr_output = proc.stderr.read()
 
@@ -85,7 +88,7 @@ def run_freerouting(pcb_path: str, freerouting_jar_path: str = None) -> None:
             f"FreeRouting completed but no SES output was produced at {ses_path}"
         )
 
-    print(f"Importing SES {ses_path} into {pcb_path} ...")
+    logger.info(f"Importing SES {ses_path} into {pcb_path} ...")
     ses_result = subprocess.run(
         ["kicad-cli", "pcb", "import-ses", str(pcb), "--input", str(ses_path)],
         capture_output=True,
@@ -97,4 +100,4 @@ def run_freerouting(pcb_path: str, freerouting_jar_path: str = None) -> None:
             f"{ses_result.stderr}"
         )
 
-    print(f"Autorouting complete: {pcb_path}")
+    logger.info(f"Autorouting complete: {pcb_path}")

@@ -1,0 +1,84 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install package and dev tools
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Ruff
+        run: ruff check openhac tests
+
+      - name: Verify package version vs pyproject (SW-004)
+        run: python scripts/verify_openhac_version.py
+
+      - name: Scan docs for stale version tokens (SW-004)
+        run: python scripts/check_release_strings.py
+
+      - name: Changelog section matches pyproject version (SW-004)
+        run: python scripts/check_changelog_version.py
+
+      - name: Pytest
+        run: pytest tests/ -q --tb=short
+
+  # KiCad CLI schematic ERC on a generated design (SCH-003). Blocks merges if KiCad reports ERC errors.
+  kicad-schematic-erc:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install KiCad (kicad-cli)
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y kicad
+
+      - name: Install OpenHaC for system Python
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -e ".[dev]"
+
+      - name: Golden schematic ERC (SCH-003)
+        env:
+          KICAD_FOOTPRINT_DIR: /usr/share/kicad/footprints
+          KICAD9_SYMBOL_DIR: /usr/share/kicad/symbols
+        run: python3 scripts/ci_kicad_sch_erc_golden.py
+
+  # Optional: KiCad pcbnew + full layout (system python3). Does not block PRs if KiCad/apt layout breaks.
+  kicad-layout-smoke:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install KiCad (footprints + pcbnew Python bindings)
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y kicad
+
+      - name: Install OpenHaC for system Python
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -e ".[dev]"
+
+      - name: Full compile with layout (SW-006)
+        env:
+          KICAD_FOOTPRINT_DIR: /usr/share/kicad/footprints
+        run: python3 scripts/ci_full_compile_smoke.py

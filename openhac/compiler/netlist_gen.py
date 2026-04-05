@@ -1,28 +1,106 @@
-from skidl import generate_netlist
 import csv
+import logging
+from skidl import generate_netlist
 
-def generate_logic_and_bom(project_name: str, generate_bom: bool = True):
-    print(f"Compiling Netlist for {project_name}...")
-    try:
-        generate_netlist(file_="{}.net".format(project_name))
-        print(f"Generated {project_name}.net")
-    except Exception as e:
-        print(f"Netlist generation error: {e}")
+from openhac.circuit import get_default_circuit
 
-    if generate_bom:
-        bom_filename = f"{project_name}.csv"
-        print(f"Exporting BOM to {bom_filename}...")
-        with open(bom_filename, 'w', newline='') as csvfile:
-            fieldnames = ['Reference', 'Value', 'Manufacturer', 'MPN', 'Supplier_SKU', 'Footprint']
-            writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
-            writer.writeheader()
-            import builtins
-            for part in builtins.default_circuit.parts:
-                writer.writerow({
-                    'Reference': part.ref,
-                    'Value': part.value,
-                    'Manufacturer': part.fields.get('Manufacturer', ''),
-                    'MPN': part.fields.get('MPN', ''),
-                    'Supplier_SKU': part.fields.get('Supplier_SKU', ''),
-                    'Footprint': part.footprint,
-                })
+logger = logging.getLogger("openhac.netlist")
+
+# Full BOM column set (dev / default).
+_BOM_ALL_FIELDNAMES: tuple[str, ...] = (
+    "Reference",
+    "Value",
+    "Manufacturer",
+    "MPN",
+    "Supplier_SKU",
+    "Alternate_SKUs",
+    "Alternate_Notes",
+    "Alternate_Group_ID",
+    "Alternate_Count",
+    "Ranked_Offers",
+    "Primary_Offer",
+    "Secondary_Offer",
+    "Offer_Count",
+    "OpenHaC_JIT_Confidence",
+    "OpenHaC_JIT_Score",
+    "Mouser_SKU",
+    "DigiKey_SKU",
+    "JLC_Class",
+    "OpenHaC_Watermark",
+    "Footprint",
+)
+
+# LIB-004: production-style BOM omits internal / alternate-expansion columns for CM handoff.
+BOM_PROFILE_PROD_OMITTED_COLUMNS: frozenset[str] = frozenset(
+    {
+        "Alternate_SKUs",
+        "Alternate_Notes",
+        "Alternate_Group_ID",
+        "Alternate_Count",
+        "Ranked_Offers",
+        "Primary_Offer",
+        "Secondary_Offer",
+        "Offer_Count",
+        "OpenHaC_JIT_Confidence",
+        "OpenHaC_JIT_Score",
+        "OpenHaC_Watermark",
+    }
+)
+
+
+def bom_fieldnames_for_profile(bom_profile: str | None) -> list[str]:
+    """Return CSV columns for *bom_profile* (``prod`` / ``production`` / ``cm`` strips dev columns)."""
+    if not bom_profile:
+        return list(_BOM_ALL_FIELDNAMES)
+    p = str(bom_profile).strip().lower()
+    if p in ("prod", "production", "cm"):
+        return [c for c in _BOM_ALL_FIELDNAMES if c not in BOM_PROFILE_PROD_OMITTED_COLUMNS]
+    return list(_BOM_ALL_FIELDNAMES)
+
+
+def generate_logic_and_bom(
+    netlist_path: str, *, bom_path: str | None = None, bom_profile: str | None = None
+):
+    """Write SKiDL netlist to *netlist_path*; optional BOM CSV to *bom_path*."""
+    logger.info("Compiling Netlist → %s", netlist_path)
+    generate_netlist(file_=netlist_path)
+    logger.info("Generated %s", netlist_path)
+
+    if bom_path is None:
+        return
+
+    fieldnames = bom_fieldnames_for_profile(bom_profile)
+    if bom_profile and str(bom_profile).strip().lower() in ("prod", "production", "cm"):
+        logger.info(
+            "LIB-004: BOM profile %r → omitting columns %s",
+            bom_profile,
+            sorted(BOM_PROFILE_PROD_OMITTED_COLUMNS),
+        )
+    logger.info("Exporting BOM to %s...", bom_path)
+    with open(bom_path, "w", newline="") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+        writer.writeheader()
+        for part in get_default_circuit().parts:
+            full = {
+                "Reference": part.ref,
+                "Value": part.value,
+                "Manufacturer": part.fields.get("Manufacturer", ""),
+                "MPN": part.fields.get("MPN", ""),
+                "Supplier_SKU": part.fields.get("Supplier_SKU", ""),
+                "Alternate_SKUs": part.fields.get("Alternate_SKUs", ""),
+                "Alternate_Notes": part.fields.get("Alternate_Notes", ""),
+                "Alternate_Group_ID": part.fields.get("Alternate_Group_ID", ""),
+                "Alternate_Count": part.fields.get("Alternate_Count", ""),
+                "Ranked_Offers": part.fields.get("Ranked_Offers", ""),
+                "Primary_Offer": part.fields.get("Primary_Offer", ""),
+                "Secondary_Offer": part.fields.get("Secondary_Offer", ""),
+                "Offer_Count": part.fields.get("Offer_Count", ""),
+                "OpenHaC_JIT_Confidence": part.fields.get("OpenHaC_JIT_Confidence", ""),
+                "OpenHaC_JIT_Score": part.fields.get("OpenHaC_JIT_Score", ""),
+                "Mouser_SKU": part.fields.get("Mouser_SKU", ""),
+                "DigiKey_SKU": part.fields.get("DigiKey_SKU", ""),
+                "JLC_Class": part.fields.get("JLC_Class", ""),
+                "OpenHaC_Watermark": part.fields.get("OpenHaC_WATERMARK", ""),
+                "Footprint": part.footprint,
+            }
+            writer.writerow({k: full[k] for k in fieldnames})

@@ -7,11 +7,17 @@ mirrors the official JLCPCB component catalog.
 """
 
 import json
+import logging
 import urllib.request
+
+from openhac.version_info import user_agent
+
 from .db_manager import DatabaseManager
 
+logger = logging.getLogger("openhac.sync")
+
 API_BASE = "https://jlcsearch.tscircuit.com"
-HEADERS = {"User-Agent": "OpenHaC/1.0", "Accept": "application/json"}
+HEADERS = {"User-Agent": user_agent(), "Accept": "application/json"}
 
 # Each entry: category -> (endpoint_path, response_key)
 CATEGORY_ENDPOINTS = {
@@ -251,11 +257,11 @@ def sync_catalog(categories: list[str] = None, verbose: bool = True) -> int:
     for category in targets:
         if category not in CATEGORY_ENDPOINTS:
             if verbose:
-                print(f"  [warn] Unknown category '{category}', skipping.")
+                logger.warning(f"Unknown category '{category}', skipping.")
             continue
 
         if verbose:
-            print(f"  Fetching {category}...")
+            logger.info(f"Fetching {category}...")
 
         endpoint_path, response_key = CATEGORY_ENDPOINTS[category]
 
@@ -263,12 +269,12 @@ def sync_catalog(categories: list[str] = None, verbose: bool = True) -> int:
             items = _fetch_category(endpoint_path, response_key)
         except Exception as e:
             if verbose:
-                print(f"  [warn] Failed to fetch {category}: {e}")
+                logger.warning(f"Failed to fetch {category}: {e}")
             continue
 
         if not items:
             if verbose:
-                print(f"  [warn] No items returned for {category}, skipping.")
+                logger.warning(f"No items returned for {category}, skipping.")
             continue
 
         any_success = True
@@ -315,7 +321,7 @@ def sync_catalog(categories: list[str] = None, verbose: bool = True) -> int:
 
         total_inserted += inserted
         if verbose:
-            print(f"    → inserted {inserted} new components from {category}")
+            logger.info(f"Inserted {inserted} new components from {category}")
 
     if not any_success and targets:
         raise RuntimeError(
@@ -324,7 +330,7 @@ def sync_catalog(categories: list[str] = None, verbose: bool = True) -> int:
         )
 
     if verbose:
-        print(f"Sync complete. {total_inserted} new components inserted.")
+        logger.info(f"Sync complete. {total_inserted} new components inserted.")
 
     return total_inserted
 

@@ -1,17 +1,25 @@
 # OpenHaC — Open Hardware-as-Code
 
-A Python compiler that turns declarative hardware code into manufacturable PCB designs, routed netlists, and SPICE simulations — no GUI required.
+A Python compiler that turns declarative hardware code into manufacturable PCB designs, **netlists**, optional **routing** (FreeRouting), and SPICE simulations — no GUI required.
 
 ## What it does
 
 Write your hardware design in Python. Define components, wire modules together, set spatial constraints, and the compiler produces:
 
-- `.kicad_pcb` — fully placed and routed PCB layout
-- `.kicad_sch` — KiCad 7/8 schematic with symbol instances and wires
-- `.csv` — Bill of Materials with real LCSC supplier SKUs
-- `.cir` — ngspice-compatible SPICE netlist
+- `.net` + `.csv` — SKiDL netlist and BOM (LCSC-oriented fields when available)
+- `.kicad_pcb` — KiCad board with outline, **footprint placement**, and pad nets (optional **autoroute** via FreeRouting)
+- `.kicad_sch` / `.kicad_pro` — optional schematic + project stub (when `export_schematic=True`)
+- `.openhac-manifest.json` — build output inventory (after a successful `compile`; optional `output_dir` / `openhac compile -o DIR` bundles artifacts — **MFG-005** / **STR-002**)
+- `.cir` — ngspice-oriented SPICE netlist from `Board.simulate()`
 
-The pipeline is built on SKiDL for netlist generation, KiCad for PCB/schematic output, FreeRouting for autorouting, and standard SPICE for simulation.
+**Scope:** See [docs/SCOPE.md](docs/SCOPE.md) for capability tiers and non-goals.  
+**Release engineering:** See [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) and [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) for spec tracking.
+
+**Tier C / autorouter honesty (PCB-007 / SIG-002):** FreeRouting is **placement/routing assistance**. It is **not** a substitute for manual **high-speed** routing, **differential-pair** impedance control, or **EMC** review — `Board.route_differential_pair()` is stored as a constraint but **not** consumed by the placer/router; controlled pairs must be finished in KiCad.
+
+**CLI:** `openhac --version` prints the installed package version (aligned with HTTP User-Agent).
+
+The pipeline uses SKiDL, KiCad (`pcbnew` / `kicad-cli`), optional FreeRouting, and ngspice-style SPICE.
 
 ---
 
@@ -34,12 +42,12 @@ SQLite-backed catalog of real, orderable components. Every `Component("name")` c
 
 **Tier 3 — Compiler Pipeline (`openhac/compiler/`)**
 
-- **ERC** (`rule_check.py`): floating nets, unconnected pins, missing power flags, power budget overload
+- **ERC** (`rule_check.py`): floating nets, unconnected pins, missing power flags (prefix + optional `Board.declare_power_rail`), user `register_erc_hook` plugins (SCH-005; see `openhac.stdlib.erc_rules` for an I2C pull-up example), power budget overload
 - **Interface validation**: all declared module interfaces must be connected before netlist generation proceeds
-- **Netlist** (`netlist_gen.py`): SKiDL → `.net` + BOM `.csv`
-- **Layout** (`layout_gen.py`): Z3 constraint solver → KiCad PCB placement
-- **Autorouter** (`autoroute_cli.py`): FreeRouting jar via subprocess, DSN/SES workflow
-- **Schematic** (`schematic_gen.py`): KiCad S-expression `.kicad_sch` with symbol instances and wire geometry
+- **Netlist** (`netlist_gen.py`): SKiDL → `.net` + BOM `.csv` (**JLC_Class**, optional **Mouser_SKU** / **DigiKey_SKU** from DB — **LIB-001**)
+- **Layout** (`layout_gen.py`, `pcb_placement.py`): Z3 module placement → KiCad board outline + footprint instances with pad nets; **`pin_pad_coverage_warnings`** compares SKiDL pin numbers to **`*.kicad_mod`** pads before `SetNet` (**PCB-002** diagnostic)
+- **Autorouter** (`autoroute_cli.py`): FreeRouting jar via subprocess, DSN/SES workflow (not HS-aware; see **PCB-007** in [docs/SCOPE.md](docs/SCOPE.md))
+- **Schematic** (`schematic_gen.py`): KiCad S-expression `.kicad_sch` with symbol instances and wire geometry; **`schematic_geometry`** + parsers support round-trip checks vs on-disk wires/labels (**SCH-001**)
 - **SPICE** (`spice_gen.py`): `.cir` netlist using `Part.ref_prefix` for correct SPICE element identifiers
 
 ---
@@ -48,12 +56,43 @@ SQLite-backed catalog of real, orderable components. Every `Component("name")` c
 
 ```bash
 pip install -e .
+# optional: pytest, ruff, mypy (CI / contributors)
+pip install -e ".[dev]"
 ```
+
+Dependencies are declared in **`pyproject.toml`** (no separate `requirements.txt`).
 
 **Requirements:**
 - Python 3.11+
 - KiCad 7 or 8 with Python bindings (for PCB/schematic output)
+- KiCad footprint libraries on disk — set **`KICAD8_FOOTPRINT_DIR`** (or **`KICAD9_FOOTPRINT_DIR`**) to the folder that contains `*.pretty` directories (e.g. `/usr/share/kicad/footprints` on Linux) so the compiler can place footprints
 - Java runtime (for FreeRouting autorouter)
+
+---
+
+## Environment variables
+
+| Variable | Purpose |
+|----------|---------|
+| **`OPENHAC_DB_PATH`** | Path to the SQLite component catalog (default: `openhac/database/openhac.db` inside the install). Use a writable path for CI or multi-project isolation. |
+| **`OPENHAC_SKIP_LAYOUT`** | If `1` / `true` / `yes`, `Board.compile()` skips KiCad `pcbnew` layout generation and autoroute — emits **`.net`**, **`.csv`**, and manifest only (headless CI / logic-only builds). |
+| **`OPENHAC_STRICT_JIT`** | If set, medium-confidence live/JIT part lookups are treated like low-confidence unless risky lookups are explicitly allowed (see `openhac compile --strict-jit`). |
+| **`OPENHAC_ALLOW_RISKY_PARTS`** | Allows low/medium JIT mappings when strict JIT is on (escape hatch; prefer an explicit DB seed/sync for production). |
+| **`OPENHAC_RELEASE_TAG`** | Optional string recorded in **``release_tag``** on the compile manifest (STR-002); CLI **``--release-tag``** overrides for one run. |
+| **`OPENHAC_BUILD_PROFILE`** | Optional string recorded as **``build_profile``** in the manifest (e.g. `production`). |
+
+Fabrication export also relies on **`KICAD8_FOOTPRINT_DIR`** / **`KICAD9_FOOTPRINT_DIR`** (or **`KICAD_FOOTPRINT_DIR`**) and KiCad symbol paths as documented by KiCad for your OS.
+
+---
+
+## Production readiness & “Partial” spec items
+
+Normative list: **[docs/PRODUCTION_READINESS_SPEC.md](docs/PRODUCTION_READINESS_SPEC.md)**.  
+What shipped vs still open: **[docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md)**.
+
+Many requirements are marked **Partial** there because OpenHaC intentionally lands **incremental** value before the spec’s full *target state* (e.g. schematic wires use a stable grid/stub model while true KiCad **symbol pin coordinates** remain future work — **SCH-001**). **Partial does not mean broken**; it means “subset of acceptance met” or “blocked by KiCad/tooling/policy depth.” Some partials depend on later tickets (e.g. richer **SIG-002** constraints relate to **PCB-007**); others are independent (e.g. **MFG-003** fab drawing vs **SIM-001** models). See **“Why are many rows Partial?”** at the top of `IMPLEMENTATION_STATUS.md`.
+
+**CI:** The main workflow runs Ruff + pytest on Python 3.11/3.12. An optional job **`kicad-layout-smoke`** installs KiCad on Ubuntu and runs **`scripts/ci_full_compile_smoke.py`** (full **`.kicad_pcb`** when `pcbnew` imports); it is **`continue-on-error`** so KiCad/apt drift does not block merges.
 
 ---
 
@@ -169,7 +208,17 @@ mcu.max_current_draw_ma   = 250   # ESP32 draws 250mA peak
 # If total draw exceeds total supply, ERC raises ERCPowerBudgetError at compile time
 ```
 
+### DRC trace width (IPC-2152)
+
+If you set **`max_current_draw_ma`** on modules, DRC compares the IPC-2152 external-layer width to the design minimum (default **0.15mm**). Raise the board minimum when your fab rules allow wider default traces:
+
+```python
+board.min_trace_width_mm = 0.35  # e.g. heavy 3V3 rail
+```
+
 ### Compiling
+
+From Python:
 
 ```python
 board.compile(
@@ -179,6 +228,19 @@ board.compile(
     export_schematic=True,     # write my_board.kicad_sch + my_board.kicad_pro
 )
 ```
+
+Or use the CLI (requires a top-level variable named `board`; do not call `board.compile()` at import time when using this):
+
+```bash
+openhac compile my_design.py --name my_board
+openhac compile my_design.py --no-route --no-schematic
+openhac compile my_design.py --strict-jit    # reject medium-confidence JIT unless risky parts allowed
+openhac compile my_design.py --production     # strict KiCad symbols + strict JIT for this compile (LIB-004 / LIB-003)
+openhac compile my_design.py -o dist/rel --release-tag v1.0.0 --build-profile production --zip-release
+openhac compile my_design.py --kicad-erc --kicad-erc-json   # JSON ERC report for parsing (SCH-003)
+```
+
+With **`OPENHAC_SKIP_LAYOUT=1`**, the same CLI can produce netlist + BOM + manifest without `pcbnew` (useful in CI). Use **`--zip-release`** (optional **`--zip-release-path`**) to archive emitted artifacts; default zip names are ignored via **`*-release.zip`** in `.gitignore`.
 
 **FreeRouting autorouter** requires the jar path:
 
@@ -192,6 +254,19 @@ Or pass it directly:
 from openhac.compiler.autoroute_cli import run_freerouting
 run_freerouting("my_board.kicad_pcb", freerouting_jar_path="/path/to/freerouting.jar")
 ```
+
+### Fabrication export (Gerbers / drill / placement)
+
+After you have a `.kicad_pcb` (from `board.compile` or KiCad), generate fab outputs with **KiCad’s** `kicad-cli` (must be on `PATH`):
+
+```bash
+openhac export fab my_board.kicad_pcb -o ./gerbers
+openhac export fab my_board.kicad_pcb -o ./gerbers --no-pos
+openhac export fab my_board.kicad_pcb -o ./gerbers --board-plot-params
+openhac export fab my_board.kicad_pcb -o ./gerbers --ipc2581   # also IPC-2581 via kicad-cli
+```
+
+This writes Gerber layers, Excellon drill files (mm), and by default two CSV position files (front and back). **`--ipc2581`** adds an IPC-2581 export when your `kicad-cli` supports it (ignored by `.gitignore` pattern **`*.ipc2581`** if you generate into the repo tree).
 
 ### SPICE Simulation
 
@@ -265,7 +340,7 @@ db.insert_component({
 
 ## Error Handling
 
-The compiler raises structured exceptions from `openhac.core.base`:
+The compiler raises structured exceptions (mostly from `openhac.core.base`; DRC from `openhac.compiler.rule_check`):
 
 | Exception | When |
 |---|---|
@@ -277,7 +352,12 @@ The compiler raises structured exceptions from `openhac.core.base`:
 | `InterfaceNotFoundError` | `expose_interface()` called with unknown name |
 | `FreeRoutingNotFoundError` | FreeRouting jar not found |
 | `AutorouterFailedError` | FreeRouting exited with error or produced no SES |
+| `FabExportError` | `kicad-cli` fabrication export failed or binary missing |
 | `SchematicGenerationError` | SKiDL circuit unavailable at schematic generation time |
+| `LayoutGenerationError` | KiCad `pcbnew` failed or is unavailable during layout |
+| `DRCViolationError` | Design rule check failed (board bounds, IPC width, optional policies) |
+| `RiskyPartLookupError` | Live/JIT part mapping blocked (low/medium confidence + strictness) |
+| `KicadLibraryLoadError` | KiCad symbol could not load in strict KiCad mode |
 
 ---
 
@@ -295,19 +375,27 @@ openhac/
   compiler/
     rule_check.py     # ERC + DRC
     netlist_gen.py    # SKiDL → .net + BOM
-    layout_gen.py     # Z3 → KiCad PCB placement
+    layout_gen.py     # Z3 → KiCad PCB outline + invokes footprint placement
+    pcb_placement.py  # SKiDL parts → pcbnew footprints + NETINFO_ITEM
     autoroute_cli.py  # FreeRouting subprocess integration
     schematic_gen.py  # KiCad S-expression schematic
     spice_gen.py      # SPICE .cir netlist
     project_gen.py    # .kicad_pro project file
+    export_fab.py     # kicad-cli Gerber/drill/pos export
+    compile_manifest.py  # post-compile JSON manifest
   database/
     db_manager.py  # SQLite CRUD
     sync_jlc.py    # JLCPCB catalog sync via jlcsearch API
     seed_data.py   # Baseline hand-verified parts
     schema.sql     # DB schema
 tests/             # pytest + Hypothesis property tests
-build.py           # Example integration build
+scripts/example_build.py       # Minimal compile example (run after seed_data)
+scripts/ci_full_compile_smoke.py  # Optional full-layout CI smoke (pcbnew)
 ```
+
+### Git ignores
+
+The root **`.gitignore`** excludes generated KiCad/SPICE artifacts, local **`openhac.db`**, pytest/Hypothesis/benchmark outputs, **`tests/tmp/`** / **`tests/fixtures/generated/`**, coverage files, **`*.ipc2581`**, **`.openhac/`**, KiCad **`*-backups/`**, and **`*-release.zip`**. **Keep `tests/**/*.py` and `tests/conftest.py` tracked** — they are required for CI (only caches and scratch under `tests/` are ignored).
 
 ---
 

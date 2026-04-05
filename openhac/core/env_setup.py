@@ -96,8 +96,19 @@ def bootstrap_environment() -> None:
         _bootstrapped = True
         return
 
+    # Default footprint root for pcbnew .pretty resolution (no-op if user already set env)
+    if not os.environ.get("KICAD9_FOOTPRINT_DIR") and not os.environ.get("KICAD8_FOOTPRINT_DIR"):
+        for _fp in (
+            "/usr/share/kicad/footprints",
+            "/usr/local/share/kicad/footprints",
+            os.path.expanduser("~/.local/share/kicad/8.0/footprints"),
+        ):
+            if os.path.isdir(_fp):
+                os.environ.setdefault("KICAD8_FOOTPRINT_DIR", _fp)
+                break
+
     try:
-        from skidl import set_default_tool, KICAD8, lib_search_paths
+        from skidl import KICAD8, lib_search_paths, set_default_tool
 
         set_default_tool(KICAD8)
         if sym_path not in lib_search_paths[KICAD8]:

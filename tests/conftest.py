@@ -60,9 +60,25 @@ def _reset_skidl_circuit():
         skidl.reset()
     except Exception:
         pass
+    try:
+        from openhac.core.base import Component
+
+        Component.allow_risky_part_lookups = False
+        Component.require_kicad_symbols = False
+        Component.strict_jit_lookups = False
+    except Exception:
+        pass
     yield
     try:
         import skidl
         skidl.reset()
+    except Exception:
+        pass
+    try:
+        from openhac.core.base import Component
+
+        Component.allow_risky_part_lookups = False
+        Component.require_kicad_symbols = False
+        Component.strict_jit_lookups = False
     except Exception:
         pass

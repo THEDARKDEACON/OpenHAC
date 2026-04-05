@@ -1,0 +1,7 @@
+{
+  "comment": "Indicative JLCPCB-style outer-layer geometry; always verify against the fab's live rules.",
+  "min_trace_width_mm": 0.127,
+  "min_trace_clearance_mm": 0.127,
+  "min_via_drill_mm": 0.3,
+  "min_edge_clearance_mm": 0.2
+}

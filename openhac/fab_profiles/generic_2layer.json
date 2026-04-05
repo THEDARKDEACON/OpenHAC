@@ -1,0 +1,7 @@
+{
+  "comment": "Generic 2-layer outer-layer geometry baseline; verify against your fab's rules (MFG-004).",
+  "min_trace_width_mm": 0.15,
+  "min_trace_clearance_mm": 0.15,
+  "min_via_drill_mm": 0.35,
+  "min_edge_clearance_mm": 0.25
+}

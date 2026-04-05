@@ -7,9 +7,12 @@ parametric query engine.  If an exact match isn't found, the system
 over-specs safely and emits a visible warning.
 """
 
+import logging
 import warnings as _warnings
 
 from openhac.core.base import Component, Module
+
+logger = logging.getLogger("openhac.stdlib")
 
 
 class _ParametricMixin:
@@ -20,11 +23,10 @@ class _ParametricMixin:
         sku = matched.get("supplier_sku", "?")
         name = matched.get("generic_name", "?")
         msg = (
-            f"\033[93m[WARNING]\033[0m Exact match not found for {requested_desc}. "
+            f"Exact match not found for {requested_desc}. "
             f"Auto-substituting {name} (LCSC: {sku}) to maintain safety margins."
         )
-        print(msg)
-        _warnings.warn(msg, UserWarning, stacklevel=4)
+        logger.warning(msg)
 
     @staticmethod
     def _raise_not_found(requested_desc: str):
@@ -76,7 +78,7 @@ class Resistor(Module, _ParametricMixin):
         if was_fallback:
             self._warn_soft_fallback(desc, comp_data)
 
-        self._comp = self.add(Component(comp_data["generic_name"], **kwargs))
+        self._comp = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
         self.max_current_draw_ma = 0.0
 
 
@@ -119,5 +121,5 @@ class Capacitor(Module, _ParametricMixin):
         if was_fallback:
             self._warn_soft_fallback(desc, comp_data)
 
-        self._comp = self.add(Component(comp_data["generic_name"], **kwargs))
+        self._comp = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
         self.max_current_draw_ma = 0.0

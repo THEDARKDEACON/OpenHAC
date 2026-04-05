@@ -59,6 +59,24 @@ class TestBoardCreation:
         board = Board(size_mm=(100, 80), layers=4)
         assert board.layers == 4
 
+    def test_strict_enables_kicad_and_jit(self):
+        from openhac.core.base import Component
+
+        prev_sym = Component.require_kicad_symbols
+        prev_jit = Component.strict_jit_lookups
+        try:
+            Component.require_kicad_symbols = False
+            Component.strict_jit_lookups = False
+            b = Board(size_mm=(10, 10), strict=True)
+            assert b.strict is True
+            assert b.strict_kicad is True
+            assert b.strict_jit_lookups is True
+            assert Component.require_kicad_symbols is False
+            assert Component.strict_jit_lookups is False
+        finally:
+            Component.require_kicad_symbols = prev_sym
+            Component.strict_jit_lookups = prev_jit
+
 
 # ---------------------------------------------------------------------------
 # Module management

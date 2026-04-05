@@ -1,0 +1,7 @@
+{
+  "comment": "Indicative OSH Park 2-layer minimums (6 mil class); verify against current fab rules.",
+  "min_trace_width_mm": 0.1524,
+  "min_trace_clearance_mm": 0.1524,
+  "min_via_drill_mm": 0.33,
+  "min_edge_clearance_mm": 0.254
+}

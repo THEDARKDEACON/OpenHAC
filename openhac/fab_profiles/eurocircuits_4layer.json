@@ -1,0 +1,7 @@
+{
+  "comment": "Indicative Eurocircuits-style 4-layer geometry hints; verify against live fab rules.",
+  "min_trace_width_mm": 0.1,
+  "min_trace_clearance_mm": 0.1,
+  "min_via_drill_mm": 0.25,
+  "min_edge_clearance_mm": 0.25
+}

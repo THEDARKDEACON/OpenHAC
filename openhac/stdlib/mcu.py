@@ -61,14 +61,31 @@ class MCU(Module, _ParametricMixin):
         if was_fallback:
             self._warn_soft_fallback(desc, comp_data)
 
-        self._comp = self.add(Component(comp_data["generic_name"], **kwargs))
+        self._comp = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
 
         # Standard MCU nets
         self.vcc = Net(f"{name}_VCC")
         self.gnd = Net(f"{name}_GND")
 
-        self._comp["VDD"] += self.vcc
-        self._comp["GND"] += self.gnd
+        # Soft pin assignment: try labels, fallback to common numerical pins or skip
+        import warnings as _warnings
+        def _connect_soft(pins, net):
+            for p in pins:
+                try:
+                    # Check if pin exists in SKiDL Part (avoid NoneType += Net)
+                    p_obj = self._comp[p]
+                    if p_obj:
+                        p_obj += net
+                        return True
+                except (AttributeError, KeyError, TypeError):
+                    continue
+            return False
+
+        if not _connect_soft(["VDD", "VCC", "3V3", "1"], self.vcc):
+            _warnings.warn(f"Warning: Could not auto-wire VCC for {name}. Manual wiring may be required.")
+            
+        if not _connect_soft(["VSS", "GND", "2"], self.gnd):
+            _warnings.warn(f"Warning: Could not auto-wire GND for {name}. Manual wiring may be required.")
 
         self.max_current_draw_ma = 250.0
 

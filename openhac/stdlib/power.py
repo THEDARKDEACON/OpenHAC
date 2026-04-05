@@ -4,7 +4,29 @@ Parametric power component classes.
 VoltageRegulator, Connector, and pre-wired power modules.
 """
 
+from __future__ import annotations
+
 import warnings as _warnings
+
+
+def buck_input_current_ma(
+    output_current_ma: float,
+    v_out_v: float,
+    v_in_v: float,
+    efficiency: float,
+) -> float:
+    """Ideal DC–DC input current (mA) from output load, voltages, and efficiency (PWR-002).
+
+    Use the result in ``Module.extra_input_draw_by_rail_ma`` on the *input* rail name
+    when modeling a buck (or similar) so per-rail ERC includes converter losses.
+
+    ``P_in ≈ V_out × I_out / (V_in × η)``  →  ``I_in_mA = I_out_mA × V_out / V_in / η``.
+    """
+    if v_in_v <= 0:
+        raise ValueError("buck_input_current_ma: v_in_v must be > 0")
+    if efficiency <= 0:
+        raise ValueError("buck_input_current_ma: efficiency must be > 0")
+    return float(output_current_ma) * (float(v_out_v) / float(v_in_v)) / float(efficiency)
 
 from openhac.core.base import Component, Module
 from openhac.stdlib.passives import _ParametricMixin
@@ -59,7 +81,7 @@ class VoltageRegulator(Module, _ParametricMixin):
         if was_fallback:
             self._warn_soft_fallback(desc, comp_data)
 
-        self._comp = self.add(Component(comp_data["generic_name"], **kwargs))
+        self._comp = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
 
         # Wire standard regulator pins
         self.vin = Net(f"{name}_VIN")
@@ -117,12 +139,22 @@ class Connector(Module, _ParametricMixin):
                 was_fallback = True
 
         if comp_data is None:
-            self._raise_not_found(desc)
+            # Final fallback: Synthetic component
+            _warnings.warn(f"Warning: Component for {desc} not found. Using synthetic fallback.")
+            comp_data = {
+                "generic_name": f"Conn_Synthetic_{pin_count}P",
+                "kicad_symbol": "Connector:Conn_01x02_Pin", # placeholder
+                "kicad_footprint": "Connector_JST:JST_PH_S2B-PH-K_1x02_P2.00mm_Vertical",
+                "manufacturer": "N/A",
+                "mpn": "N/A",
+                "supplier_sku": "N/A",
+            }
+            was_fallback = True
 
         if was_fallback:
             self._warn_soft_fallback(desc, comp_data)
 
-        self._comp = self.add(Component(comp_data["generic_name"], **kwargs))
+        self._comp = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
 
         # Wire pins as generic signals
         self._pins = []

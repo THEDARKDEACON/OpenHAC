@@ -1,9 +1,12 @@
+import logging
 import warnings
+
+logger = logging.getLogger("openhac.spice")
 
 
 def _resolve_spice_id(part) -> str:
     """Resolve the SPICE reference designator for a part using Part.ref_prefix."""
-    prefix = part.ref_prefix or 'X'
+    prefix = part.ref_prefix or "X"
     if not part.ref_prefix:
         warnings.warn(
             f"Part {part.ref} has no ref_prefix, defaulting to 'X'",
@@ -20,27 +23,54 @@ def _sanitize_net_name(name: str) -> str:
     return name.replace(" ", "_").replace("-", "_").replace("/", "_")
 
 
-def generate_spice(project_name: str):
-    output_cir_path = f"{project_name}.cir"
-    print(f"Bypassing Physical Geometry.")
-    print(f"Generating Computational SPICE Simulation Netlist -> {output_cir_path}")
+def generate_spice(
+    output_cir_path: str,
+    *,
+    analysis_lines: list[str] | None = None,
+):
+    """Write a SPICE deck to *output_cir_path* (SIM-001 / SIM-002).
+
+    ``analysis_lines`` defaults to a single transient analysis. Parts may list
+    ``Spice_Include`` fields (from the component DB) to emit ``.include`` lines.
+    When ``Spice_Subckt`` is set (from DB ``spice_subckt``), the instance line uses
+    that subcircuit/model name instead of value-based R/C-style lines (SIM-001).
+    """
+    if analysis_lines is None:
+        analysis_lines = [".tran 1m 100m"]
+
+    logger.info("Bypassing Physical Geometry.")
+    logger.info("Generating Computational SPICE Simulation Netlist → %s", output_cir_path)
 
     try:
-        import builtins
-        circuit = builtins.default_circuit
+        from openhac.circuit import get_default_circuit
+
+        circuit = get_default_circuit()
 
         emitted_refs = set()
 
-        with open(output_cir_path, 'w') as f:
-            f.write(f"* SPICE Simulation Graph: {project_name}\n")
+        with open(output_cir_path, "w", encoding="utf-8") as f:
+            f.write("* OpenHaC SPICE export\n")
+            if analysis_lines:
+                f.write("* SIM-002 analysis directives:\n")
+                for line in analysis_lines:
+                    f.write(f"*   {line}\n")
 
-            # Add SPICE simulation models directive standard
-            f.write(".tran 1m 100m\n")
+            includes_ordered: list[str] = []
+            seen_inc: set[str] = set()
+            for part in circuit.parts:
+                raw = (part.fields.get("Spice_Include") or "").strip()
+                if raw and raw not in seen_inc:
+                    seen_inc.add(raw)
+                    includes_ordered.append(raw)
+            for inc in includes_ordered:
+                f.write(f".include {inc}\n")
+
+            for line in analysis_lines:
+                f.write(f"{line}\n")
 
             for part in circuit.parts:
                 spice_id = _resolve_spice_id(part)
 
-                # Skip duplicates
                 if spice_id in emitted_refs:
                     continue
 
@@ -52,14 +82,18 @@ def generate_spice(project_name: str):
                 nodes = " ".join(nodes_list)
 
                 val = part.value if part.value else part.name
+                subckt = (part.fields.get("Spice_Subckt") or "").strip()
 
-                # Ensure only components with valid connections are exported
-                if len(nodes_list) >= 2:
+                if subckt and nodes_list:
+                    sid = spice_id if spice_id.upper().startswith("X") else f"X{spice_id}"
+                    f.write(f"{sid} {nodes} {subckt}\n")
+                    emitted_refs.add(spice_id)
+                elif len(nodes_list) >= 2:
                     f.write(f"{spice_id} {nodes} {val}\n")
                     emitted_refs.add(spice_id)
 
             f.write(".end\n")
-        print("Computational SPICE Engine (OpenHaC Native) completed successfully.")
+        logger.info("Computational SPICE Engine (OpenHaC Native) completed successfully.")
     except Exception as e:
-        print(f"Native SPICE generation failed: {e}")
+        logger.error("Native SPICE generation failed: %s", e)
         raise e

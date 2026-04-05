@@ -11,6 +11,7 @@ from openhac.database.api_fallback import (
     _infer_category,
     _build_search_query,
 )
+from openhac.database.lookup_meta import LOOKUP_CONFIDENCE_KEY, CONFIDENCE_HIGH, CONFIDENCE_LOW
 
 
 class TestFootprintResolution:
@@ -94,6 +95,30 @@ class TestFetchAndMapPart:
         assert result["supplier_sku"] == "C12345"
         assert result["kicad_footprint"] == "Resistor_SMD:R_0805_2012Metric"
         assert result["kicad_symbol"] == "Device:R"
+        assert result[LOOKUP_CONFIDENCE_KEY] == CONFIDENCE_HIGH
+
+    @patch("openhac.database.api_fallback.urllib.request.urlopen")
+    def test_unrelated_first_hit_is_low_confidence(self, mock_urlopen):
+        """No query token overlap with mfr/description → first item is weak match (LIB-003)."""
+        api_response = {
+            "components": [{
+                "lcsc": 999,
+                "mfr": "OTHERPART",
+                "package": "0805",
+                "description": "mystery widget",
+                "manufacturer": "Acme",
+                "stock": 10,
+            }]
+        }
+        mock_resp = MagicMock()
+        mock_resp.read.return_value = json.dumps(api_response).encode()
+        mock_resp.__enter__ = MagicMock(return_value=mock_resp)
+        mock_resp.__exit__ = MagicMock(return_value=False)
+        mock_urlopen.return_value = mock_resp
+
+        result = fetch_and_map_part({"category": "resistors", "value": "ZZZONLY", "package": "0805"})
+        assert result is not None
+        assert result[LOOKUP_CONFIDENCE_KEY] == CONFIDENCE_LOW
 
     @patch("openhac.database.api_fallback.urllib.request.urlopen")
     def test_timeout_raises_offline_error(self, mock_urlopen):
@@ -140,6 +165,7 @@ class TestJITHook:
             "description": "4.7k 1% 0603 Resistor",
             "category": "resistors",
             "jlc_class": "Basic",
+            LOOKUP_CONFIDENCE_KEY: CONFIDENCE_HIGH,
         }
 
         # First call: JIT kicks in

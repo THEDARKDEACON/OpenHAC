@@ -1,0 +1,53 @@
+{
+  "description": "Example 4-layer JLC-style stackup for impedance handoff (PCB-004). Not authoritative — confirm with your fab order.",
+  "vendor_profile": "jlcpcb_4l_standard_1.6mm",
+  "total_thickness_mm": 1.6,
+  "layers": [
+    {
+      "name": "L1 Top",
+      "type": "copper",
+      "copper_oz": 1.0,
+      "finish_um": 35
+    },
+    {
+      "name": "Prepreg",
+      "type": "prepreg",
+      "material": "FR4",
+      "thickness_mm": 0.1,
+      "dk_at_1ghz": 4.2,
+      "df_at_1ghz": 0.018
+    },
+    {
+      "name": "L2 GND",
+      "type": "copper_plane",
+      "copper_oz": 1.0
+    },
+    {
+      "name": "Core",
+      "type": "core",
+      "material": "FR4",
+      "thickness_mm": 1.0,
+      "dk_at_1ghz": 4.5,
+      "df_at_1ghz": 0.02
+    },
+    {
+      "name": "L3 PWR",
+      "type": "copper_plane",
+      "copper_oz": 1.0
+    },
+    {
+      "name": "Prepreg",
+      "type": "prepreg",
+      "material": "FR4",
+      "thickness_mm": 0.1,
+      "dk_at_1ghz": 4.2,
+      "df_at_1ghz": 0.018
+    },
+    {
+      "name": "L4 Bottom",
+      "type": "copper",
+      "copper_oz": 1.0,
+      "finish_um": 35
+    }
+  ]
+}
