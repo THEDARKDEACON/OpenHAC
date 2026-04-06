@@ -11,6 +11,7 @@ import pytest
 from skidl import Net, Part
 
 import openhac.core  # noqa: F401
+from openhac.compiler.netlist_gen import BOM_PROFILE_PROD_OMITTED_COLUMNS
 from openhac.core import Board
 from openhac.core.base import Component, Module
 
@@ -128,11 +129,74 @@ def test_compile_writes_net_csv_and_manifest(tmp_path, seeded_resistor_db, monke
     assert co.get("skip_layout") is False
     assert isinstance(data.get("openhac_env_keys_present"), list)
     assert isinstance(data.get("sch_kicad_symbol_dirs_configured"), bool)
-    assert isinstance(data.get("pcb_pipeline_handoff"), dict)
+    ph = data.get("pcb_pipeline_handoff") or {}
+    assert isinstance(ph, dict) and ph.get("schema_ref") == "openhac.pcb_pipeline_handoff.v1"
+    assert int(data.get("outputs_total_bytes") or 0) > 0
+    assert int(data.get("outputs_artifact_count") or 0) >= 1
+    spc = data.get("spice_presets_catalog") or []
+    assert "ac" in spc and "tran" in spc and "op" in spc and "noise" in spc
+    assert int(data.get("release_bundle_suffix_count") or 0) >= 1
+    assert int(data.get("bom_csv_data_row_count") or 0) >= 1
+    assert int(data.get("netlist_line_count") or 0) >= 1
+    assert data.get("netlist_suffix") == ".net"
+    assert data.get("pcb_pipeline_handoff_key_count") == 3
+    assert data.get("str002_compile_pipeline_entry") == "openhac.compiler.compile_pipeline.run_compile_phases"
+    assert data.get("sim002_spice_analysis_config_module") == "openhac.compiler.spice_analysis_config"
+    assert data.get("str002_openhac_distribution_package") == "openhac"
+    assert data.get("sch003_kicad_erc_report_suffixes") == [".kicad_sch.erc.txt", ".kicad_sch.erc.json"]
+    assert data.get("mfg005_release_zip_sha256_note")
+    assert data.get("str002_manifest_json_sort_keys") is True
+    assert data.get("str002_patch_manifest_release_zip_function") == (
+        "openhac.compiler.compile_manifest.patch_manifest_release_zip_sha256"
+    )
+    assert data.get("mfg005_zip_project_outputs_function") == "openhac.compiler.release_bundle.zip_project_outputs"
+    assert data.get("sim002_spice_analysis_loader_function") == (
+        "openhac.compiler.spice_analysis_config.load_spice_analysis_raw"
+    )
+    assert data.get("sw003_netlist_gen_module") == "openhac.compiler.netlist_gen"
+    assert data.get("spice_presets_module") == "openhac.compiler.spice_presets"
+    assert data.get("pcb001_kicad_pcb_suffix") == ".kicad_pcb"
+    assert data.get("sch001_kicad_sch_suffix") == ".kicad_sch"
+    assert data.get("sch001_kicad_pro_suffix") == ".kicad_pro"
+    assert data.get("lib002_bom_csv_suffix") == ".csv"
+    assert data.get("str002_rule_check_module") == "openhac.compiler.rule_check"
+    assert data.get("str002_layout_gen_module") == "openhac.compiler.layout_gen"
+    assert data.get("str002_autoroute_module") == "openhac.compiler.autoroute_cli"
+    assert data.get("str002_kicad_sch_erc_module") == "openhac.compiler.kicad_sch_erc"
+    assert data.get("str002_schematic_gen_module") == "openhac.compiler.schematic_gen"
+    assert data.get("str002_spice_gen_module") == "openhac.compiler.spice_gen"
+    assert data.get("str002_project_gen_module") == "openhac.compiler.project_gen"
+    assert data.get("str002_compile_state_dataclass") == "openhac.compiler.compile_pipeline.CompileState"
+    assert data.get("str002_manifest_json_suffix") == ".openhac-manifest.json"
+    assert data.get("str002_manifest_sha256_sidecar_suffix") == ".openhac-manifest.json.sha256"
+    assert data.get("sim002_spice_netlist_suffix") == ".cir"
+    assert data.get("str002_kicad_erc_report_module") == "openhac.compiler.kicad_erc_report"
+    assert data.get("str002_layout_constraints_module") == "openhac.compiler.layout_constraints"
+    assert data.get("str002_pcb_placement_module") == "openhac.compiler.pcb_placement"
+    assert data.get("mfg001_export_fab_module") == "openhac.compiler.export_fab"
+    assert data.get("str002_compile_manifest_module") == "openhac.compiler.compile_manifest"
+    assert data.get("str002_version_info_module") == "openhac.version_info"
+    assert data.get("sw005_circuit_public_module") == "openhac.circuit"
+    assert data.get("sim002_resolve_spice_analysis_function") == (
+        "openhac.compiler.spice_analysis_config.resolve_spice_analysis_from_mapping"
+    )
+    assert data.get("sch001_kicad_sym_pinpos_module") == "openhac.compiler.kicad_sym_pinpos"
+    bcat = data.get("pwr002_stdlib_helpers_catalog") or []
+    assert "buck_input_current_ma" in bcat
+    assert "jlc" in (data.get("fab_profiles_catalog") or [])
+    assert len(data.get("fab_profiles_catalog") or []) >= 4
+    assert data.get("sim001_spice_database_fields") == ["spice_include", "spice_subckt"]
+    assert data.get("sch003_schematic_erc_cli") == "kicad-cli sch erc"
+    assert data.get("sig001_stackup_template_reference") == "docs/stackup_template.yaml"
+    assert data.get("lib003_jit_bom_columns") == ["OpenHaC_JIT_Confidence", "OpenHaC_JIT_Score"]
     assert isinstance(data.get("release_bundle_suffixes"), list)
     phases = data.get("compile_pipeline_phases") or []
     assert phases and phases[0] == "phase_warn_multilayer_stackup"
     assert phases[-1] == "phase_release_zip"
+    assert data.get("compile_pipeline_phase_count") == len(phases)
+    assert data.get("sch_pin_sort_mode") == "alphanumeric_natural"
+    cef = data.get("compile_env_flags") or {}
+    assert isinstance(cef, dict) and "openhac_skip_layout" in cef
     assert data.get("pcb_routing_handoff_schema") == "openhac.pcb_routing_handoff.v1"
     assert any(s.endswith(".net") for s in data["release_bundle_suffixes"])
     assert all(r["JLC_Class"] == "Extended" for r in r_rows)
@@ -148,13 +212,86 @@ def test_compile_writes_net_csv_and_manifest(tmp_path, seeded_resistor_db, monke
     assert src["path"] == str(design_py.resolve())
     assert len(src["sha256"]) == 64
     assert int(src["bytes"]) >= 1
+    assert src.get("line_count") == 1
     cs = data.get("compile_strictness") or {}
     assert cs.get("strict_jit_lookups") is False
     jlc = data.get("jlc_assembly_line_summary") or {}
     assert jlc.get("extended_line_items") == 2
+    assert jlc.get("unset_line_items") == 2  # e.g. PWR_FLAG symbols without JLC_Class
+    assert jlc.get("total_line_items") == 4
+    assert jlc.get("by_class") == {"extended": 2, "unset": 2}
     sch = data.get("schematic_hierarchy_handoff") or {}
     assert sch.get("logical_module_count") == 2
     assert "flat .kicad_sch" in sch.get("note", "")
+    assert data.get("logical_module_reference_total") == 2
+    assert data.get("compile_manifest_emitter") == "openhac.compiler.compile_manifest.write_compile_manifest"
+    assert data.get("compile_pipeline_module") == "openhac.compiler.compile_pipeline"
+    assert data.get("str002_cli_module") == "openhac.cli"
+    assert data.get("sch005_erc_rules_module") == "openhac.stdlib.erc_rules"
+    assert data.get("sw006_skip_layout_env_key") == "OPENHAC_SKIP_LAYOUT"
+    assert data.get("lib001_bom_offer_column_names") == [
+        "Ranked_Offers",
+        "Primary_Offer",
+        "Secondary_Offer",
+        "Offer_Count",
+    ]
+    assert data.get("lib004_bom_prod_omitted_column_count") == len(BOM_PROFILE_PROD_OMITTED_COLUMNS)
+    bcols = data.get("bom_csv_column_names") or []
+    assert "Reference" in bcols and "Offer_Count" in bcols
+    assert data.get("pcb_routing_handoff_writer") == (
+        "openhac.compiler.compile_manifest._write_pcb_routing_handoff_json"
+    )
+    assert data.get("sig005_length_match_constraints_writer") == (
+        "openhac.compiler.compile_manifest._write_length_match_constraints_json"
+    )
+    assert data.get("sig006_mixed_signal_handoff_writer") == (
+        "openhac.compiler.compile_manifest._write_mixed_signal_constraints_json"
+    )
+    assert data.get("sig002_diff_pair_constraints_writer") == (
+        "openhac.compiler.compile_manifest._write_diff_pair_constraints_json"
+    )
+    assert data.get("pcb007_no_autoroute_constraints_writer") == (
+        "openhac.compiler.compile_manifest._write_no_autoroute_constraints_json"
+    )
+    assert data.get("pcb_auxiliary_handoff_writer") == (
+        "openhac.compiler.compile_manifest._write_pcb_auxiliary_constraints_json"
+    )
+    assert data.get("mfg003_fab_handoff_markdown_suffix") == ".openhac-fab-handoff.md"
+    assert "netclasses" in (data.get("sig002_diff_pair_intent_disclaimer") or "").lower()
+    assert "PCB-009" in (data.get("pcb009_copper_pour_handoff_note") or "")
+    assert "PCB-010" in (data.get("pcb010_mounting_hole_handoff_note") or "")
+    relcat = data.get("rel001_reliability_policy_key_catalog") or []
+    assert "require_passive_voltage_ratings" in relcat
+    assert "ambient_operating_temp_c" in relcat
+    assert "cap_voltage_rating_reference_temp_c" in relcat
+    assert "cap_voltage_temp_derating_percent_per_c" in relcat
+    assert "test_point_min_count_by_net" in relcat
+    assert "default transient" in (data.get("sim002_default_analysis_note") or "").lower()
+    assert data.get("sch005_erc_rule_packs_module") == "openhac.stdlib.erc_rule_packs"
+    assert data.get("sim002_spice_config_file_suffixes") == [".json", ".yaml", ".yml"]
+    assert data.get("str002_core_board_module") == "openhac.core.board"
+    assert data.get("str002_core_base_module") == "openhac.core.base"
+    assert data.get("str002_core_compile_context_module") == "openhac.core.compile_context"
+    assert data.get("pwr002_stdlib_power_module") == "openhac.stdlib.power"
+    assert data.get("lib003_database_api_fallback_module") == "openhac.database.api_fallback"
+    assert data.get("str002_compile_pipeline_default_phases_symbol") == (
+        "openhac.compiler.compile_pipeline.DEFAULT_COMPILE_PHASES"
+    )
+    assert data.get("str002_openhac_version_info_function") == "openhac.version_info.get_version"
+    assert data.get("str002_openhac_user_agent_function") == "openhac.version_info.user_agent"
+    assert data.get("str002_stdlib_erc_rules_module") == "openhac.stdlib.erc_rules"
+    assert data.get("str002_release_bundle_module") == "openhac.compiler.release_bundle"
+    assert data.get("str002_stdlib_passives_module") == "openhac.stdlib.passives"
+    assert data.get("lib003_db_manager_module") == "openhac.database.db_manager"
+    assert data.get("lib003_sync_jlc_module") == "openhac.database.sync_jlc"
+    assert data.get("str002_netlist_gen_generate_function") == (
+        "openhac.compiler.netlist_gen.generate_logic_and_bom"
+    )
+    assert data.get("str002_rule_check_run_erc_function") == "openhac.compiler.rule_check.run_erc"
+    assert data.get("str002_rule_check_run_drc_function") == "openhac.compiler.rule_check.run_drc"
+    assert data.get("sim002_spice_presets_preset_analysis_lines_function") == (
+        "openhac.compiler.spice_presets.preset_analysis_lines"
+    )
 
 
 def test_compile_manifest_sha256_sidecar_matches_manifest_bytes(tmp_path, seeded_resistor_db, monkeypatch):
@@ -279,16 +416,44 @@ def test_compile_manifest_net_roles_and_length_match(tmp_path, seeded_resistor_d
         )
 
     data = json.loads((tmp_path / "sig_meta.openhac-manifest.json").read_text(encoding="utf-8"))
+    assert data.get("net_role_count") == 1
+    assert data.get("length_match_group_names") == ["demo_ddr"]
+    assert len(data.get("pcb_routing_handoff_json_sha256") or "") == 64
     assert any(x.get("role") == "digital_ground" for x in data.get("net_roles", []))
     assert any(x.get("name") == "demo_ddr" for x in data.get("length_match_groups", []))
     hint = tmp_path / "sig_meta.openhac-length-match-hint.md"
     assert hint.is_file() and "demo_ddr" in hint.read_text(encoding="utf-8")
+    lmj = tmp_path / "sig_meta.openhac-length-match-constraints.json"
+    assert lmj.is_file()
+    lm_payload = json.loads(lmj.read_text(encoding="utf-8"))
+    assert lm_payload.get("schema") == "openhac.length_match_constraints.v1"
+    assert any(g.get("name") == "demo_ddr" for g in (lm_payload.get("groups") or []))
+    assert data.get("sig005_length_match_constraints_schema") == "openhac.length_match_constraints.v1"
+    assert data.get("sig005_length_match_constraints_suffix") == ".openhac-length-match-constraints.json"
+    nc = tmp_path / "sig_meta.openhac-netclass-hint.md"
+    assert nc.is_file() and "OHAC_LM_demo_ddr" in nc.read_text(encoding="utf-8")
+    assert data.get("pcb007_netclass_suggestion_count") == 2
+    assert data.get("pcb007_netclass_hint_markdown_suffix") == ".openhac-netclass-hint.md"
     ms = tmp_path / "sig_meta.openhac-mixed-signal-hint.md"
     assert ms.is_file() and "digital_ground" in ms.read_text(encoding="utf-8")
+    msc = tmp_path / "sig_meta.openhac-mixed-signal-constraints.json"
+    assert msc.is_file()
+    ms_payload = json.loads(msc.read_text(encoding="utf-8"))
+    assert ms_payload.get("schema") == "openhac.mixed_signal_handoff.v1"
+    assert any(x.get("role") == "digital_ground" for x in (ms_payload.get("net_roles") or []))
+    assert data.get("sig006_mixed_signal_handoff_schema") == "openhac.mixed_signal_handoff.v1"
+    assert data.get("sig006_mixed_signal_handoff_suffix") == ".openhac-mixed-signal-constraints.json"
     rj = json.loads((tmp_path / "sig_meta.openhac-pcb-routing-handoff.json").read_text(encoding="utf-8"))
     assert rj.get("schema") == "openhac.pcb_routing_handoff.v1"
     assert rj.get("length_match_groups")
     assert any(x.get("role") == "digital_ground" for x in (rj.get("net_roles") or []))
+    ncs = rj.get("netclass_suggestions") or []
+    assert len(ncs) == 2
+    assert any(x.get("suggested_netclass") == "OHAC_LM_demo_ddr" for x in ncs)
+    assert any(x.get("suggested_netclass") == "OHAC_ROLE_digital_ground" for x in ncs)
+    assert data.get("pcb007_netclass_hint_writer") == (
+        "openhac.compiler.compile_manifest._write_netclass_hint_md"
+    )
 
 
 def test_manifest_includes_diff_pair_intent(tmp_path, seeded_resistor_db, monkeypatch):
@@ -334,13 +499,27 @@ def test_manifest_includes_diff_pair_intent(tmp_path, seeded_resistor_db, monkey
         )
 
     data = json.loads((tmp_path / "dp_manifest.openhac-manifest.json").read_text(encoding="utf-8"))
+    assert data.get("diff_pair_intent_count") == 1
     dps = data.get("diff_pair_intent") or []
     assert len(dps) == 1
     assert dps[0]["p_net"].startswith("DP_P")
     assert dps[0]["n_net"].startswith("DP_N")
     assert dps[0]["target_z0_ohms"] == 95.0
+    dpc = tmp_path / "dp_manifest.openhac-diff-pair-constraints.json"
+    assert dpc.is_file()
+    dp_payload = json.loads(dpc.read_text(encoding="utf-8"))
+    assert dp_payload.get("schema") == "openhac.diff_pair_handoff.v1"
+    assert (dp_payload.get("pairs") or []) == dps
+    assert data.get("sig002_diff_pair_constraints_schema") == "openhac.diff_pair_handoff.v1"
+    assert data.get("sig002_diff_pair_constraints_suffix") == ".openhac-diff-pair-constraints.json"
     si = tmp_path / "dp_manifest.openhac-si-stackup-reminder.md"
     assert si.is_file() and "differential" in si.read_text(encoding="utf-8").lower()
+    nc = tmp_path / "dp_manifest.openhac-netclass-hint.md"
+    assert nc.is_file() and "OHAC_DP_" in nc.read_text(encoding="utf-8")
+    rj = json.loads((tmp_path / "dp_manifest.openhac-pcb-routing-handoff.json").read_text(encoding="utf-8"))
+    dps_nc = [x for x in (rj.get("netclass_suggestions") or []) if x.get("source") == "diff_pair"]
+    assert len(dps_nc) == 1
+    assert dps_nc[0].get("nets") and "DP_P" in dps_nc[0]["nets"][0]
 
 
 def test_compile_skips_freerouting_when_no_autoroute_net_declared(
@@ -379,6 +558,15 @@ def test_compile_skips_freerouting_when_no_autoroute_net_declared(
                 source_script_path=design_py,
             )
     mock_ar.assert_not_called()
+    mf = json.loads((tmp_path / "skip_ar.openhac-manifest.json").read_text(encoding="utf-8"))
+    assert mf.get("no_autoroute_net_count") == 1
+    nar_path = tmp_path / "skip_ar.openhac-no-autoroute-constraints.json"
+    assert nar_path.is_file()
+    nar_payload = json.loads(nar_path.read_text(encoding="utf-8"))
+    assert nar_payload.get("schema") == "openhac.no_autoroute_handoff.v1"
+    assert nar_payload.get("nets") == ["3V3"]
+    assert mf.get("pcb007_no_autoroute_constraints_schema") == "openhac.no_autoroute_handoff.v1"
+    assert mf.get("pcb007_no_autoroute_constraints_suffix") == ".openhac-no-autoroute-constraints.json"
 
 
 def test_bom_lists_alternate_skus_from_db(tmp_path, tmp_db, monkeypatch):
@@ -451,6 +639,8 @@ def test_bom_lists_alternate_skus_from_db(tmp_path, tmp_db, monkeypatch):
     assert aj.get("schema") == "openhac.bom_alternates.v1"
     assert "R_10k_0805" in (aj.get("by_generic") or {})
     mf = json.loads((tmp_path / "alt_bom.openhac-manifest.json").read_text(encoding="utf-8"))
+    assert mf.get("bom_alternates_generic_count") >= 1
+    assert mf.get("bom_alternates_total_rows") >= 1
     bah = mf.get("bom_alternates_handoff") or {}
     assert bah.get("alternates_json") == "alt_bom.openhac-bom-alternates.json"
     assert bah.get("expand_hint_markdown") == "alt_bom.openhac-bom-expand-hint.md"
@@ -495,6 +685,8 @@ def test_manifest_includes_fab_profile_geometry_keys(tmp_path, seeded_resistor_d
     keys = data.get("fab_profile_geometry_keys") or []
     assert "min_trace_width_mm" in keys
     assert "comment" in keys
+    fpjp = data.get("fab_profile_json_path") or ""
+    assert "jlc.json" in fpjp
 
 
 def test_manifest_includes_git_describe_when_git_reports(tmp_path, seeded_resistor_db, monkeypatch):
@@ -595,6 +787,7 @@ def test_bom_profile_prod_omits_internal_columns(tmp_path, tmp_db, monkeypatch):
     assert "Reference" in hdr and "MPN" in hdr and "Footprint" in hdr
     mf = json.loads((tmp_path / "prod_bom.openhac-manifest.json").read_text(encoding="utf-8"))
     assert mf.get("bom_profile") == "prod"
+    assert mf.get("lib004_prod_bom_profile_active") is True
     assert set(mf.get("bom_prod_omitted_columns") or []) == set(BOM_PROFILE_PROD_OMITTED_COLUMNS)
 
 
@@ -640,6 +833,14 @@ def test_manifest_includes_pcb_pour_mount_and_dfm_refs(tmp_path, seeded_resistor
     assert len(mf.get("copper_pour_intents") or []) == 1
     assert len(mf.get("mounting_hole_intents") or []) == 1
     assert (mf.get("dfm_references") or [{}])[0].get("role") == "cm_dfm"
+    aux = tmp_path / "mech_meta.openhac-pcb-auxiliary-constraints.json"
+    assert aux.is_file()
+    aux_payload = json.loads(aux.read_text(encoding="utf-8"))
+    assert aux_payload.get("schema") == "openhac.pcb_auxiliary_handoff.v1"
+    assert len(aux_payload.get("copper_pour_intents") or []) == 1
+    assert len(aux_payload.get("mounting_hole_intents") or []) == 1
+    assert mf.get("pcb_auxiliary_handoff_schema") == "openhac.pcb_auxiliary_handoff.v1"
+    assert mf.get("pcb_auxiliary_handoff_suffix") == ".openhac-pcb-auxiliary-constraints.json"
     rj = json.loads((tmp_path / "mech_meta.openhac-pcb-routing-handoff.json").read_text(encoding="utf-8"))
     assert rj.get("copper_pour_intents")
     assert rj.get("mounting_hole_intents")
@@ -685,13 +886,17 @@ def test_compile_release_zip_contains_artifacts(tmp_path, seeded_resistor_db, mo
         )
 
     assert zpath.is_file()
+    zmf = json.loads((tmp_path / "zprj.openhac-manifest.json").read_text(encoding="utf-8"))
+    assert len(zmf.get("release_zip_sha256") or "") == 64
     with zipfile.ZipFile(zpath, "r") as zf:
         names = set(zf.namelist())
     assert "zprj.net" in names and "zprj.csv" in names
     assert any(n.endswith("openhac-manifest.json") for n in names)
     assert "zprj.openhac-manifest.json.sha256" in names
     assert "zprj.openhac-fab-handoff.md" in names
+    assert "zprj.openhac-netclass-hint.md" in names
     assert "zprj.openhac-length-match-hint.md" in names
+    assert "zprj.openhac-length-match-constraints.json" in names
     assert "zprj.openhac-mixed-signal-hint.md" not in names
     assert "zprj.openhac-si-stackup-reminder.md" in names
     assert "zprj.openhac-pcb-routing-handoff.json" in names
@@ -842,6 +1047,13 @@ def test_manifest_includes_net_merge_hints(tmp_path, seeded_resistor_db, monkeyp
     assert "ferrite" in hints[0]["via"]
     ms = tmp_path / "merge_hint.openhac-mixed-signal-hint.md"
     assert ms.is_file() and "AGND" in ms.read_text(encoding="utf-8")
+    msc = tmp_path / "merge_hint.openhac-mixed-signal-constraints.json"
+    assert msc.is_file()
+    ms_payload = json.loads(msc.read_text(encoding="utf-8"))
+    assert ms_payload.get("schema") == "openhac.mixed_signal_handoff.v1"
+    assert (ms_payload.get("net_merge_hints") or []) == hints
+    assert (ms_payload.get("net_roles") or []) == []
+    assert data.get("sig006_mixed_signal_handoff_schema") == "openhac.mixed_signal_handoff.v1"
     rj = json.loads((tmp_path / "merge_hint.openhac-pcb-routing-handoff.json").read_text(encoding="utf-8"))
     assert (rj.get("net_merge_hints") or []) == hints
 

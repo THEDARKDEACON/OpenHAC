@@ -41,11 +41,16 @@ class Board:
         write_manifest_sha256_sidecar: bool = False,
         declared_supply_voltages_v: dict[str, float] | None = None,
         require_cap_voltage_derating_ratio: float | None = None,
+        ambient_operating_temp_c: float | None = None,
+        cap_voltage_rating_reference_temp_c: float = 85.0,
+        cap_voltage_temp_derating_percent_per_c: float | None = None,
         require_inductor_voltage_ratings: bool = False,
         require_test_point_on_nets: tuple[str, ...] | list[str] | None = None,
+        test_point_min_count_by_net: dict[str, int] | None = None,
         strict_passive_attributes_json: bool = False,
         require_resistor_voltage_ratings: bool = False,
         max_jlc_basic_parts: int | None = None,
+        jlc_class_line_limits: dict[str, int] | None = None,
         power_net_prefixes: tuple[str, ...] | list[str] | None = None,
     ):
         if strict:
@@ -69,6 +74,19 @@ class Board:
         self.require_cap_voltage_derating_ratio: float | None = (
             float(require_cap_voltage_derating_ratio)
             if require_cap_voltage_derating_ratio is not None
+            else None
+        )
+        #: Optional ambient for REL-001 cap derating (used only with :attr:`cap_voltage_temp_derating_percent_per_c`).
+        self.ambient_operating_temp_c: float | None = (
+            float(ambient_operating_temp_c) if ambient_operating_temp_c is not None else None
+        )
+        #: Catalog voltage-rating reference temperature (°C) for MLCC-style parts; default 85°C.
+        self.cap_voltage_rating_reference_temp_c: float = float(cap_voltage_rating_reference_temp_c)
+        #: Percent added to required derated voltage per °C above :attr:`cap_voltage_rating_reference_temp_c`
+        #: when :attr:`ambient_operating_temp_c` is set (REL-001 temperature margin). ``None`` disables.
+        self.cap_voltage_temp_derating_percent_per_c: float | None = (
+            float(cap_voltage_temp_derating_percent_per_c)
+            if cap_voltage_temp_derating_percent_per_c is not None
             else None
         )
         #: When True, :func:`run_drc` requires DB ``power_watts`` for resistor-class parts (REL-001).
@@ -103,6 +121,23 @@ class Board:
             self.require_test_point_on_nets = tuple(
                 str(x).strip().lower() for x in rtp if str(x).strip()
             )
+        tpm = test_point_min_count_by_net
+        if tpm:
+            self.test_point_min_count_by_net: dict[str, int] = {}
+            for k, v in tpm.items():
+                ks = str(k).strip().lower()
+                if not ks:
+                    continue
+                try:
+                    self.test_point_min_count_by_net[ks] = int(v)
+                except (TypeError, ValueError) as e:
+                    raise ValueError(
+                        f"test_point_min_count_by_net[{k!r}] must be an integer, got {v!r}"
+                    ) from e
+            if not self.test_point_min_count_by_net:
+                self.test_point_min_count_by_net = None
+        else:
+            self.test_point_min_count_by_net: dict[str, int] | None = None
         #: Copper pour intent for manifest / PCB handoff (PCB-009): ``net``, ``layer``, ``purpose``.
         self._copper_pour_intents: list[dict] = []
         #: Mounting hole intent (PCB-010): ``x_mm``, ``y_mm``, ``diameter_mm``, optional ``note``.
@@ -130,6 +165,17 @@ class Board:
         self.max_jlc_extended_parts: int | None = max_jlc_extended_parts
         #: If set, DRC fails when BOM lines with **Basic** JLC class exceed this count (LIB-005).
         self.max_jlc_basic_parts: int | None = max_jlc_basic_parts
+        #: Optional per-``JLC_Class`` line budgets (LIB-005): keys are normalized lowercase (``\"basic\"``,
+        #: ``\"extended\"``, any other assembly label, or ``\"unset\"`` for empty field). Overrides
+        #: :attr:`max_jlc_basic_parts` / :attr:`max_jlc_extended_parts` for keys present in this dict.
+        _jcl = jlc_class_line_limits
+        if _jcl:
+            self.jlc_class_line_limits: dict[str, int] = {}
+            for _k, _v in _jcl.items():
+                _nk = str(_k).strip().lower() or "unset"
+                self.jlc_class_line_limits[_nk] = int(_v)
+        else:
+            self.jlc_class_line_limits: dict[str, int] | None = None
         #: When True, :func:`generate_layout` raises if any SKiDL pin number is missing from the footprint
         #: ``.kicad_mod`` pad list (PCB-002 strict pin↔pad parity).
         self.strict_footprint_pin_pad_match = bool(strict_footprint_pin_pad_match)
@@ -177,6 +223,12 @@ class Board:
     def register_erc_hook(self, fn):
         """Register ``fn(board) -> list[str]``; returned messages become ERC failures (SCH-005)."""
         self._erc_hooks.append(fn)
+
+    def apply_erc_plugin(self, name: str, *args, **kwargs):
+        """Apply a named ERC pack or custom plugin from :mod:`openhac.stdlib.erc_plugin_registry` (SCH-005)."""
+        from openhac.stdlib.erc_plugin_registry import apply_erc_plugin
+
+        apply_erc_plugin(self, name, *args, **kwargs)
 
     def declare_net_role(self, net, role: str):
         """Record a semantic role for *net* (e.g. ``analog_ground``) for the compile manifest (SIG-006)."""
@@ -377,15 +429,20 @@ class Board:
 
             analysis_lines = spice_analysis_lines
             if analysis_lines is None and spice_analysis_json_path is not None:
-                import json
+                from openhac.compiler.spice_analysis_config import (
+                    load_spice_analysis_raw,
+                    resolve_spice_analysis_from_mapping,
+                )
 
-                raw = json.loads(Path(spice_analysis_json_path).read_text(encoding="utf-8"))
-                al = raw.get("analysis_lines")
-                if not isinstance(al, list) or not all(isinstance(x, str) for x in al):
-                    raise ValueError(
-                        "spice_analysis_json_path must point to JSON with analysis_lines: [str, ...]"
-                    )
-                analysis_lines = list(al)
+                raw = load_spice_analysis_raw(Path(spice_analysis_json_path))
+                al2, preset_name = resolve_spice_analysis_from_mapping(raw)
+                if al2 is not None:
+                    analysis_lines = al2
+                else:
+                    from openhac.compiler.spice_presets import preset_analysis_lines
+
+                    assert preset_name is not None
+                    analysis_lines = preset_analysis_lines(preset_name)
 
             cir_path = _artifact_path(project_name, ".cir", output_dir)
             generate_spice(cir_path, analysis_lines=analysis_lines)

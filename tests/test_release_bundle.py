@@ -14,8 +14,14 @@ def test_zip_project_outputs_selects_known_suffixes(tmp_path):
     (base / "myprj.csv").write_text("x", encoding="utf-8")
     (base / "myprj.openhac-manifest.json").write_text("{}", encoding="utf-8")
     (base / "myprj.openhac-manifest.json.sha256").write_text("ab" * 32 + "\n", encoding="utf-8")
+    (base / "myprj.openhac-netclass-hint.md").write_text("# nc", encoding="utf-8")
+    (base / "myprj.openhac-diff-pair-constraints.json").write_text("{}", encoding="utf-8")
+    (base / "myprj.openhac-no-autoroute-constraints.json").write_text("{}", encoding="utf-8")
+    (base / "myprj.openhac-pcb-auxiliary-constraints.json").write_text("{}", encoding="utf-8")
     (base / "myprj.openhac-length-match-hint.md").write_text("# m", encoding="utf-8")
+    (base / "myprj.openhac-length-match-constraints.json").write_text("{}", encoding="utf-8")
     (base / "myprj.openhac-mixed-signal-hint.md").write_text("# ms", encoding="utf-8")
+    (base / "myprj.openhac-mixed-signal-constraints.json").write_text("{}", encoding="utf-8")
     (base / "myprj.openhac-pcb-routing-handoff.json").write_text("{}", encoding="utf-8")
     (base / "myprj.openhac-bom-alternates.json").write_text("{}", encoding="utf-8")
     (base / "myprj.openhac-bom-expand-hint.md").write_text("# be", encoding="utf-8")
@@ -36,8 +42,14 @@ def test_zip_project_outputs_selects_known_suffixes(tmp_path):
         "myprj.csv",
         "myprj.openhac-manifest.json",
         "myprj.openhac-manifest.json.sha256",
+        "myprj.openhac-netclass-hint.md",
+        "myprj.openhac-diff-pair-constraints.json",
+        "myprj.openhac-no-autoroute-constraints.json",
+        "myprj.openhac-pcb-auxiliary-constraints.json",
         "myprj.openhac-length-match-hint.md",
+        "myprj.openhac-length-match-constraints.json",
         "myprj.openhac-mixed-signal-hint.md",
+        "myprj.openhac-mixed-signal-constraints.json",
         "myprj.openhac-pcb-routing-handoff.json",
         "myprj.openhac-bom-alternates.json",
         "myprj.openhac-bom-expand-hint.md",

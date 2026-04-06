@@ -1,0 +1,10 @@
+# SIM-002 — SPICE analysis bundle (YAML). Use with:
+#   openhac simulate my_board.py --spice-analysis-json examples/spice_analysis.example.yaml
+#
+# Provide exactly one of: `preset` (named bundle) or `analysis_lines` (raw directives).
+
+preset: op
+
+# analysis_lines:
+#   - ".tran 1m 100m"
+#   - ".ac dec 10 1 1Meg"

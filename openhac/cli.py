@@ -210,6 +210,8 @@ def cmd_compile(args):
 
 def cmd_simulate(args):
     """Generate SPICE netlist from a hardware description."""
+    import json
+
     from openhac.core.base import Component
 
     Component.allow_risky_part_lookups = bool(getattr(args, "allow_risky_parts", False))
@@ -228,21 +230,29 @@ def cmd_simulate(args):
     jpath = getattr(args, "spice_analysis_json", None)
     analysis_lines = list(sl) if sl else None
     if analysis_lines is None and jpath:
-        import json
         from pathlib import Path
 
+        from openhac.compiler.spice_analysis_config import (
+            load_spice_analysis_raw,
+            resolve_spice_analysis_from_mapping,
+        )
+
         try:
-            raw = json.loads(Path(jpath).read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError) as e:
-            logger.error("Could not read spice-analysis-json %s: %s", jpath, e)
+            raw = load_spice_analysis_raw(Path(jpath))
+            al2, preset_from_file = resolve_spice_analysis_from_mapping(raw)
+        except (OSError, ValueError, ImportError, json.JSONDecodeError) as e:
+            logger.error("Could not read spice analysis file %s: %s", jpath, e)
             sys.exit(2)
-        al = raw.get("analysis_lines")
-        if not isinstance(al, list) or not al or not all(isinstance(x, str) for x in al):
-            logger.error(
-                "spice-analysis-json must be a JSON object with non-empty analysis_lines: [string, ...]"
-            )
-            sys.exit(2)
-        analysis_lines = list(al)
+        if al2 is not None:
+            analysis_lines = al2
+        else:
+            from openhac.compiler.spice_presets import preset_analysis_lines
+
+            try:
+                analysis_lines = preset_analysis_lines(preset_from_file)  # type: ignore[arg-type]
+            except ValueError as e:
+                logger.error("%s", e)
+                sys.exit(2)
     if analysis_lines is None and preset:
         from openhac.compiler.spice_presets import preset_analysis_lines
 
@@ -443,7 +453,7 @@ def main():
         "--spice-analysis-json",
         metavar="FILE",
         default=None,
-        help='JSON file {"analysis_lines": [".op", ...]} — used if --spice-line not set (SIM-002)',
+        help='JSON or YAML file with {"analysis_lines": [...]} or {"preset": "op"} — used if --spice-line not set (SIM-002)',
     )
     from openhac.compiler.spice_presets import PRESETS as _SPICE_PRESETS
 

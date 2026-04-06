@@ -28,6 +28,7 @@ classifiers = [
 dependencies = [
     "skidl>=1.0.0",
     "z3-solver>=4.13.0",
+    "pyyaml>=6.0",
 ]
 
 [project.optional-dependencies]

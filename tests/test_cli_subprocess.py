@@ -133,3 +133,147 @@ def test_openhac_cli_subprocess_simulate_spice_preset(tmp_path):
     assert cir.is_file()
     text = cir.read_text(encoding="utf-8")
     assert ".ac dec" in text
+
+
+def test_openhac_cli_subprocess_simulate_spice_preset_tran(tmp_path):
+    """SIM-002 / SW-006: subprocess ``simulate --spice-preset tran`` writes transient analysis into .cir."""
+    script = tmp_path / "subprocess_sim_tran.py"
+    script.write_text(_SUBPROCESS_BOARD, encoding="utf-8")
+    env = {
+        **os.environ,
+        "PYTHONPATH": str(_REPO_ROOT),
+    }
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "openhac.cli",
+            "simulate",
+            str(script),
+            "--name",
+            "sub_sim_tran",
+            "--spice-preset",
+            "tran",
+        ],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    cir = tmp_path / "sub_sim_tran.cir"
+    assert cir.is_file()
+    text = cir.read_text(encoding="utf-8")
+    assert ".tran" in text.lower()
+
+
+def _run_simulate_preset(tmp_path, preset: str, out_name: str):
+    script = tmp_path / f"subprocess_sim_{preset}.py"
+    script.write_text(_SUBPROCESS_BOARD, encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
+    return subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "openhac.cli",
+            "simulate",
+            str(script),
+            "--name",
+            out_name,
+            "--spice-preset",
+            preset,
+        ],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+
+
+def test_openhac_cli_subprocess_simulate_spice_preset_op(tmp_path):
+    """SIM-002 / SW-006: ``--spice-preset op`` emits operating-point analysis."""
+    r = _run_simulate_preset(tmp_path, "op", "sub_sim_op")
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    cir = tmp_path / "sub_sim_op.cir"
+    assert cir.is_file()
+    assert ".op" in cir.read_text(encoding="utf-8").lower()
+
+
+def test_openhac_cli_subprocess_simulate_spice_preset_dc(tmp_path):
+    """SIM-002 / SW-006: ``--spice-preset dc`` emits DC sweep directive."""
+    r = _run_simulate_preset(tmp_path, "dc", "sub_sim_dc")
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    cir = tmp_path / "sub_sim_dc.cir"
+    assert cir.is_file()
+    assert ".dc" in cir.read_text(encoding="utf-8").lower()
+
+
+def test_openhac_cli_subprocess_simulate_spice_preset_noise(tmp_path):
+    """SIM-002 / SW-006: ``--spice-preset noise`` emits noise analysis directive."""
+    r = _run_simulate_preset(tmp_path, "noise", "sub_sim_noise")
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    cir = tmp_path / "sub_sim_noise.cir"
+    assert cir.is_file()
+    assert ".noise" in cir.read_text(encoding="utf-8").lower()
+
+
+def test_openhac_cli_subprocess_simulate_spice_analysis_yaml(tmp_path):
+    """SIM-002: --spice-analysis-json accepts YAML with preset."""
+    script = tmp_path / "subprocess_sim_yaml.py"
+    script.write_text(_SUBPROCESS_BOARD, encoding="utf-8")
+    yml = tmp_path / "sim.yaml"
+    yml.write_text("preset: op\n", encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "openhac.cli",
+            "simulate",
+            str(script),
+            "--name",
+            "sub_sim_yaml",
+            "--spice-analysis-json",
+            str(yml),
+        ],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    cir = tmp_path / "sub_sim_yaml.cir"
+    assert cir.is_file()
+    assert ".op" in cir.read_text(encoding="utf-8").lower()
+
+
+def test_openhac_cli_subprocess_simulate_spice_line(tmp_path):
+    """SIM-002 / SW-006: ``--spice-line`` overrides preset and writes the directive into .cir."""
+    script = tmp_path / "subprocess_sim_line.py"
+    script.write_text(_SUBPROCESS_BOARD, encoding="utf-8")
+    env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
+    r = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "openhac.cli",
+            "simulate",
+            str(script),
+            "--name",
+            "sub_sim_line",
+            "--spice-line",
+            ".op",
+        ],
+        cwd=str(tmp_path),
+        capture_output=True,
+        text=True,
+        timeout=120,
+        env=env,
+    )
+    assert r.returncode == 0, (r.stdout, r.stderr)
+    cir = tmp_path / "sub_sim_line.cir"
+    assert cir.is_file()
+    assert ".op" in cir.read_text(encoding="utf-8").lower()

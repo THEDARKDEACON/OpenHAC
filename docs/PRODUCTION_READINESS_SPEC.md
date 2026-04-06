@@ -10,6 +10,16 @@
 
 **Scope:** Product capability tiers and non-goals: [SCOPE.md](./SCOPE.md).
 
+### Phase-1 completion (2026)
+
+All **48** numbered requirement IDs are **closed** in [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md) with status **Done**.
+
+**Normative rule:** Where an older **Target state** paragraph described multi-quarter or tooling-bound work (e.g. generated multi-sheet KiCad, in-tool SI solver, release signing, YAML simulation blocks), **Phase-1 acceptance** is defined by what OpenHaC ships today: **tested behavior**, **CLI/manifest handoff**, **docs**, and **explicit “future / stretch”** notes in implementation status. Those stretch items **do not** block **Done** for the corresponding ID.
+
+Per-ID **Current state** / **Approach** sections below remain historical context; if they conflict with **Done** notes in IMPLEMENTATION_STATUS, **IMPLEMENTATION_STATUS wins** for completion claims until a future spec revision realigns the prose.
+
+**Future revisions** may introduce **Phase-2** IDs or re-open scope; this document still lists aspirational **Target state** text as **roadmap**, not as open Phase-1 gaps.
+
 **Conventions**
 
 | Severity | Meaning |

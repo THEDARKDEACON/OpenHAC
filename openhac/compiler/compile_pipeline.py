@@ -174,9 +174,20 @@ def phase_manifest(state: CompileState) -> None:
 def phase_release_zip(state: CompileState) -> None:
     if not state.release_zip_path:
         return
+    from openhac.compiler.compile_manifest import patch_manifest_release_zip_sha256
     from openhac.compiler.release_bundle import zip_project_outputs
 
     base = Path(state.output_dir).resolve() if state.output_dir is not None else Path.cwd().resolve()
+    out = zip_project_outputs(base, state.project_name, state.release_zip_path)
+    sidecar = bool(getattr(state.board, "write_manifest_sha256_sidecar", False))
+    if os.environ.get("OPENHAC_MANIFEST_SHA256_SIDECAR", "").lower() in ("1", "true", "yes"):
+        sidecar = True
+    patch_manifest_release_zip_sha256(
+        base,
+        state.project_name,
+        out,
+        write_sha256_sidecar=sidecar,
+    )
     zip_project_outputs(base, state.project_name, state.release_zip_path)
 
 

@@ -78,40 +78,51 @@ def _ma_aggregate(val, mod_name: str, field_name: str) -> float:
     return 0.0
 
 
-def _count_jlc_extended_line_items() -> int:
-    """Count SKiDL parts whose ``JLC_Class`` field is Extended (LIB-005)."""
+def jlc_class_line_counts_from_circuit() -> dict[str, int]:
+    """Count BOM line items by normalized ``JLC_Class`` (LIB-005).
+
+    Empty or whitespace ``JLC_Class`` is counted under ``\"unset\"``.
+    """
     try:
         from openhac.circuit import get_default_circuit
     except Exception:
-        return 0
+        return {}
     try:
         circuit = get_default_circuit()
     except Exception:
-        return 0
-    n = 0
-    for part in circuit.parts:
+        return {}
+    counts: defaultdict[str, int] = defaultdict(int)
+    for part in getattr(circuit, "parts", []) or []:
         raw = part.fields.get("JLC_Class", "") if hasattr(part, "fields") else ""
-        if str(raw or "").strip().lower() == "extended":
-            n += 1
-    return n
+        key = str(raw or "").strip().lower() or "unset"
+        counts[key] += 1
+    return dict(counts)
+
+
+def _effective_jlc_class_limits(board) -> dict[str, int]:
+    """Merge scalar caps and :attr:`~openhac.core.board.Board.jlc_class_line_limits` (dict overrides)."""
+    lims: dict[str, int] = {}
+    mjb = getattr(board, "max_jlc_basic_parts", None)
+    if mjb is not None:
+        lims["basic"] = int(mjb)
+    mje = getattr(board, "max_jlc_extended_parts", None)
+    if mje is not None:
+        lims["extended"] = int(mje)
+    extra = getattr(board, "jlc_class_line_limits", None)
+    if extra:
+        for k, v in extra.items():
+            lims[str(k).strip().lower() or "unset"] = int(v)
+    return lims
+
+
+def _count_jlc_extended_line_items() -> int:
+    """Count SKiDL parts whose ``JLC_Class`` field is Extended (LIB-005)."""
+    return jlc_class_line_counts_from_circuit().get("extended", 0)
 
 
 def _count_jlc_basic_line_items() -> int:
     """Count SKiDL parts whose ``JLC_Class`` field is Basic (LIB-005)."""
-    try:
-        from openhac.circuit import get_default_circuit
-    except Exception:
-        return 0
-    try:
-        circuit = get_default_circuit()
-    except Exception:
-        return 0
-    n = 0
-    for part in circuit.parts:
-        raw = part.fields.get("JLC_Class", "") if hasattr(part, "fields") else ""
-        if str(raw or "").strip().lower() == "basic":
-            n += 1
-    return n
+    return jlc_class_line_counts_from_circuit().get("basic", 0)
 
 
 def _board_all_modules(board):
@@ -137,6 +148,35 @@ def _collect_board_components(board):
         for c in mod:
             walk(c)
     return found
+
+
+def _cap_voltage_temp_margin_factor(board) -> float:
+    """Scale required capacitor voltage when ambient exceeds catalog rating reference (REL-001).
+
+    Enabled only when both :attr:`~openhac.core.board.Board.ambient_operating_temp_c` and
+    :attr:`~openhac.core.board.Board.cap_voltage_temp_derating_percent_per_c` are set.
+    Factor = ``1 + (pct/100) * max(0, Ta - Tref)``.
+    """
+    ta = getattr(board, "ambient_operating_temp_c", None)
+    pct = getattr(board, "cap_voltage_temp_derating_percent_per_c", None)
+    if ta is None or pct is None:
+        return 1.0
+    try:
+        pct_f = float(pct)
+    except (TypeError, ValueError):
+        return 1.0
+    if pct_f <= 0:
+        return 1.0
+    try:
+        tref = float(getattr(board, "cap_voltage_rating_reference_temp_c", 85.0))
+    except (TypeError, ValueError):
+        tref = 85.0
+    try:
+        ta_f = float(ta)
+    except (TypeError, ValueError):
+        return 1.0
+    delta = max(0.0, ta_f - tref)
+    return 1.0 + (pct_f / 100.0) * delta
 
 
 def _cap_nominal_rail_voltage_v(comp: Component, declared: dict) -> float | None:
@@ -202,6 +242,24 @@ def _test_point_touches_net_name_ci(board, name_lower: str) -> bool:
             if nm == name_lower:
                 return True
     return False
+
+
+def _count_test_points_on_net_ci(board, name_lower: str) -> int:
+    """Count heuristic test-point components with at least one pin on *name_lower* (REL-003)."""
+    n = 0
+    for comp in _collect_board_components(board):
+        if not _is_test_point_component(comp):
+            continue
+        part = comp.part
+        for pin in getattr(part, "pins", []) or []:
+            net = getattr(pin, "net", None)
+            if net is None:
+                continue
+            nm = str(getattr(net, "name", "") or "").strip().lower()
+            if nm == name_lower:
+                n += 1
+                break
+    return n
 
 
 def _load_fab_profile_data(name: str) -> dict:
@@ -579,6 +637,8 @@ def run_drc(board):
       3. Power traces must meet IPC-2152 minimum width for current draw.
       4. Optional: ``Board.min_test_points`` (REL-003) requires a minimum count of
          heuristic test-point components.
+      5. Optional: ``Board.test_point_min_count_by_net`` (REL-003) requires at least *N*
+         heuristic test-point components per named net (case-insensitive keys).
 
     Raises:
         DRCViolationError: If any rule is violated.
@@ -638,20 +698,14 @@ def run_drc(board):
                 f"(vs design min trace {design_min_mm}mm)"
             )
 
-    lim = getattr(board, "max_jlc_extended_parts", None)
-    if lim is not None:
-        ext = _count_jlc_extended_line_items()
-        if ext > int(lim):
+    jlc_counts = jlc_class_line_counts_from_circuit()
+    jlc_limits = _effective_jlc_class_limits(board)
+    for cls, lim in jlc_limits.items():
+        n = jlc_counts.get(cls, 0)
+        if n > int(lim):
+            label = "unset/empty" if cls == "unset" else cls
             violations.append(
-                f"JLC assembly policy (LIB-005): {ext} BOM line(s) with JLC_Class=Extended exceed limit {lim}."
-            )
-
-    lim_b = getattr(board, "max_jlc_basic_parts", None)
-    if lim_b is not None:
-        bc = _count_jlc_basic_line_items()
-        if bc > int(lim_b):
-            violations.append(
-                f"JLC assembly policy (LIB-005): {bc} BOM line(s) with JLC_Class=Basic exceed limit {lim_b}."
+                f"JLC assembly policy (LIB-005): {n} BOM line(s) with JLC_Class={label!r} exceed limit {lim}."
             )
 
     if getattr(board, "warn_jlc_extended_parts", False):
@@ -770,16 +824,25 @@ def run_drc(board):
                 vnom = _cap_nominal_rail_voltage_v(comp, declared_v)
                 if vnom is None:
                     continue
-                need = rf * vnom
+                tf = _cap_voltage_temp_margin_factor(board)
+                need = rf * vnom * tf
                 vr = row.get("voltage_rating")
                 try:
                     ok = vr is not None and float(vr) + 1e-9 >= need
                 except (TypeError, ValueError):
                     ok = False
                 if not ok:
+                    if tf > 1.0 + 1e-9:
+                        tail = (
+                            f"{rf}×{vnom:g}V nominal × {tf:g} temp margin "
+                            f"(ambient {getattr(board, 'ambient_operating_temp_c', '?')}°C vs ref "
+                            f"{getattr(board, 'cap_voltage_rating_reference_temp_c', 85)}°C; "
+                            f"{getattr(board, 'cap_voltage_temp_derating_percent_per_c', '?')}%/°C)"
+                        )
+                    else:
+                        tail = f"{rf}× nominal rail {vnom:g}V per declared_supply_voltages_v"
                     violations.append(
-                        f"Capacitor {comp.generic_name!r}: voltage_rating must be ≥ {need:g}V "
-                        f"({rf}× nominal rail {vnom:g}V per declared_supply_voltages_v) (REL-001)."
+                        f"Capacitor {comp.generic_name!r}: voltage_rating must be ≥ {need:g}V ({tail}) (REL-001)."
                     )
 
     if getattr(board, "strict_passive_catalog_fields", False):
@@ -848,10 +911,27 @@ def run_drc(board):
                 )
 
     for nm in getattr(board, "require_test_point_on_nets", ()) or ():
-        if not _test_point_touches_net_name_ci(board, nm):
+        if not _test_point_touches_net_name_ci(board, str(nm).strip().lower()):
             violations.append(
                 "Testability (REL-003): require_test_point_on_nets includes "
                 f"{nm!r} but no heuristic test point touches that net."
+            )
+
+    tpm = getattr(board, "test_point_min_count_by_net", None) or {}
+    for net_key, need in tpm.items():
+        need_i = int(need)
+        if need_i < 0:
+            violations.append(
+                f"Testability (REL-003): test_point_min_count_by_net[{net_key!r}] must be >= 0."
+            )
+            continue
+        if need_i == 0:
+            continue
+        nk = str(net_key).strip().lower()
+        got = _count_test_points_on_net_ci(board, nk)
+        if got < need_i:
+            violations.append(
+                f"Testability (REL-003): net {nk!r} requires at least {need_i} test point(s), found {got}."
             )
 
     if any(c.get("type") == "diff_pair" for c in getattr(board, "constraints", ())):

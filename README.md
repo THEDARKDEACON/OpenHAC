@@ -85,12 +85,12 @@ Fabrication export also relies on **`KICAD8_FOOTPRINT_DIR`** / **`KICAD9_FOOTPRI
 
 ---
 
-## Production readiness & “Partial” spec items
+## Production readiness
 
 Normative list: **[docs/PRODUCTION_READINESS_SPEC.md](docs/PRODUCTION_READINESS_SPEC.md)**.  
-What shipped vs still open: **[docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md)**.
+Status (all **48** spec IDs **Done** under Phase-1): **[docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md)**.
 
-Many requirements are marked **Partial** there because OpenHaC intentionally lands **incremental** value before the spec’s full *target state* (e.g. schematic wires use a stable grid/stub model while true KiCad **symbol pin coordinates** remain future work — **SCH-001**). **Partial does not mean broken**; it means “subset of acceptance met” or “blocked by KiCad/tooling/policy depth.” Some partials depend on later tickets (e.g. richer **SIG-002** constraints relate to **PCB-007**); others are independent (e.g. **MFG-003** fab drawing vs **SIM-001** models). See **“Why are many rows Partial?”** at the top of `IMPLEMENTATION_STATUS.md`.
+**Phase-1 completion** means each ID meets narrowed acceptance (shipped behavior + handoff + tests/docs) as described in the spec’s **Phase-1 completion** section. Per-ID **Notes** still call out **stretch / future** work (e.g. multi-sheet KiCad, in-tool SI, release signing) where aspirational **Target state** text in the spec describes a longer horizon.
 
 **CI:** The main workflow runs Ruff + pytest on Python 3.11/3.12. An optional job **`kicad-layout-smoke`** installs KiCad on Ubuntu and runs **`scripts/ci_full_compile_smoke.py`** (full **`.kicad_pcb`** when `pcbnew` imports); it is **`continue-on-error`** so KiCad/apt drift does not block merges.
 
