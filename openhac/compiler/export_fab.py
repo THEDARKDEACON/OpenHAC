@@ -17,6 +17,40 @@ from openhac.core.base import FabExportError
 
 logger = logging.getLogger("openhac.export_fab")
 
+_DETERMINISTIC_ZIP_DT = (1980, 1, 1, 0, 0, 0)
+
+
+def _zip_dir_deterministic(src_dir: Path, zip_path: Path) -> None:
+    """Write a deterministic zip of all files under *src_dir*.
+
+    Determinism here means:
+    - Files are added in sorted path order.
+    - Zip entry timestamps are fixed (so bytes are stable across runs).
+    """
+    src_dir = src_dir.resolve()
+    zip_path = zip_path.resolve()
+    zip_path.parent.mkdir(parents=True, exist_ok=True)
+
+    files: list[Path] = []
+    for root, _, fns in os.walk(src_dir):
+        for fn in fns:
+            files.append((Path(root) / fn).resolve())
+    files = sorted(dict.fromkeys(files), key=lambda p: str(p.relative_to(src_dir)))
+
+    with zipfile.ZipFile(zip_path, "w") as zf:
+        for fp in files:
+            rel = str(fp.relative_to(src_dir))
+            info = zipfile.ZipInfo(rel)
+            info.date_time = _DETERMINISTIC_ZIP_DT
+            info.compress_type = zipfile.ZIP_DEFLATED
+            # Preserve UNIX permissions so extracted artifacts remain readable in CI.
+            try:
+                mode = fp.stat().st_mode
+                info.external_attr = (mode & 0xFFFF) << 16
+            except OSError:
+                pass
+            zf.writestr(info, fp.read_bytes())
+
 
 def _which_kicad_cli() -> str | None:
     return shutil.which("kicad-cli")
@@ -162,12 +196,7 @@ def export_fabrication_bundle(
     zip_written: Path | None = None
     if zip_path is not None:
         zp = Path(zip_path)
-        zp.parent.mkdir(parents=True, exist_ok=True)
-        with zipfile.ZipFile(zp, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            for root, _, files in os.walk(out):
-                for fn in files:
-                    fp = Path(root) / fn
-                    zf.write(fp, arcname=str(fp.relative_to(out)))
+        _zip_dir_deterministic(out, zp)
         logger.info("Wrote fabrication zip: %s", zp)
         zip_written = zp
     return zip_written

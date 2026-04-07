@@ -154,6 +154,11 @@ class Board:
         self._net_merge_hints: list[dict] = []
         #: Net object identities (`id(net)`) that require PWR_FLAG in ERC (SCH-004).
         self._explicit_power_net_ids: set[int] = set()
+        #: Optional power rail documentation records for manifest / handoff (SCH-004): ``{"rail_name", "net"}``.
+        self._power_rail_intents: list[dict] = []
+        #: Optional rail conversion intents for ERC power propagation (PWR-002).
+        #: Records ``{"input_rail", "output_rail", "efficiency"}`` with rails as provided (case-sensitive).
+        self._rail_conversions: list[dict] = []
         #: Callables ``fn(board) -> list[str]`` appended to ERC violations (SCH-005).
         self._erc_hooks: list = []
         #: Net names that must not be autorouted (PCB-007); when non-empty, :meth:`compile` skips FreeRouting.
@@ -216,9 +221,31 @@ class Board:
 
         Nets registered here are subject to the same PWR_FLAG requirement as prefix-named rails.
         """
-        _ = rail_name
+        rn = str(rail_name or "").strip()
+        nn = str(getattr(net, "name", net))
+        self._power_rail_intents.append({"rail_name": rn or nn, "net": nn})
         self._explicit_power_net_ids.add(id(net))
         return net
+
+    def declare_rail_conversion(
+        self,
+        input_rail: str,
+        output_rail: str,
+        *,
+        efficiency: float = 0.9,
+    ) -> dict:
+        """Declare a rail conversion (e.g. buck) for ERC power budgeting (PWR-002).
+
+        This is an **intent** hint: ERC will treat the output rail supply as being sourced from the input rail
+        (subject to declared rail voltages and efficiency).
+        """
+        rec = {
+            "input_rail": str(input_rail),
+            "output_rail": str(output_rail),
+            "efficiency": float(efficiency),
+        }
+        self._rail_conversions.append(rec)
+        return rec
 
     def register_erc_hook(self, fn):
         """Register ``fn(board) -> list[str]``; returned messages become ERC failures (SCH-005)."""

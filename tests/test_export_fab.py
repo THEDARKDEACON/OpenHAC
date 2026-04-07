@@ -73,3 +73,44 @@ def test_export_ipc2581_when_requested(mock_which, mock_run, tmp_path):
     assert mock_run.call_count == 5
     cmds = [c.args[0] for c in mock_run.call_args_list]
     assert any("ipc2581" in cmd for cmd in cmds)
+
+
+@patch("openhac.compiler.export_fab.subprocess.run")
+@patch("openhac.compiler.export_fab._which_kicad_cli", return_value="/bin/kicad-cli")
+def test_export_zip_is_deterministic(mock_which, mock_run, tmp_path):
+    import zipfile
+
+    pcb = tmp_path / "b.kicad_pcb"
+    pcb.write_text("(kicad_pcb)\n")
+
+    out = tmp_path / "fab"
+    out.mkdir(parents=True, exist_ok=True)
+
+    def fake_run(cmd, capture_output=True, text=True):
+        # Create some representative outputs in the directory that will be zipped.
+        # We don't try to match KiCad's full output set; this is a determinism test.
+        if "gerbers" in cmd:
+            (out / "B_Cu.gbr").write_text("gbr\n", encoding="utf-8")
+        if "drill" in cmd:
+            (out / "drill.drl").write_text("drl\n", encoding="utf-8")
+        if "pos" in cmd:
+            side = cmd[cmd.index("--side") + 1] if "--side" in cmd else "front"
+            (out / f"{pcb.stem}-pos_{side}.csv").write_text("pos\n", encoding="utf-8")
+        if "ipc2581" in cmd:
+            (out / f"{pcb.stem}.ipc2581").write_text("ipc\n", encoding="utf-8")
+        return MagicMock(returncode=0, stderr="", stdout="")
+
+    mock_run.side_effect = fake_run
+
+    z1 = tmp_path / "a.zip"
+    z2 = tmp_path / "b.zip"
+    export_fabrication_bundle(pcb, out, include_pos=True, include_ipc2581=True, zip_path=z1)
+    export_fabrication_bundle(pcb, out, include_pos=True, include_ipc2581=True, zip_path=z2)
+
+    b1 = z1.read_bytes()
+    b2 = z2.read_bytes()
+    assert b1 == b2
+
+    with zipfile.ZipFile(z1, "r") as zf:
+        names = zf.namelist()
+    assert names == sorted(names)

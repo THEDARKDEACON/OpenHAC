@@ -1,6 +1,8 @@
 import logging
 import warnings
 
+from openhac.util.sort_keys import natural_key
+
 logger = logging.getLogger("openhac.spice")
 
 
@@ -46,6 +48,7 @@ def generate_spice(
 
         circuit = get_default_circuit()
 
+        parts = sorted(list(getattr(circuit, "parts", []) or []), key=lambda p: natural_key(str(getattr(p, "ref", ""))))
         emitted_refs = set()
 
         with open(output_cir_path, "w", encoding="utf-8") as f:
@@ -57,7 +60,7 @@ def generate_spice(
 
             includes_ordered: list[str] = []
             seen_inc: set[str] = set()
-            for part in circuit.parts:
+            for part in parts:
                 raw = (part.fields.get("Spice_Include") or "").strip()
                 if raw and raw not in seen_inc:
                     seen_inc.add(raw)
@@ -68,17 +71,19 @@ def generate_spice(
             for line in analysis_lines:
                 f.write(f"{line}\n")
 
-            for part in circuit.parts:
+            for part in parts:
                 spice_id = _resolve_spice_id(part)
 
                 if spice_id in emitted_refs:
                     continue
 
-                nodes_list = []
+                nodes_with_num: list[tuple[str, str]] = []
                 for p in part.pins:
                     if p.net is not None:
                         net_name = _sanitize_net_name(str(p.net.name))
-                        nodes_list.append(net_name)
+                        nodes_with_num.append((str(getattr(p, "num", "") or ""), net_name))
+                nodes_with_num.sort(key=lambda t: natural_key(t[0]))
+                nodes_list = [n for _, n in nodes_with_num]
                 nodes = " ".join(nodes_list)
 
                 val = part.value if part.value else part.name

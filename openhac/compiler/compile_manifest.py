@@ -156,13 +156,33 @@ def _truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
 
+_DETERMINISTIC_UTC_ISO = "1980-01-01T00:00:00+00:00"
+
+
+def _generated_utc_iso() -> str:
+    """Generated timestamp for manifests; can be fixed for golden CI runs."""
+    if _truthy_env("OPENHAC_DETERMINISTIC_MANIFEST") or _truthy_env("OPENHAC_DETERMINISTIC"):
+        return _DETERMINISTIC_UTC_ISO
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _deterministic_manifest_enabled() -> bool:
+    return _truthy_env("OPENHAC_DETERMINISTIC_MANIFEST") or _truthy_env("OPENHAC_DETERMINISTIC")
+
+
 def _compile_env_flags() -> dict[str, bool]:
     """Snapshot of common OPENHAC_* toggles for audit (LIB-003 / SW-006)."""
     return {
+        "openhac_deterministic": _truthy_env("OPENHAC_DETERMINISTIC"),
         "openhac_skip_layout": _truthy_env("OPENHAC_SKIP_LAYOUT"),
         "openhac_strict_jit": _truthy_env("OPENHAC_STRICT_JIT"),
         "openhac_strict_kicad": _truthy_env("OPENHAC_STRICT_KICAD"),
         "openhac_allow_risky_parts": _truthy_env("OPENHAC_ALLOW_RISKY_PARTS"),
+        "openhac_require_verified_parts": _truthy_env("OPENHAC_REQUIRE_VERIFIED_PARTS"),
+        "openhac_schematic_stub_only": _truthy_env("OPENHAC_SCHEMATIC_STUB_ONLY"),
+        "openhac_deterministic_uuids": _truthy_env("OPENHAC_DETERMINISTIC_UUIDS"),
+        "openhac_deterministic_schematic": _truthy_env("OPENHAC_DETERMINISTIC_SCHEMATIC"),
+        "openhac_deterministic_manifest": _truthy_env("OPENHAC_DETERMINISTIC_MANIFEST"),
     }
 
 
@@ -620,7 +640,7 @@ def _jit_confidence_histogram_from_circuit() -> dict[str, int]:
             raw = ""
         lab = str(raw or "").strip().lower() or "unset"
         hist[lab] = hist.get(lab, 0) + 1
-    return hist
+    return dict(sorted(hist.items()))
 
 
 def _stackup_json_summaries(board) -> list[dict]:
@@ -644,7 +664,66 @@ def _stackup_json_summaries(board) -> list[dict]:
                 "layer_count": len(layers) if isinstance(layers, list) else None,
             }
         )
+    out.sort(key=lambda d: str(d.get("path", "")))
     return out
+
+
+def _unverified_parts_from_circuit() -> list[dict]:
+    """LIB-003 stretch: emit a machine-readable list of unverified/JIT parts.
+
+    A part is considered "unverified" if it has an OpenHaC JIT confidence label
+    of medium or low on the generated BOM line.
+    """
+    from openhac.circuit import get_default_circuit
+
+    circuit = get_default_circuit()
+    out: list[dict] = []
+    for part in getattr(circuit, "parts", []) or []:
+        fields = getattr(part, "fields", None)
+        if not isinstance(fields, dict):
+            continue
+        conf = str(fields.get("OpenHaC_JIT_Confidence", "") or "").strip().lower()
+        if conf not in ("medium", "low"):
+            continue
+        out.append(
+            {
+                "ref": getattr(part, "ref", None),
+                "value": getattr(part, "value", None),
+                "footprint": getattr(part, "footprint", None),
+                "kicad_symbol": getattr(part, "name", None),
+                "jit_confidence": conf,
+                "jit_score": fields.get("OpenHaC_JIT_Score"),
+            }
+        )
+    out.sort(key=lambda d: (str(d.get("jit_confidence", "")), str(d.get("ref", ""))))
+    return out
+
+
+def _write_unverified_parts_handoff(path: str) -> bool:
+    parts = _unverified_parts_from_circuit()
+    if not parts:
+        return False
+    payload = {
+        "schema_ref": "openhac.unverified_parts.v1",
+        "unverified_parts": parts,
+    }
+    Path(path).write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    return True
+
+
+def _write_stackup_handoff_json(base: Path, project_name: str, board) -> None:
+    """PCB-004 / SIG-001: standalone JSON handoff for stackup references + parsed summaries."""
+    stack = list(getattr(board, "_stackup_references", None) or [])
+    if not stack:
+        return
+    payload = {
+        "schema": "openhac.stackup_handoff.v1",
+        "stackup_references": stack,
+        "stackup_json_summaries": _stackup_json_summaries(board),
+    }
+    out = base / f"{project_name}.openhac-stackup-handoff.json"
+    out.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    logger.info("Wrote %s", out)
 
 
 def _kicad_symbol_dirs_configured() -> bool:
@@ -656,6 +735,35 @@ def _kicad_symbol_dirs_configured() -> bool:
                 return True
     v = os.environ.get("OPENHAC_KICAD_SYMBOL_DIRS", "").strip()
     return bool(v)
+
+
+def _kicad_symbol_search_paths() -> list[str]:
+    """SCH-001: resolved symbol library search directories (for audit / debugging)."""
+    try:
+        from openhac.compiler.kicad_sym_pinpos import symbol_library_search_paths
+
+        return [str(p) for p in symbol_library_search_paths()]
+    except Exception:
+        return []
+
+
+def _kicad_footprint_search_paths() -> list[str]:
+    """PCB-001: resolved footprint root directories (contain `*.pretty`)."""
+    try:
+        from openhac.compiler.pcb_placement import footprint_search_roots
+
+        return list(footprint_search_roots())
+    except Exception:
+        return []
+
+
+def _kicad_footprint_dirs_configured() -> bool:
+    """PCB-001: True if typical KiCad footprint dir env hints are present."""
+    for k in ("KICAD9_FOOTPRINT_DIR", "KICAD8_FOOTPRINT_DIR", "KICAD_FOOTPRINT_DIR"):
+        v = (os.environ.get(k) or "").strip()
+        if v:
+            return True
+    return False
 
 
 def _write_length_match_hint_md(base: Path, project_name: str, board) -> None:
@@ -746,6 +854,33 @@ def _write_pcb_auxiliary_constraints_json(base: Path, project_name: str, board) 
         "mounting_hole_intents": mounts,
     }
     out = base / f"{project_name}.openhac-pcb-auxiliary-constraints.json"
+    out.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    logger.info("Wrote %s", out)
+
+
+def _write_power_rail_handoff_json(base: Path, project_name: str, board) -> None:
+    """SCH-004: standalone JSON for declared power rails (documentation / CM checklist tooling)."""
+    rails = list(getattr(board, "_power_rail_intents", None) or [])
+    if not rails:
+        return
+    payload = {"schema": "openhac.power_rail_handoff.v1", "power_rails": rails}
+    out = base / f"{project_name}.openhac-power-rails.json"
+    out.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    logger.info("Wrote %s", out)
+
+
+def _write_rail_conversion_handoff_json(base: Path, project_name: str, board) -> None:
+    """PWR-002: standalone JSON for rail conversion intents + declared rail voltages (ERC handoff)."""
+    convs = list(getattr(board, "_rail_conversions", None) or [])
+    dsv = getattr(board, "declared_supply_voltages_v", None) or {}
+    if not convs:
+        return
+    payload = {
+        "schema": "openhac.rail_conversions_handoff.v1",
+        "rail_conversions": convs,
+        "declared_supply_voltages_v": dict(dsv) if dsv else {},
+    }
+    out = base / f"{project_name}.openhac-rail-conversions.json"
     out.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
     logger.info("Wrote %s", out)
 
@@ -881,6 +1016,7 @@ def write_compile_manifest(
     base = Path(output_dir).resolve() if output_dir is not None else cwd
     outputs: list[dict] = []
     _write_fab_stackup_handoff_md(base, project_name, board)
+    _write_stackup_handoff_json(base, project_name, board)
     diff_pairs_early = _diff_pairs_from_board(board)
     netclass_suggestions = _netclass_suggestions(board, diff_pairs_early)
     pcb007_netclass_suggestion_count = len(netclass_suggestions)
@@ -893,6 +1029,8 @@ def write_compile_manifest(
     _write_diff_pair_constraints_json(base, project_name, diff_pairs_early)
     _write_no_autoroute_constraints_json(base, project_name, board)
     _write_pcb_auxiliary_constraints_json(base, project_name, board)
+    _write_power_rail_handoff_json(base, project_name, board)
+    _write_rail_conversion_handoff_json(base, project_name, board)
     _write_pcb_routing_handoff_json(
         base, project_name, board, diff_pairs_early, netclass_suggestions
     )
@@ -921,10 +1059,15 @@ def write_compile_manifest(
         )
 
     add_if_exists(f"{project_name}.openhac-fab-handoff.md")
+    add_if_exists(f"{project_name}.openhac-stackup-handoff.json")
     add_if_exists(f"{project_name}.openhac-netclass-hint.md")
     add_if_exists(f"{project_name}.openhac-diff-pair-constraints.json")
     add_if_exists(f"{project_name}.openhac-no-autoroute-constraints.json")
     add_if_exists(f"{project_name}.openhac-pcb-auxiliary-constraints.json")
+    add_if_exists(f"{project_name}.openhac-power-rails.json")
+    add_if_exists(f"{project_name}.openhac-rail-conversions.json")
+    add_if_exists(f"{project_name}.openhac-unverified-parts.json")
+    add_if_exists(f"{project_name}.openhac-sch-pinpos-report.json")
     add_if_exists(f"{project_name}.openhac-length-match-hint.md")
     add_if_exists(f"{project_name}.openhac-length-match-constraints.json")
     add_if_exists(f"{project_name}.openhac-mixed-signal-hint.md")
@@ -954,7 +1097,7 @@ def write_compile_manifest(
         "manifest_schema_version": "1.0",
         "openhac_version": get_version(),
         "project_name": project_name,
-        "generated_utc": datetime.now(timezone.utc).isoformat(),
+        "generated_utc": _generated_utc_iso(),
         "board_size_mm": [float(board.size_mm[0]), float(board.size_mm[1])],
         "layers": int(board.layers),
         "git_commit": gh,
@@ -983,6 +1126,10 @@ def write_compile_manifest(
     if nar:
         manifest["no_autoroute_nets"] = list(nar)
         manifest["no_autoroute_net_count"] = len(nar)
+    rails = getattr(board, "_power_rail_intents", None) or []
+    if rails:
+        manifest["power_rails"] = list(rails)
+        manifest["power_rail_count"] = len(rails)
     _nar_cjson = base / f"{project_name}.openhac-no-autoroute-constraints.json"
     if _nar_cjson.is_file():
         manifest["pcb007_no_autoroute_constraints_schema"] = "openhac.no_autoroute_handoff.v1"
@@ -991,6 +1138,27 @@ def write_compile_manifest(
             "openhac-no-autoroute-constraints.json lists nets excluded from OpenHaC FreeRouting; "
             "bind to KiCad netclasses / external routers manually (PCB-007)."
         )
+    _pr_json = base / f"{project_name}.openhac-power-rails.json"
+    if _pr_json.is_file():
+        manifest["sch004_power_rail_handoff_schema"] = "openhac.power_rail_handoff.v1"
+        manifest["sch004_power_rail_handoff_suffix"] = ".openhac-power-rails.json"
+        manifest["sch004_power_rail_handoff_note"] = (
+            "openhac-power-rails.json lists nets explicitly declared as power rails (SCH-004) for documentation "
+            "and CM checklists; KiCad functional pin types remain manual."
+        )
+    _rc_json = base / f"{project_name}.openhac-rail-conversions.json"
+    if _rc_json.is_file():
+        manifest["pwr002_rail_conversions_handoff_schema"] = "openhac.rail_conversions_handoff.v1"
+        manifest["pwr002_rail_conversions_handoff_suffix"] = ".openhac-rail-conversions.json"
+        manifest["pwr002_rail_conversions_handoff_note"] = (
+            "openhac-rail-conversions.json records declared rail conversions (input/output/efficiency) and rail "
+            "voltages for ERC propagation (PWR-002)."
+        )
+    _uvp_json = base / f"{project_name}.openhac-unverified-parts.json"
+    if _write_unverified_parts_handoff(str(_uvp_json)):
+        manifest["lib003_unverified_parts_schema"] = "openhac.unverified_parts.v1"
+        manifest["lib003_unverified_parts_suffix"] = ".openhac-unverified-parts.json"
+        manifest["lib003_unverified_parts_writer"] = "openhac.compiler.compile_manifest._write_unverified_parts_handoff"
     if dirty is not None:
         manifest["git_worktree_dirty"] = dirty
     net_roles = getattr(board, "_net_roles", None) or []
@@ -1036,6 +1204,14 @@ def write_compile_manifest(
     if sj:
         manifest["stackup_json_summaries"] = sj
         manifest["stackup_json_summaries_count"] = len(sj)
+    _stack_handoff = base / f"{project_name}.openhac-stackup-handoff.json"
+    if _stack_handoff.is_file():
+        manifest["pcb004_stackup_handoff_schema"] = "openhac.stackup_handoff.v1"
+        manifest["pcb004_stackup_handoff_suffix"] = ".openhac-stackup-handoff.json"
+        manifest["pcb004_stackup_handoff_note"] = (
+            "openhac-stackup-handoff.json records stackup reference paths plus JSON summaries when available; "
+            "pcbnew stackup metadata emission remains manual (PCB-004 / SIG-001)."
+        )
     dfm = getattr(board, "_dfm_references", None) or []
     if dfm:
         manifest["dfm_references"] = list(dfm)
@@ -1095,17 +1271,24 @@ def write_compile_manifest(
             manifest["bom_prod_omitted_columns"] = sorted(BOM_PROFILE_PROD_OMITTED_COLUMNS)
             manifest["lib004_prod_bom_profile_active"] = True
 
-    manifest["build_environment"] = {
-        "platform": platform.platform(),
-        "python_version": sys.version.split()[0],
-        "python_executable": sys.executable,
-    }
+    if _deterministic_manifest_enabled():
+        # Golden/CI runs want byte-stable manifests; platform/executable paths differ across machines.
+        manifest["build_environment"] = {"deterministic": True}
+    else:
+        manifest["build_environment"] = {
+            "platform": platform.platform(),
+            "python_version": sys.version.split()[0],
+            "python_executable": sys.executable,
+        }
     manifest["compile_env_flags"] = _compile_env_flags()
     _kcv = _try_kicad_cli_version()
     if _kcv:
         manifest["kicad_cli_version"] = _kcv
     manifest["openhac_env_keys_present"] = _openhac_env_keys_present()
     manifest["sch_kicad_symbol_dirs_configured"] = _kicad_symbol_dirs_configured()
+    manifest["sch_kicad_symbol_search_paths"] = _kicad_symbol_search_paths()
+    manifest["pcb_kicad_footprint_dirs_configured"] = _kicad_footprint_dirs_configured()
+    manifest["pcb_kicad_footprint_search_paths"] = _kicad_footprint_search_paths()
     manifest["pcb_pipeline_handoff"] = {
         "schema_ref": "openhac.pcb_pipeline_handoff.v1",
         "placement": "PCB-001: footprints placed via generate_layout (pcbnew); coords from solver + module grid.",
@@ -1330,6 +1513,15 @@ def write_compile_manifest(
     manifest["pcb_auxiliary_handoff_writer"] = (
         "openhac.compiler.compile_manifest._write_pcb_auxiliary_constraints_json"
     )
+    manifest["sch004_power_rail_handoff_writer"] = (
+        "openhac.compiler.compile_manifest._write_power_rail_handoff_json"
+    )
+    manifest["pwr002_rail_conversions_handoff_writer"] = (
+        "openhac.compiler.compile_manifest._write_rail_conversion_handoff_json"
+    )
+    manifest["pcb004_stackup_handoff_writer"] = (
+        "openhac.compiler.compile_manifest._write_stackup_handoff_json"
+    )
     manifest["pcb009_copper_pour_handoff_note"] = (
         "declare_copper_pour_intent is documentation + manifest; pcbnew copper zones are not emitted by OpenHaC (PCB-009)."
     )
@@ -1399,6 +1591,9 @@ def write_compile_manifest(
         "openhac.compiler.spice_analysis_config.resolve_spice_analysis_from_mapping"
     )
     manifest["sch001_kicad_sym_pinpos_module"] = "openhac.compiler.kicad_sym_pinpos"
+    manifest["sch001_pinpos_report_schema"] = "openhac.sch_pinpos_report.v1"
+    manifest["sch001_pinpos_report_suffix"] = ".openhac-sch-pinpos-report.json"
+    manifest["sch001_pinpos_report_writer"] = "openhac.compiler.schematic_gen.generate_schematic"
     manifest["str002_core_board_module"] = "openhac.core.board"
     manifest["str002_core_base_module"] = "openhac.core.base"
     manifest["str002_core_compile_context_module"] = "openhac.core.compile_context"

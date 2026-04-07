@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import sys
 from collections import defaultdict
 from openhac.core.base import Component, Module, OpenHaCError
@@ -78,6 +79,50 @@ def _ma_aggregate(val, mod_name: str, field_name: str) -> float:
     return 0.0
 
 
+def _mixed_signal_ground_merge_issue(board) -> str | None:
+    """SIG-006: warn/fail when AGND/DGND-style nets are declared but no merge hint is recorded.
+
+    This does not try to infer pcbnew constraints; it just nudges users to document a star-point / ferrite / net-tie.
+    """
+    roles = getattr(board, "_net_roles", None) or []
+    merges = getattr(board, "_net_merge_hints", None) or []
+    if not roles:
+        return None
+    agnds: set[str] = set()
+    dgnds: set[str] = set()
+    for r in roles:
+        if not isinstance(r, dict):
+            continue
+        role = str(r.get("role", "") or "").strip().lower()
+        net = str(r.get("net", "") or "").strip()
+        if not net:
+            continue
+        if role == "analog_ground":
+            agnds.add(net)
+        elif role == "digital_ground":
+            dgnds.add(net)
+    if not agnds or not dgnds:
+        return None
+    # If any merge hint bridges an AGND↔DGND pair (either direction), consider it documented.
+    merge_pairs: set[frozenset[str]] = set()
+    for m in merges:
+        if not isinstance(m, dict):
+            continue
+        a = str(m.get("net_a", "") or "").strip()
+        b = str(m.get("net_b", "") or "").strip()
+        if a and b:
+            merge_pairs.add(frozenset((a, b)))
+    for a in agnds:
+        for b in dgnds:
+            if frozenset((a, b)) in merge_pairs:
+                return None
+    return (
+        "SIG-006: board declares both analog_ground and digital_ground nets "
+        f"(AGND={sorted(agnds)}, DGND={sorted(dgnds)}) but no Board.declare_net_merge_hint(...) "
+        "bridges any AGND↔DGND pair. Document a star-point / ferrite bead / net-tie intent."
+    )
+
+
 def jlc_class_line_counts_from_circuit() -> dict[str, int]:
     """Count BOM line items by normalized ``JLC_Class`` (LIB-005).
 
@@ -96,7 +141,7 @@ def jlc_class_line_counts_from_circuit() -> dict[str, int]:
         raw = part.fields.get("JLC_Class", "") if hasattr(part, "fields") else ""
         key = str(raw or "").strip().lower() or "unset"
         counts[key] += 1
-    return dict(counts)
+    return dict(sorted(counts.items()))
 
 
 def _effective_jlc_class_limits(board) -> dict[str, int]:
@@ -369,6 +414,29 @@ def _run_power_budget(board) -> None:
     has_dict_draw = bool(draw_by_rail)
 
     if has_dict_supply:
+        # PWR-002 (stretch): allow declaring rail conversions so downstream rail draw can be checked
+        # against upstream supply, given rail voltages and efficiency.
+        convs = list(getattr(board, "_rail_conversions", None) or [])
+        dsv = getattr(board, "declared_supply_voltages_v", None) or {}
+        if convs and dsv:
+            for c in convs:
+                try:
+                    inp = str(c.get("input_rail", "") or "")
+                    outp = str(c.get("output_rail", "") or "")
+                    eff = float(c.get("efficiency", 0.0) or 0.0)
+                except Exception:
+                    continue
+                if not inp or not outp or eff <= 0:
+                    continue
+                vin = dsv.get(inp.strip().lower())
+                vout = dsv.get(outp.strip().lower())
+                if not isinstance(vin, (int, float)) or not isinstance(vout, (int, float)):
+                    continue
+                if vin <= 0 or vout <= 0:
+                    continue
+                avail_in = float(supply_by_rail.get(inp, 0.0))
+                if avail_in > 0:
+                    supply_by_rail[outp] += avail_in * float(vin) * eff / float(vout)
         if scalar_draw > 0:
             raise ERCPowerBudgetError(
                 "ERC Failed: source_current_max_ma uses per-rail dicts, but at least one module "
@@ -534,11 +602,11 @@ def _check_net_level(board):
     # Aggregate and raise
     errors = []
     if floating_violations:
-        errors.append(ERCFloatingNetError("\n".join(floating_violations)))
+        errors.append(ERCFloatingNetError("\n".join(sorted(floating_violations))))
     if unconnected_violations:
-        errors.append(ERCUnconnectedPinError("\n".join(unconnected_violations)))
+        errors.append(ERCUnconnectedPinError("\n".join(sorted(unconnected_violations))))
     if power_flag_violations:
-        errors.append(ERCMissingPowerFlagError("\n".join(power_flag_violations)))
+        errors.append(ERCMissingPowerFlagError("\n".join(sorted(power_flag_violations))))
 
     if not errors:
         return
@@ -940,6 +1008,33 @@ def run_drc(board):
             "not applied by OpenHaC placement or FreeRouting (SIG-002). "
             "diff_pair_intent is recorded in the compile manifest for KiCad handoff."
         )
+
+    ms_issue = _mixed_signal_ground_merge_issue(board)
+    if ms_issue:
+        if getattr(board, "strict", False):
+            violations.append(ms_issue)
+        else:
+            logger.warning(ms_issue)
+
+    # LIB-003 stretch: production-mode gate for any medium/low-confidence JIT parts.
+    if os.environ.get("OPENHAC_REQUIRE_VERIFIED_PARTS", "").lower() in ("1", "true", "yes"):
+        from openhac.circuit import get_default_circuit
+
+        circuit = get_default_circuit()
+        offenders: list[str] = []
+        for part in getattr(circuit, "parts", []) or []:
+            fields = getattr(part, "fields", None)
+            if not isinstance(fields, dict):
+                continue
+            conf = str(fields.get("OpenHaC_JIT_Confidence", "") or "").strip().lower()
+            if conf in ("medium", "low"):
+                offenders.append(f"{getattr(part, 'ref', '?')}:{conf}")
+        if offenders:
+            offenders = sorted(offenders)
+            violations.append(
+                "LIB-003: OPENHAC_REQUIRE_VERIFIED_PARTS is set but circuit contains unverified/JIT parts "
+                f"({offenders}). Pre-populate the database or disable the production gate."
+            )
 
     if violations:
         raise DRCViolationError(

@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import json
+import os
+from pathlib import Path
 import logging
 import re
 import uuid
@@ -31,6 +34,28 @@ _COLS_PER_ROW = 10
 _CELL_SPACING = 10.0
 
 
+def _truthy_env(name: str) -> bool:
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _det_uuid(key: str) -> str:
+    """Deterministic UUID string for stable artifact generation (MFG-ish stretch).
+
+    Uses uuid5 so identical inputs yield identical UUIDs across runs.
+    """
+    return str(uuid.uuid5(uuid.NAMESPACE_OID, f"openhac:{key}"))
+
+
+def _uuid_for(key: str) -> str:
+    if (
+        _truthy_env("OPENHAC_DETERMINISTIC_UUIDS")
+        or _truthy_env("OPENHAC_DETERMINISTIC_SCHEMATIC")
+        or _truthy_env("OPENHAC_DETERMINISTIC")
+    ):
+        return _det_uuid(key)
+    return str(uuid.uuid4())
+
+
 class SchematicPinResolver(Protocol):
     def offset_for_pin(self, part, pin) -> tuple[float, float] | None: ...
 
@@ -53,12 +78,34 @@ def _assign_grid_positions(parts) -> dict:
     return positions
 
 
+def _part_stable_key(part) -> tuple:
+    """Stable ordering for schematic emission/placement (ref then lib_id)."""
+    ref = str(getattr(part, "ref", "") or "")
+    lib = part_library_name(part)
+    name = (getattr(part, "name", None) or "").strip()
+    return (ref, lib, name)
+
+
+def _net_stable_key(net) -> str:
+    return str(getattr(net, "name", None) or str(net))
+
+
+def _fmt_mm(x: float) -> str:
+    """Stable numeric formatting for KiCad S-expressions.
+
+    KiCad accepts decimal floats; we emit up to 4 decimals (more than enough for 0.01mm-ish resolution),
+    and strip trailing zeros to keep diffs small.
+    """
+    s = f"{float(x):.4f}".rstrip("0").rstrip(".")
+    return s if s else "0"
+
+
 def _emit_symbol_instance(f, part, x, y, uuid_str: str) -> None:
     """Write a (symbol ...) S-expression block for a single part."""
     lib = part_library_name(part)
     name = (getattr(part, "name", None) or "").strip()
     lib_id = f"{lib}:{name}" if lib else name
-    f.write(f'  (symbol (lib_id "{lib_id}") (at {x} {y} 0) (unit 1)\n')
+    f.write(f'  (symbol (lib_id "{lib_id}") (at {_fmt_mm(x)} {_fmt_mm(y)} 0) (unit 1)\n')
     f.write(f'    (in_bom yes) (on_board yes)\n')
     f.write(f'    (uuid "{uuid_str}")\n')
     f.write(f'  )\n')
@@ -66,8 +113,10 @@ def _emit_symbol_instance(f, part, x, y, uuid_str: str) -> None:
 
 def _emit_wire(f, x1, y1, x2, y2) -> None:
     """Write a (wire ...) S-expression block."""
-    wire_uuid = str(uuid.uuid4())
-    f.write(f'  (wire (pts (xy {x1} {y1}) (xy {x2} {y2}))\n')
+    wire_uuid = _uuid_for(f"wire:{x1:.6f},{y1:.6f}:{x2:.6f},{y2:.6f}")
+    f.write(
+        f'  (wire (pts (xy {_fmt_mm(x1)} {_fmt_mm(y1)}) (xy {_fmt_mm(x2)} {_fmt_mm(y2)}))\n'
+    )
     f.write(f'    (stroke (width 0) (type default))\n')
     f.write(f'    (uuid "{wire_uuid}")\n')
     f.write(f'  )\n')
@@ -201,16 +250,20 @@ def schematic_geometry(
     or standard ``KICAD*_SYMBOL_DIR`` paths; otherwise placement falls back to pin-index stubs.
     Pass :class:`openhac.compiler.kicad_sym_pinpos.EmptySymbolPinResolver` to force stub layout only.
     """
-    resolver: SchematicPinResolver = (
-        symbol_resolver if symbol_resolver is not None else SymbolPinResolver()
-    )
-    positions = _assign_grid_positions(circuit.parts)
-    part_placements: dict = {part: positions[part] for part in circuit.parts}
+    if symbol_resolver is not None:
+        resolver: SchematicPinResolver = symbol_resolver
+    else:
+        # Deterministic / debug mode: allow forcing stub-only geometry even when KiCad symbol libs are available.
+        # This is useful for bisecting “why did my schematic wire endpoints move?” reports.
+        resolver = EmptySymbolPinResolver() if _truthy_env("OPENHAC_SCHEMATIC_STUB_ONLY") else SymbolPinResolver()
+    parts = sorted(list(circuit.parts), key=_part_stable_key)
+    positions = _assign_grid_positions(parts)
+    part_placements: dict = {part: positions[part] for part in parts}
 
     wires: list[tuple[float, float, float, float]] = []
     labels: list[tuple[str, float, float]] = []
 
-    for net in circuit.nets:
+    for net in sorted(list(circuit.nets), key=_net_stable_key):
         pins = sorted_net_pins(net)
         if len(pins) < 2:
             continue
@@ -234,10 +287,37 @@ def schematic_geometry(
     return {"part_placements": part_placements, "wires": wires, "labels": labels}
 
 
+class _RecordingPinResolver:
+    """Wrap another resolver and record how many pin offsets were resolved vs stubbed (SCH-001)."""
+
+    __slots__ = ("_inner", "resolved_pin_count", "stub_pin_count", "by_symbol")
+
+    def __init__(self, inner: SchematicPinResolver):
+        self._inner = inner
+        self.resolved_pin_count: int = 0
+        self.stub_pin_count: int = 0
+        # key: "Lib:Symbol" -> {"resolved": int, "stub": int}
+        self.by_symbol: dict[str, dict[str, int]] = {}
+
+    def offset_for_pin(self, part, pin) -> tuple[float, float] | None:
+        off = self._inner.offset_for_pin(part, pin)
+        lib = part_library_name(part)
+        name = (getattr(part, "name", None) or "").strip()
+        key = f"{lib}:{name}" if lib else (name or "?")
+        ent = self.by_symbol.setdefault(key, {"resolved": 0, "stub": 0})
+        if off is not None:
+            self.resolved_pin_count += 1
+            ent["resolved"] += 1
+        else:
+            self.stub_pin_count += 1
+            ent["stub"] += 1
+        return off
+
+
 def schematic_wire_endpoint_pairs(circuit) -> list[frozenset[tuple[str, str]]]:
     """Undirected edges (ref, pin) pairs the schematic generator will wire (chain over sorted pins)."""
     edges: list[frozenset[tuple[str, str]]] = []
-    for net in circuit.nets:
+    for net in sorted(list(circuit.nets), key=_net_stable_key):
         pins = sorted_net_pins(net)
         if len(pins) < 2:
             continue
@@ -256,9 +336,9 @@ def schematic_wire_endpoint_pairs(circuit) -> list[frozenset[tuple[str, str]]]:
 
 def _emit_net_label(f, net_name: str, x, y) -> None:
     """Write a (label ...) S-expression block for nets with > 2 pins."""
-    label_uuid = str(uuid.uuid4())
+    label_uuid = _uuid_for(f"label:{net_name}:{x:.6f},{y:.6f}")
     safe = kicad_string_escape(net_name)
-    f.write(f'  (label "{safe}" (at {x} {y} 0)\n')
+    f.write(f'  (label "{safe}" (at {_fmt_mm(x)} {_fmt_mm(y)} 0)\n')
     f.write(f'    (effects (font (size 1.27 1.27)))\n')
     f.write(f'    (uuid "{label_uuid}")\n')
     f.write(f'  )\n')
@@ -269,6 +349,7 @@ def generate_schematic(
     board,
     *,
     symbol_resolver: SchematicPinResolver | None = None,
+    pinpos_report_path: str | None = None,
 ) -> None:
     """Generate a KiCad S-expression schematic file from the current default circuit (see ``openhac.circuit.get_default_circuit`` / ``get_circuit``)."""
     logger.info(f"Synthesizing Logic Graph into 2D Schematic Array -> {output_path}")
@@ -281,9 +362,20 @@ def generate_schematic(
             "Ensure SKiDL has been initialised before calling generate_schematic()."
         ) from e
 
-    file_uuid = str(uuid.uuid4())
-    geom = schematic_geometry(circuit, symbol_resolver=symbol_resolver)
+    file_uuid = _uuid_for("schematic:file")
+    if pinpos_report_path is not None:
+        base_resolver: SchematicPinResolver = (
+            symbol_resolver
+            if symbol_resolver is not None
+            else (EmptySymbolPinResolver() if _truthy_env("OPENHAC_SCHEMATIC_STUB_ONLY") else SymbolPinResolver())
+        )
+        rec = _RecordingPinResolver(base_resolver)
+        geom = schematic_geometry(circuit, symbol_resolver=rec)
+    else:
+        rec = None
+        geom = schematic_geometry(circuit, symbol_resolver=symbol_resolver)
     part_placements = geom["part_placements"]
+    parts = sorted(list(circuit.parts), key=_part_stable_key)
 
     with open(output_path, 'w', encoding='utf-8') as f:
         # Header
@@ -291,9 +383,10 @@ def generate_schematic(
         f.write(f'  (uuid "{file_uuid}")\n')
         f.write('  (paper "A4")\n')
 
-        for part in circuit.parts:
+        for part in parts:
             x, y = part_placements[part]
-            part_uuid = str(uuid.uuid4())
+            ref = str(getattr(part, "ref", "") or "?")
+            part_uuid = _uuid_for(f"symbol:{ref}")
             _emit_symbol_instance(f, part, x, y, part_uuid)
 
         for x1, y1, x2, y2 in geom["wires"]:
@@ -306,3 +399,14 @@ def generate_schematic(
         f.write(')\n')
 
     logger.info("Schematic S-Expression document generated successfully.")
+
+    if pinpos_report_path is not None and rec is not None:
+        payload = {
+            "schema": "openhac.sch_pinpos_report.v1",
+            "resolved_pin_count": int(rec.resolved_pin_count),
+            "stub_pin_count": int(rec.stub_pin_count),
+            "by_symbol": dict(sorted(rec.by_symbol.items())),
+        }
+        Path(pinpos_report_path).write_text(
+            json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8"
+        )

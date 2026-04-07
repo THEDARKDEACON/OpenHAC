@@ -28,6 +28,7 @@ def symbol_library_search_paths() -> list[Path]:
         "KICAD9_SYMBOL_DIR",
         "KICAD8_SYMBOL_DIR",
         "KICAD7_SYMBOL_DIR",
+        "KICAD6_SYMBOL_DIR",
         "KICAD_SYMBOL_DIR",
     ):
         v = (os.environ.get(key) or "").strip()

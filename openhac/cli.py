@@ -40,6 +40,8 @@ import importlib.util
 import logging
 import os
 import sys
+import shutil
+import json
 
 # Pre-import skidl to avoid logger initialization conflicts
 try:
@@ -114,6 +116,12 @@ def cmd_compile(args):
     _prev_strict_jit = os.environ.get("OPENHAC_STRICT_JIT")
     _prev_strict_kicad_env = os.environ.get("OPENHAC_STRICT_KICAD")
     _prev_manifest_sha = os.environ.get("OPENHAC_MANIFEST_SHA256_SIDECAR")
+    _prev_deterministic = os.environ.get("OPENHAC_DETERMINISTIC")
+    _prev_req_verified = os.environ.get("OPENHAC_REQUIRE_VERIFIED_PARTS")
+    _prev_skip_layout = os.environ.get("OPENHAC_SKIP_LAYOUT")
+    _prev_db_path = os.environ.get("OPENHAC_DB_PATH")
+    _prev_kicad_sym = os.environ.get("KICAD8_SYMBOL_DIR")
+    _prev_kicad_fp = os.environ.get("KICAD8_FOOTPRINT_DIR")
 
     Component.allow_risky_part_lookups = bool(getattr(args, "allow_risky_parts", False))
     Component.require_kicad_symbols = bool(getattr(args, "strict_kicad", False))
@@ -121,6 +129,7 @@ def cmd_compile(args):
     if getattr(args, "production", False) or getattr(args, "strict", False):
         os.environ["OPENHAC_STRICT_KICAD"] = "1"
         os.environ["OPENHAC_STRICT_JIT"] = "1"
+        os.environ["OPENHAC_REQUIRE_VERIFIED_PARTS"] = "1"
         Component.require_kicad_symbols = True
         Component.strict_jit_lookups = True
     elif getattr(args, "strict_jit", False):
@@ -128,6 +137,22 @@ def cmd_compile(args):
 
     if getattr(args, "manifest_sha256_sidecar", False):
         os.environ["OPENHAC_MANIFEST_SHA256_SIDECAR"] = "1"
+
+    if getattr(args, "deterministic", False):
+        os.environ["OPENHAC_DETERMINISTIC"] = "1"
+
+    if getattr(args, "skip_layout", False):
+        os.environ["OPENHAC_SKIP_LAYOUT"] = "1"
+
+    if getattr(args, "require_verified_parts", False):
+        os.environ["OPENHAC_REQUIRE_VERIFIED_PARTS"] = "1"
+
+    if getattr(args, "db_path", None):
+        os.environ["OPENHAC_DB_PATH"] = str(getattr(args, "db_path"))
+    if getattr(args, "kicad_symbol_dir", None):
+        os.environ["KICAD8_SYMBOL_DIR"] = str(getattr(args, "kicad_symbol_dir"))
+    if getattr(args, "kicad_footprint_dir", None):
+        os.environ["KICAD8_FOOTPRINT_DIR"] = str(getattr(args, "kicad_footprint_dir"))
 
     try:
         logger.info("Compiling: %s", args.script)
@@ -192,6 +217,30 @@ def cmd_compile(args):
         )
         logger.info("Compilation complete.")
     finally:
+        if _prev_skip_layout is None:
+            os.environ.pop("OPENHAC_SKIP_LAYOUT", None)
+        else:
+            os.environ["OPENHAC_SKIP_LAYOUT"] = _prev_skip_layout
+        if _prev_deterministic is None:
+            os.environ.pop("OPENHAC_DETERMINISTIC", None)
+        else:
+            os.environ["OPENHAC_DETERMINISTIC"] = _prev_deterministic
+        if _prev_req_verified is None:
+            os.environ.pop("OPENHAC_REQUIRE_VERIFIED_PARTS", None)
+        else:
+            os.environ["OPENHAC_REQUIRE_VERIFIED_PARTS"] = _prev_req_verified
+        if _prev_db_path is None:
+            os.environ.pop("OPENHAC_DB_PATH", None)
+        else:
+            os.environ["OPENHAC_DB_PATH"] = _prev_db_path
+        if _prev_kicad_sym is None:
+            os.environ.pop("KICAD8_SYMBOL_DIR", None)
+        else:
+            os.environ["KICAD8_SYMBOL_DIR"] = _prev_kicad_sym
+        if _prev_kicad_fp is None:
+            os.environ.pop("KICAD8_FOOTPRINT_DIR", None)
+        else:
+            os.environ["KICAD8_FOOTPRINT_DIR"] = _prev_kicad_fp
         if _prev_strict_jit is None:
             os.environ.pop("OPENHAC_STRICT_JIT", None)
         else:
@@ -214,7 +263,19 @@ def cmd_simulate(args):
 
     from openhac.core.base import Component
 
+    _prev_deterministic = os.environ.get("OPENHAC_DETERMINISTIC")
+    _prev_db_path = os.environ.get("OPENHAC_DB_PATH")
+    _prev_kicad_sym = os.environ.get("KICAD8_SYMBOL_DIR")
+    _prev_kicad_fp = os.environ.get("KICAD8_FOOTPRINT_DIR")
     Component.allow_risky_part_lookups = bool(getattr(args, "allow_risky_parts", False))
+    if getattr(args, "deterministic", False):
+        os.environ["OPENHAC_DETERMINISTIC"] = "1"
+    if getattr(args, "db_path", None):
+        os.environ["OPENHAC_DB_PATH"] = str(getattr(args, "db_path"))
+    if getattr(args, "kicad_symbol_dir", None):
+        os.environ["KICAD8_SYMBOL_DIR"] = str(getattr(args, "kicad_symbol_dir"))
+    if getattr(args, "kicad_footprint_dir", None):
+        os.environ["KICAD8_FOOTPRINT_DIR"] = str(getattr(args, "kicad_footprint_dir"))
     logger.info("Simulating: %s", args.script)
     user_module = _load_user_script(args.script)
     board = _find_board_instance(user_module)
@@ -264,26 +325,212 @@ def cmd_simulate(args):
         output_dir=getattr(args, "output_dir", None),
     )
     logger.info("Simulation complete.")
+    if _prev_deterministic is None:
+        os.environ.pop("OPENHAC_DETERMINISTIC", None)
+    else:
+        os.environ["OPENHAC_DETERMINISTIC"] = _prev_deterministic
+    if _prev_db_path is None:
+        os.environ.pop("OPENHAC_DB_PATH", None)
+    else:
+        os.environ["OPENHAC_DB_PATH"] = _prev_db_path
+    if _prev_kicad_sym is None:
+        os.environ.pop("KICAD8_SYMBOL_DIR", None)
+    else:
+        os.environ["KICAD8_SYMBOL_DIR"] = _prev_kicad_sym
+    if _prev_kicad_fp is None:
+        os.environ.pop("KICAD8_FOOTPRINT_DIR", None)
+    else:
+        os.environ["KICAD8_FOOTPRINT_DIR"] = _prev_kicad_fp
+
+
+def cmd_doctor(args):
+    """Print a toolchain readiness report."""
+    from openhac.compiler.kicad_sym_pinpos import symbol_library_search_paths
+    from openhac.compiler.pcb_placement import footprint_search_roots
+
+    _prev_db_path = os.environ.get("OPENHAC_DB_PATH")
+    if getattr(args, "db_path", None):
+        os.environ["OPENHAC_DB_PATH"] = str(getattr(args, "db_path"))
+
+    kicad_cli = shutil.which("kicad-cli")
+    kicad_cli_version = None
+    kicad_cli_ok = None
+    if kicad_cli:
+        try:
+            import subprocess
+
+            cp = subprocess.run([kicad_cli, "--version"], capture_output=True, text=True)
+            kicad_cli_ok = bool(cp.returncode == 0)
+            out = (cp.stdout or cp.stderr or "").strip()
+            kicad_cli_version = out.splitlines()[0].strip() if out else None
+        except Exception:
+            kicad_cli_ok = False
+
+    pcbnew = shutil.which("pcbnew")
+    java = shutil.which("java")
+    freerouting_jar = os.environ.get("FREEROUTING_JAR")
+    freerouting_jar_exists = bool((freerouting_jar or "").strip() and os.path.isfile(freerouting_jar or ""))
+
+    cwd = os.getcwd()
+    fp_lib_table_local = os.path.join(cwd, "fp-lib-table")
+    sym_lib_table_local = os.path.join(cwd, "sym-lib-table")
+    kicad_cfg_candidates = [
+        os.path.expanduser(p)
+        for p in (
+            "~/.config/kicad/9.0",
+            "~/.config/kicad/8.0",
+            "~/.config/kicad/7.0",
+            "~/.config/kicad/6.0",
+            "~/.config/kicad",
+        )
+    ]
+    fp_lib_table_candidates = sorted(
+        dict.fromkeys(
+            [fp_lib_table_local] + [os.path.join(d, "fp-lib-table") for d in kicad_cfg_candidates]
+        )
+    )
+    sym_lib_table_candidates = sorted(
+        dict.fromkeys(
+            [sym_lib_table_local] + [os.path.join(d, "sym-lib-table") for d in kicad_cfg_candidates]
+        )
+    )
+
+    report = {
+        "python_executable": sys.executable,
+        "kicad_cli_path": kicad_cli,
+        "kicad_cli_ok": kicad_cli_ok,
+        "kicad_cli_version": kicad_cli_version,
+        "pcbnew_path": pcbnew,
+        "pcbnew_present": bool(pcbnew),
+        "java_path": java,
+        "java_present": bool(java),
+        "freerouting_jar": freerouting_jar,
+        "freerouting_jar_exists": freerouting_jar_exists,
+        "fp_lib_table_present": any(os.path.isfile(p) for p in fp_lib_table_candidates),
+        "sym_lib_table_present": any(os.path.isfile(p) for p in sym_lib_table_candidates),
+        "fp_lib_table_candidates": fp_lib_table_candidates,
+        "sym_lib_table_candidates": sym_lib_table_candidates,
+        "kicad_symbol_search_paths": [str(p) for p in symbol_library_search_paths()],
+        "kicad_footprint_search_paths": list(footprint_search_roots()),
+        "openhac_db_path": os.environ.get("OPENHAC_DB_PATH"),
+        "openhac_deterministic": os.environ.get("OPENHAC_DETERMINISTIC"),
+        "openhac_allow_risky_parts": os.environ.get("OPENHAC_ALLOW_RISKY_PARTS"),
+        "openhac_require_verified_parts": os.environ.get("OPENHAC_REQUIRE_VERIFIED_PARTS"),
+    }
+    missing = []
+
+    if getattr(args, "print_env", False):
+        sym_pick = next((p for p in report["kicad_symbol_search_paths"] if os.path.isdir(p)), None)
+        fp_pick = next((p for p in report["kicad_footprint_search_paths"] if os.path.isdir(p)), None)
+        if sym_pick:
+            print(f'export KICAD8_SYMBOL_DIR="{sym_pick}"')
+        if fp_pick:
+            print(f'export KICAD8_FOOTPRINT_DIR="{fp_pick}"')
+        if report.get("openhac_db_path"):
+            print(f'export OPENHAC_DB_PATH="{report.get("openhac_db_path")}"')
+
+    strict_headless = bool(getattr(args, "strict_headless", False))
+    strict_layout = bool(getattr(args, "strict_layout", False))
+    strict_any = bool(getattr(args, "strict", False) or strict_headless or strict_layout)
+    if strict_any:
+        strict_default = bool(getattr(args, "strict", False))
+
+        sym_env_configured = any(
+            (os.environ.get(k) or "").strip()
+            for k in (
+                "OPENHAC_KICAD_SYMBOL_DIRS",
+                "KICAD9_SYMBOL_DIR",
+                "KICAD8_SYMBOL_DIR",
+                "KICAD7_SYMBOL_DIR",
+                "KICAD6_SYMBOL_DIR",
+                "KICAD_SYMBOL_DIR",
+            )
+        )
+        fp_env_configured = any(
+            (os.environ.get(k) or "").strip()
+            for k in ("KICAD9_FOOTPRINT_DIR", "KICAD8_FOOTPRINT_DIR", "KICAD_FOOTPRINT_DIR")
+        )
+
+        # Headless: KiCad CLI is the key dependency (ERC/export).
+        if (strict_default or strict_headless) and not kicad_cli:
+            missing.append("kicad-cli")
+
+        # Layout: pcbnew is required.
+        if (strict_default or strict_layout) and not pcbnew:
+            missing.append("pcbnew")
+
+        # If we're asking for strictness and there's no obvious KiCad library table or env config,
+        # make it explicit to reduce "it runs but can't find libraries" confusion.
+        if (strict_default or strict_headless) and (not report["sym_lib_table_present"]) and (not sym_env_configured):
+            missing.append("sym-lib-table-or-KICAD*_SYMBOL_DIR")
+        if (strict_default or strict_layout) and (not report["fp_lib_table_present"]) and (not fp_env_configured):
+            missing.append("fp-lib-table-or-KICAD*_FOOTPRINT_DIR")
+
+        if (freerouting_jar or "").strip():
+            if not java:
+                missing.append("java")
+            if not freerouting_jar_exists:
+                missing.append("freerouting_jar_exists")
+
+    if strict_any and missing:
+        if getattr(args, "as_json", False):
+            report["ok"] = False
+            report["missing"] = missing
+            print(json.dumps(report, indent=2, sort_keys=True))
+        else:
+            for k, v in report.items():
+                print(f"{k}: {v}")
+            print(f"missing: {missing}")
+        if _prev_db_path is None:
+            os.environ.pop("OPENHAC_DB_PATH", None)
+        else:
+            os.environ["OPENHAC_DB_PATH"] = _prev_db_path
+        raise SystemExit(2)
+    if getattr(args, "as_json", False):
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        for k, v in report.items():
+            print(f"{k}: {v}")
+    if _prev_db_path is None:
+        os.environ.pop("OPENHAC_DB_PATH", None)
+    else:
+        os.environ["OPENHAC_DB_PATH"] = _prev_db_path
 
 
 def cmd_sync(args):
     """Sync JLCPCB component catalog to local database."""
     from openhac.database.sync_jlc import sync_catalog
 
+    _prev_db_path = os.environ.get("OPENHAC_DB_PATH")
+    if getattr(args, "db_path", None):
+        os.environ["OPENHAC_DB_PATH"] = str(getattr(args, "db_path"))
+
     categories = args.categories.split(",") if args.categories else None
     verbose = not args.quiet
     logger.info("Syncing JLCPCB catalog...")
     count = sync_catalog(categories=categories, verbose=verbose)
     logger.info("Synced %s components.", count)
+    if _prev_db_path is None:
+        os.environ.pop("OPENHAC_DB_PATH", None)
+    else:
+        os.environ["OPENHAC_DB_PATH"] = _prev_db_path
 
 
 def cmd_seed(args):
     """Seed the database with sample components."""
     from openhac.database.seed_data import seed_database
 
+    _prev_db_path = os.environ.get("OPENHAC_DB_PATH")
+    if getattr(args, "db_path", None):
+        os.environ["OPENHAC_DB_PATH"] = str(getattr(args, "db_path"))
+
     logger.info("Seeding database...")
     seed_database()
     logger.info("Seeding complete.")
+    if _prev_db_path is None:
+        os.environ.pop("OPENHAC_DB_PATH", None)
+    else:
+        os.environ["OPENHAC_DB_PATH"] = _prev_db_path
 
 
 def cmd_export_assembly(args):
@@ -339,12 +586,35 @@ def main():
         version=f"%(prog)s {get_version()}",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="Enable debug output")
+    parser.add_argument(
+        "--db-path",
+        default=None,
+        metavar="PATH",
+        help="SQLite catalog path override (sets OPENHAC_DB_PATH for this run)",
+    )
     subparsers = parser.add_subparsers(dest="command", help="Available commands")
 
     p_compile = subparsers.add_parser("compile", help="Compile hardware to KiCad project")
     p_compile.add_argument("script", help="Path to the hardware description .py file")
     p_compile.add_argument("--name", default=None, help="Project name (default: script basename)")
     p_compile.add_argument("--no-route", action="store_true", help="Skip auto-routing")
+    p_compile.add_argument(
+        "--skip-layout",
+        action="store_true",
+        help="Skip pcbnew layout generation and autoroute (sets OPENHAC_SKIP_LAYOUT=1 for the run)",
+    )
+    p_compile.add_argument(
+        "--kicad-symbol-dir",
+        default=None,
+        metavar="DIR",
+        help="Override KiCad symbol library root for this run (sets KICAD8_SYMBOL_DIR)",
+    )
+    p_compile.add_argument(
+        "--kicad-footprint-dir",
+        default=None,
+        metavar="DIR",
+        help="Override KiCad footprint library root for this run (sets KICAD8_FOOTPRINT_DIR)",
+    )
     p_compile.add_argument(
         "--no-schematic",
         action="store_true",
@@ -374,6 +644,11 @@ def main():
         "--production",
         action="store_true",
         help="Strict KiCad symbols + strict JIT (LIB-004 / LIB-003); sets OPENHAC_STRICT_KICAD + OPENHAC_STRICT_JIT for the compile",
+    )
+    p_compile.add_argument(
+        "--require-verified-parts",
+        action="store_true",
+        help="Fail DRC if any JIT/unverified parts (medium/low confidence) are present (sets OPENHAC_REQUIRE_VERIFIED_PARTS=1)",
     )
     p_compile.add_argument(
         "--strict",
@@ -413,6 +688,11 @@ def main():
         default=None,
         metavar="ZIP",
         help="Path for --zip-release (default: OUTPUT_DIR/NAME-release.zip or ./NAME-release.zip)",
+    )
+    p_compile.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Enable byte-stable artifacts for this run (sets OPENHAC_DETERMINISTIC=1)",
     )
     p_compile.add_argument(
         "-o",
@@ -463,6 +743,23 @@ def main():
         default=None,
         help="Named analysis bundle when --spice-line is not used (SIM-002): "
         + ", ".join(sorted(_SPICE_PRESETS.keys())),
+    )
+    p_sim.add_argument(
+        "--deterministic",
+        action="store_true",
+        help="Enable deterministic mode for this run (sets OPENHAC_DETERMINISTIC=1)",
+    )
+    p_sim.add_argument(
+        "--kicad-symbol-dir",
+        default=None,
+        metavar="DIR",
+        help="Override KiCad symbol library root for this run (sets KICAD8_SYMBOL_DIR)",
+    )
+    p_sim.add_argument(
+        "--kicad-footprint-dir",
+        default=None,
+        metavar="DIR",
+        help="Override KiCad footprint library root for this run (sets KICAD8_FOOTPRINT_DIR)",
     )
     p_sim.set_defaults(func=cmd_simulate)
 
@@ -528,14 +825,54 @@ def main():
     )
     p_fab.set_defaults(func=cmd_export_fab)
 
+    p_doc = subparsers.add_parser("doctor", help="Check toolchain availability and configured paths")
+    p_doc.add_argument(
+        "--json",
+        dest="as_json",
+        action="store_true",
+        help="Emit machine-readable JSON",
+    )
+    p_doc.add_argument(
+        "--strict",
+        action="store_true",
+        help="Exit nonzero when required tools are missing",
+    )
+    p_doc.add_argument(
+        "--print-env",
+        action="store_true",
+        help="Print best-effort `export ...` lines for a typical KiCad install (no side effects)",
+    )
+    p_doc.add_argument(
+        "--strict-headless",
+        action="store_true",
+        help="Exit nonzero if headless-required tools are missing (kicad-cli)",
+    )
+    p_doc.add_argument(
+        "--strict-layout",
+        action="store_true",
+        help="Exit nonzero if layout-required tools are missing (pcbnew)",
+    )
+    p_doc.set_defaults(func=cmd_doctor)
+
     args = parser.parse_args()
     _setup_logging(verbose=args.verbose)
+
+    _prev_db_path = os.environ.get("OPENHAC_DB_PATH")
+    if getattr(args, "db_path", None):
+        os.environ["OPENHAC_DB_PATH"] = str(args.db_path)
 
     if args.command is None:
         parser.print_help()
         sys.exit(0)
 
-    args.func(args)
+    try:
+        args.func(args)
+    finally:
+        if getattr(args, "db_path", None):
+            if _prev_db_path is None:
+                os.environ.pop("OPENHAC_DB_PATH", None)
+            else:
+                os.environ["OPENHAC_DB_PATH"] = _prev_db_path
 
 
 if __name__ == "__main__":

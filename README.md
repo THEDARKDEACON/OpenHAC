@@ -76,8 +76,11 @@ Dependencies are declared in **`pyproject.toml`** (no separate `requirements.txt
 |----------|---------|
 | **`OPENHAC_DB_PATH`** | Path to the SQLite component catalog (default: `openhac/database/openhac.db` inside the install). Use a writable path for CI or multi-project isolation. |
 | **`OPENHAC_SKIP_LAYOUT`** | If `1` / `true` / `yes`, `Board.compile()` skips KiCad `pcbnew` layout generation and autoroute — emits **`.net`**, **`.csv`**, and manifest only (headless CI / logic-only builds). |
+| **`OPENHAC_DETERMINISTIC`** | If set, prefer byte-stable outputs (stable zip entries, stable schematic UUIDs/ordering, stable manifest fields) for golden/CI artifact comparisons. |
 | **`OPENHAC_STRICT_JIT`** | If set, medium-confidence live/JIT part lookups are treated like low-confidence unless risky lookups are explicitly allowed (see `openhac compile --strict-jit`). |
 | **`OPENHAC_ALLOW_RISKY_PARTS`** | Allows low/medium JIT mappings when strict JIT is on (escape hatch; prefer an explicit DB seed/sync for production). |
+| **`OPENHAC_REQUIRE_VERIFIED_PARTS`** | If set, DRC fails when any **medium/low** confidence JIT parts are present (production gate). |
+| **`OPENHAC_KICAD_SYMBOL_DIRS`** | Pathsep-separated extra symbol search dirs for SCH-001 pin-position lookup (prepended ahead of KiCad defaults). |
 | **`OPENHAC_RELEASE_TAG`** | Optional string recorded in **``release_tag``** on the compile manifest (STR-002); CLI **``--release-tag``** overrides for one run. |
 | **`OPENHAC_BUILD_PROFILE`** | Optional string recorded as **``build_profile``** in the manifest (e.g. `production`). |
 
@@ -236,11 +239,22 @@ openhac compile my_design.py --name my_board
 openhac compile my_design.py --no-route --no-schematic
 openhac compile my_design.py --strict-jit    # reject medium-confidence JIT unless risky parts allowed
 openhac compile my_design.py --production     # strict KiCad symbols + strict JIT for this compile (LIB-004 / LIB-003)
+openhac compile my_design.py --require-verified-parts   # fail if any medium/low confidence JIT parts are present
+openhac compile my_design.py --skip-layout --deterministic -o out/    # headless, byte-stable artifacts
 openhac compile my_design.py -o dist/rel --release-tag v1.0.0 --build-profile production --zip-release
 openhac compile my_design.py --kicad-erc --kicad-erc-json   # JSON ERC report for parsing (SCH-003)
 ```
 
-With **`OPENHAC_SKIP_LAYOUT=1`**, the same CLI can produce netlist + BOM + manifest without `pcbnew` (useful in CI). Use **`--zip-release`** (optional **`--zip-release-path`**) to archive emitted artifacts; default zip names are ignored via **`*-release.zip`** in `.gitignore`.
+With **`--skip-layout`** (or **`OPENHAC_SKIP_LAYOUT=1`**), the same CLI can produce netlist + BOM + manifest without `pcbnew` (useful in CI). Use **`--deterministic`** (or env **`OPENHAC_DETERMINISTIC=1`**) for stable artifacts suitable for golden comparisons. Use **`--zip-release`** (optional **`--zip-release-path`**) to archive emitted artifacts.
+
+Toolchain/config preflight:
+
+```bash
+openhac doctor --json
+openhac doctor --strict-headless --json   # require kicad-cli + symbol config
+openhac doctor --strict-layout --json     # require pcbnew + footprint config
+openhac doctor --print-env                # print best-effort export lines
+```
 
 **FreeRouting autorouter** requires the jar path:
 

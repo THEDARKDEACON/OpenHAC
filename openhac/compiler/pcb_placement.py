@@ -109,7 +109,7 @@ def pin_pad_coverage_warnings(circuit) -> list[str]:
                     f"Part {part.ref}: footprint {part.footprint!r} has no pad {pnum!r} "
                     f"for net {getattr(pin.net, 'name', pin.net)}; PCB net assignment may fail."
                 )
-    return messages
+    return sorted(messages)
 
 
 def resolve_pretty_directory(library_name: str) -> str | None:

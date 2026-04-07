@@ -27,6 +27,6 @@ def generate_project_file(output_path: str):
     }
     
     with open(output_path, 'w', encoding='utf-8') as f:
-        json.dump(project_payload, f, indent=2)
+        json.dump(project_payload, f, indent=2, sort_keys=True)
         
     logger.info("Project Directory configuration locked.")

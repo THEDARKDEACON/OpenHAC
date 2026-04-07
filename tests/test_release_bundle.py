@@ -14,6 +14,10 @@ def test_zip_project_outputs_selects_known_suffixes(tmp_path):
     (base / "myprj.csv").write_text("x", encoding="utf-8")
     (base / "myprj.openhac-manifest.json").write_text("{}", encoding="utf-8")
     (base / "myprj.openhac-manifest.json.sha256").write_text("ab" * 32 + "\n", encoding="utf-8")
+    (base / "myprj.openhac-stackup-handoff.json").write_text("{}", encoding="utf-8")
+    (base / "myprj.openhac-power-rails.json").write_text("{}", encoding="utf-8")
+    (base / "myprj.openhac-rail-conversions.json").write_text("{}", encoding="utf-8")
+    (base / "myprj.openhac-sch-pinpos-report.json").write_text("{}", encoding="utf-8")
     (base / "myprj.openhac-netclass-hint.md").write_text("# nc", encoding="utf-8")
     (base / "myprj.openhac-diff-pair-constraints.json").write_text("{}", encoding="utf-8")
     (base / "myprj.openhac-no-autoroute-constraints.json").write_text("{}", encoding="utf-8")
@@ -42,6 +46,10 @@ def test_zip_project_outputs_selects_known_suffixes(tmp_path):
         "myprj.csv",
         "myprj.openhac-manifest.json",
         "myprj.openhac-manifest.json.sha256",
+        "myprj.openhac-stackup-handoff.json",
+        "myprj.openhac-power-rails.json",
+        "myprj.openhac-rail-conversions.json",
+        "myprj.openhac-sch-pinpos-report.json",
         "myprj.openhac-netclass-hint.md",
         "myprj.openhac-diff-pair-constraints.json",
         "myprj.openhac-no-autoroute-constraints.json",
@@ -58,3 +66,23 @@ def test_zip_project_outputs_selects_known_suffixes(tmp_path):
         "myprj.openhac-si-stackup-reminder.md",
         "myprj.kicad_pcb",
     }
+
+
+def test_zip_project_outputs_is_deterministic(tmp_path):
+    base = tmp_path
+    (base / "myprj.net").write_text("x", encoding="utf-8")
+    (base / "myprj.openhac-manifest.json").write_text("{\"k\":1}\n", encoding="utf-8")
+    (base / "myprj.openhac-autoroute-policy.md").write_text("# a\n", encoding="utf-8")
+
+    z1 = base / "a.zip"
+    z2 = base / "b.zip"
+    zip_project_outputs(base, "myprj", z1)
+    zip_project_outputs(base, "myprj", z2)
+
+    b1 = z1.read_bytes()
+    b2 = z2.read_bytes()
+    assert b1 == b2
+
+    with zipfile.ZipFile(z1, "r") as zf:
+        names = zf.namelist()
+    assert names == sorted(names)

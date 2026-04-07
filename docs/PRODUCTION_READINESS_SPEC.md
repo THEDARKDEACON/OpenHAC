@@ -417,7 +417,7 @@ Each requirement includes: **problem**, **current state** (as of this spec), **t
 |-------|---------|
 | **Severity** | P0 |
 | **Problem** | Production needs **fab outputs**; not generated in-repo today. |
-| **Current state** | **`openhac export fab`** wraps `kicad-cli` **gerbers**, **drill** (Excellon), **pos** (CSV). Optional **`--ipc2581`**. Optional **`--zip` / `--zip-file`** archives the output directory. CI golden zip still future. |
+| **Current state** | **`openhac export fab`** wraps `kicad-cli` **gerbers**, **drill** (Excellon), **pos** (CSV). Optional **`--ipc2581`**. Optional **`--zip` / `--zip-file`** archives the output directory. Zip creation is deterministic (stable ordering + timestamps) for CI/golden use. |
 | **Target state** | **IPC-2581** export flag; CI golden artifact zip for a reference project. |
 | **Acceptance criteria** | CI artifact contains `.zip` of Gerbers for golden project. |
 | **Approach** | Extend `export_fab.py`; add `--format ipc2581` when needed. |

@@ -96,6 +96,7 @@ def test_compile_writes_net_csv_and_manifest(tmp_path, seeded_resistor_db, monke
     paths = {o["path"] for o in data["outputs"]}
     assert "e2e_compile.net" in paths
     assert "e2e_compile.csv" in paths
+    # SCH-001: .kicad_pro is deterministic JSON (sorted keys) when exported.
     with (tmp_path / "e2e_compile.csv").open(newline="", encoding="utf-8") as f:
         rows = list(csv.DictReader(f))
     assert rows
@@ -129,6 +130,10 @@ def test_compile_writes_net_csv_and_manifest(tmp_path, seeded_resistor_db, monke
     assert co.get("skip_layout") is False
     assert isinstance(data.get("openhac_env_keys_present"), list)
     assert isinstance(data.get("sch_kicad_symbol_dirs_configured"), bool)
+    assert isinstance(data.get("sch_kicad_symbol_search_paths"), list)
+    assert any(isinstance(p, str) and p for p in data.get("sch_kicad_symbol_search_paths") or [])
+    assert isinstance(data.get("pcb_kicad_footprint_dirs_configured"), bool)
+    assert isinstance(data.get("pcb_kicad_footprint_search_paths"), list)
     ph = data.get("pcb_pipeline_handoff") or {}
     assert isinstance(ph, dict) and ph.get("schema_ref") == "openhac.pcb_pipeline_handoff.v1"
     assert int(data.get("outputs_total_bytes") or 0) > 0
@@ -181,6 +186,9 @@ def test_compile_writes_net_csv_and_manifest(tmp_path, seeded_resistor_db, monke
         "openhac.compiler.spice_analysis_config.resolve_spice_analysis_from_mapping"
     )
     assert data.get("sch001_kicad_sym_pinpos_module") == "openhac.compiler.kicad_sym_pinpos"
+    assert data.get("sch001_pinpos_report_schema") == "openhac.sch_pinpos_report.v1"
+    assert data.get("sch001_pinpos_report_suffix") == ".openhac-sch-pinpos-report.json"
+    assert data.get("sch001_pinpos_report_writer") == "openhac.compiler.schematic_gen.generate_schematic"
     bcat = data.get("pwr002_stdlib_helpers_catalog") or []
     assert "buck_input_current_ma" in bcat
     assert "jlc" in (data.get("fab_profiles_catalog") or [])
@@ -197,6 +205,7 @@ def test_compile_writes_net_csv_and_manifest(tmp_path, seeded_resistor_db, monke
     assert data.get("sch_pin_sort_mode") == "alphanumeric_natural"
     cef = data.get("compile_env_flags") or {}
     assert isinstance(cef, dict) and "openhac_skip_layout" in cef
+    assert "openhac_require_verified_parts" in cef
     assert data.get("pcb_routing_handoff_schema") == "openhac.pcb_routing_handoff.v1"
     assert any(s.endswith(".net") for s in data["release_bundle_suffixes"])
     assert all(r["JLC_Class"] == "Extended" for r in r_rows)
@@ -255,6 +264,9 @@ def test_compile_writes_net_csv_and_manifest(tmp_path, seeded_resistor_db, monke
     )
     assert data.get("pcb_auxiliary_handoff_writer") == (
         "openhac.compiler.compile_manifest._write_pcb_auxiliary_constraints_json"
+    )
+    assert data.get("sch004_power_rail_handoff_writer") == (
+        "openhac.compiler.compile_manifest._write_power_rail_handoff_json"
     )
     assert data.get("mfg003_fab_handoff_markdown_suffix") == ".openhac-fab-handoff.md"
     assert "netclasses" in (data.get("sig002_diff_pair_intent_disclaimer") or "").lower()
@@ -454,6 +466,156 @@ def test_compile_manifest_net_roles_and_length_match(tmp_path, seeded_resistor_d
     assert data.get("pcb007_netclass_hint_writer") == (
         "openhac.compiler.compile_manifest._write_netclass_hint_md"
     )
+
+
+def test_manifest_includes_power_rails_handoff(tmp_path, seeded_resistor_db, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    design_py = tmp_path / "design.py"
+    design_py.write_text("# power rails handoff\n", encoding="utf-8")
+
+    vcc, gnd = Net("3V3"), Net("GND")
+    Part("power", "PWR_FLAG")[1] += vcc
+    Part("power", "PWR_FLAG")[1] += gnd
+
+    class Node(Module):
+        def __init__(self, name: str):
+            super().__init__(name)
+            r = self.add(Component("R_10k_0805"))
+            r["1"] += vcc
+            r["2"] += gnd
+            self.declare_interface("power", vcc, gnd)
+
+    a, b = Node("A"), Node("B")
+    board = Board(size_mm=(40.0, 40.0))
+    board.declare_power_rail("VPP", vcc)
+    board.add_module(a)
+    board.add_module(b)
+    board.connect(a.expose_interface("power"), b.expose_interface("power"))
+
+    with patch("openhac.compiler.layout_gen.generate_layout"):
+        board.compile(
+            project_name="pwr_rails",
+            generate_bom=True,
+            auto_route=False,
+            export_schematic=False,
+            source_script_path=design_py,
+        )
+
+    mf = json.loads((tmp_path / "pwr_rails.openhac-manifest.json").read_text(encoding="utf-8"))
+    assert mf.get("power_rail_count") == 1
+    assert any(r.get("rail_name") == "VPP" and r.get("net") == "3V3" for r in (mf.get("power_rails") or []))
+    assert mf.get("sch004_power_rail_handoff_schema") == "openhac.power_rail_handoff.v1"
+    assert mf.get("sch004_power_rail_handoff_suffix") == ".openhac-power-rails.json"
+    hp = tmp_path / "pwr_rails.openhac-power-rails.json"
+    assert hp.is_file()
+    payload = json.loads(hp.read_text(encoding="utf-8"))
+    assert payload.get("schema") == "openhac.power_rail_handoff.v1"
+    assert any(r.get("rail_name") == "VPP" and r.get("net") == "3V3" for r in (payload.get("power_rails") or []))
+
+
+def test_manifest_includes_rail_conversions_handoff(tmp_path, seeded_resistor_db, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    design_py = tmp_path / "design.py"
+    design_py.write_text("# rail conversions handoff\n", encoding="utf-8")
+
+    vin, vout, gnd = Net("12V"), Net("3V3"), Net("GND")
+    Part("power", "PWR_FLAG")[1] += vin
+    Part("power", "PWR_FLAG")[1] += vout
+    Part("power", "PWR_FLAG")[1] += gnd
+
+    class Node(Module):
+        def __init__(self, name: str):
+            super().__init__(name)
+            r0 = self.add(Component("R_10k_0805"))
+            r0["1"] += vin
+            r0["2"] += gnd
+            r = self.add(Component("R_10k_0805"))
+            r["1"] += vout
+            r["2"] += gnd
+            self.declare_interface("power", vout, gnd)
+
+    a, b = Node("A"), Node("B")
+    board = Board(size_mm=(40.0, 40.0), declared_supply_voltages_v={"12V": 12.0, "3V3": 3.3})
+    board.declare_rail_conversion("12V", "3V3", efficiency=0.9)
+    board.add_module(a)
+    board.add_module(b)
+    board.connect(a.expose_interface("power"), b.expose_interface("power"))
+
+    with patch("openhac.compiler.layout_gen.generate_layout"):
+        board.compile(
+            project_name="rail_conv",
+            generate_bom=True,
+            auto_route=False,
+            export_schematic=False,
+            source_script_path=design_py,
+        )
+
+    mf = json.loads((tmp_path / "rail_conv.openhac-manifest.json").read_text(encoding="utf-8"))
+    assert mf.get("pwr002_rail_conversions_handoff_schema") == "openhac.rail_conversions_handoff.v1"
+    assert mf.get("pwr002_rail_conversions_handoff_suffix") == ".openhac-rail-conversions.json"
+    assert mf.get("pwr002_rail_conversions_handoff_writer") == (
+        "openhac.compiler.compile_manifest._write_rail_conversion_handoff_json"
+    )
+
+    hp = tmp_path / "rail_conv.openhac-rail-conversions.json"
+    assert hp.is_file()
+    payload = json.loads(hp.read_text(encoding="utf-8"))
+    assert payload.get("schema") == "openhac.rail_conversions_handoff.v1"
+    assert any(
+        c.get("input_rail") == "12V" and c.get("output_rail") == "3V3" and float(c.get("efficiency")) == 0.9
+        for c in (payload.get("rail_conversions") or [])
+    )
+    dsv = payload.get("declared_supply_voltages_v") or {}
+    assert float(dsv.get("12V")) == 12.0
+    assert float(dsv.get("3V3")) == 3.3
+
+
+def test_manifest_includes_unverified_parts_handoff_when_present(tmp_path, seeded_resistor_db, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    design_py = tmp_path / "design.py"
+    design_py.write_text("# unverified parts handoff\n", encoding="utf-8")
+
+    vcc, gnd = Net("3V3"), Net("GND")
+    Part("power", "PWR_FLAG")[1] += vcc
+    Part("power", "PWR_FLAG")[1] += gnd
+
+    from openhac.core.base import Component
+    from openhac.core.board import Board
+    from openhac.database.lookup_meta import CONFIDENCE_MEDIUM, LOOKUP_CONFIDENCE_KEY
+
+    data = {
+        "generic_name": "JIT_MED2",
+        "kicad_symbol": "Device:R",
+        "kicad_footprint": "Resistor_SMD:R_0805_2012Metric",
+        "manufacturer": "",
+        "mpn": "X",
+        "supplier_sku": "",
+        "description": "",
+        "category": "resistors",
+        LOOKUP_CONFIDENCE_KEY: CONFIDENCE_MEDIUM,
+    }
+    r = Component("JIT_MED2", comp_data=data)
+    r["1"] += vcc
+    r["2"] += gnd
+
+    board = Board(size_mm=(10.0, 10.0))
+    with patch("openhac.compiler.layout_gen.generate_layout"):
+        board.compile(
+            project_name="uvp",
+            generate_bom=True,
+            auto_route=False,
+            export_schematic=False,
+            source_script_path=design_py,
+        )
+
+    mf = json.loads((tmp_path / "uvp.openhac-manifest.json").read_text(encoding="utf-8"))
+    assert mf.get("lib003_unverified_parts_schema") == "openhac.unverified_parts.v1"
+    assert mf.get("lib003_unverified_parts_suffix") == ".openhac-unverified-parts.json"
+    hp = tmp_path / "uvp.openhac-unverified-parts.json"
+    assert hp.is_file()
+    payload = json.loads(hp.read_text(encoding="utf-8"))
+    assert payload.get("schema_ref") == "openhac.unverified_parts.v1"
+    assert any(p.get("jit_confidence") == "medium" for p in (payload.get("unverified_parts") or []))
 
 
 def test_manifest_includes_diff_pair_intent(tmp_path, seeded_resistor_db, monkeypatch):
@@ -902,6 +1064,61 @@ def test_compile_release_zip_contains_artifacts(tmp_path, seeded_resistor_db, mo
     assert "zprj.openhac-pcb-routing-handoff.json" in names
 
 
+def test_compile_release_zip_is_deterministic_under_openhac_deterministic(tmp_path, seeded_resistor_db, monkeypatch):
+    """MFG-005 stretch: with OPENHAC_DETERMINISTIC=1, release zip bytes are stable across runs."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENHAC_DETERMINISTIC", "1")
+    design_py = tmp_path / "design.py"
+    design_py.write_text("# zip deterministic\n", encoding="utf-8")
+
+    vcc, gnd = Net("3V3"), Net("GND")
+    Part("power", "PWR_FLAG")[1] += vcc
+    Part("power", "PWR_FLAG")[1] += gnd
+
+    class Node(Module):
+        def __init__(self, name: str):
+            super().__init__(name)
+            r = self.add(Component("R_10k_0805"))
+            r["1"] += vcc
+            r["2"] += gnd
+            self.declare_interface("power", vcc, gnd)
+
+    a, b = Node("A"), Node("B")
+    board = Board(size_mm=(44.0, 44.0))
+    board.add_module(a)
+    board.add_module(b)
+    board.connect(a.expose_interface("power"), b.expose_interface("power"))
+
+    zpath = tmp_path / "rel_det.zip"
+    with patch("openhac.compiler.layout_gen.generate_layout"):
+        board.compile(
+            project_name="zdet",
+            generate_bom=True,
+            auto_route=False,
+            export_schematic=False,
+            source_script_path=design_py,
+            release_zip_path=str(zpath),
+        )
+    b1 = zpath.read_bytes()
+
+    # Run again to same paths; deterministic mode should yield identical zip bytes.
+    with patch("openhac.compiler.layout_gen.generate_layout"):
+        board.compile(
+            project_name="zdet",
+            generate_bom=True,
+            auto_route=False,
+            export_schematic=False,
+            source_script_path=design_py,
+            release_zip_path=str(zpath),
+        )
+    b2 = zpath.read_bytes()
+    assert b1 == b2
+
+    mf = json.loads((tmp_path / "zdet.openhac-manifest.json").read_text(encoding="utf-8"))
+    # In deterministic mode we skip the manifest patch + second zip pass; no self-referential digest is written.
+    assert mf.get("release_zip_sha256") in (None, "")
+
+
 def test_manifest_release_tag_sorted_keys(tmp_path, seeded_resistor_db, monkeypatch):
     monkeypatch.chdir(tmp_path)
     design_py = tmp_path / "design.py"
@@ -990,6 +1207,13 @@ def test_manifest_git_worktree_dirty_and_stackup_refs(tmp_path, seeded_resistor_
     assert refs[0]["path"].endswith("docs/stackup_template.yaml")
     assert refs[0]["role"] == "sig001_handoff"
     assert "CM stackup" in (refs[0].get("documentation_note") or "")
+    assert data.get("pcb004_stackup_handoff_schema") == "openhac.stackup_handoff.v1"
+    assert data.get("pcb004_stackup_handoff_suffix") == ".openhac-stackup-handoff.json"
+    sh = tmp_path / "mgit.openhac-stackup-handoff.json"
+    assert sh.is_file()
+    payload = json.loads(sh.read_text(encoding="utf-8"))
+    assert payload.get("schema") == "openhac.stackup_handoff.v1"
+    assert payload.get("stackup_references")
     handoff = tmp_path / "mgit.openhac-fab-handoff.md"
     assert handoff.is_file()
     assert "fab_stackup_table" in handoff.read_text(encoding="utf-8")

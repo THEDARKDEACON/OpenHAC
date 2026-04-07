@@ -202,6 +202,36 @@ class TestERCPowerBudget:
         with pytest.raises(ERCPowerBudgetError, match="rail '12V'"):
             run_erc(board)
 
+    def test_rail_conversion_propagates_supply_to_output_rail_passes(self):
+        """PWR-002 stretch: declare_rail_conversion allows checking a derived rail against upstream supply."""
+        board = Board(
+            size_mm=(60, 40),
+            declared_supply_voltages_v={"12v": 12.0, "3v3": 3.3},
+        )
+        board.declare_rail_conversion("12V", "3V3", efficiency=0.9)
+        supply = Module("PSU")
+        supply.source_current_max_ma = {"12V": 200}
+        load = Module("LOAD")
+        load.max_current_draw_ma = {"3V3": 500}
+        board.add_module(supply)
+        board.add_module(load)
+        run_erc(board)
+
+    def test_rail_conversion_insufficient_upstream_supply_fails(self):
+        board = Board(
+            size_mm=(60, 40),
+            declared_supply_voltages_v={"12v": 12.0, "3v3": 3.3},
+        )
+        board.declare_rail_conversion("12V", "3V3", efficiency=0.9)
+        supply = Module("PSU")
+        supply.source_current_max_ma = {"12V": 100}
+        load = Module("LOAD")
+        load.max_current_draw_ma = {"3V3": 500}
+        board.add_module(supply)
+        board.add_module(load)
+        with pytest.raises(ERCPowerBudgetError, match="rail '3V3'"):
+            run_erc(board)
+
 
 # ---------------------------------------------------------------------------
 # ERC — Exception hierarchy
@@ -269,6 +299,59 @@ class TestDRC:
     def test_passes_valid_board(self):
         board = Board(size_mm=(60, 40))
         run_drc(board)
+
+    def test_mixed_signal_ground_roles_without_merge_hint_warns_when_not_strict(self, capsys):
+        class _Net:
+            def __init__(self, name: str):
+                self.name = name
+
+        board = Board(size_mm=(60, 40))
+        board.declare_net_role(_Net("AGND"), "analog_ground")
+        board.declare_net_role(_Net("DGND"), "digital_ground")
+
+        run_drc(board)
+        err = capsys.readouterr().err
+        assert "SIG-006" in err
+        assert "declare_net_merge_hint" in err
+
+    def test_mixed_signal_ground_roles_without_merge_hint_fails_when_strict(self):
+        class _Net:
+            def __init__(self, name: str):
+                self.name = name
+
+        board = Board(size_mm=(60, 40), strict=True)
+        board.declare_net_role(_Net("AGND"), "analog_ground")
+        board.declare_net_role(_Net("DGND"), "digital_ground")
+
+        with pytest.raises(DRCViolationError, match="SIG-006"):
+            run_drc(board)
+
+    def test_require_verified_parts_fails_when_unverified_jit_present(self, tmp_db, monkeypatch):
+        """LIB-003 stretch: production gate should block medium/low confidence parts."""
+        from openhac.core.base import Component
+        from openhac.database.lookup_meta import CONFIDENCE_MEDIUM, LOOKUP_CONFIDENCE_KEY
+
+        _, dm = tmp_db
+        monkeypatch.setenv("OPENHAC_REQUIRE_VERIFIED_PARTS", "1")
+
+        data = {
+            "generic_name": "JIT_MED",
+            "kicad_symbol": "Device:R",
+            "kicad_footprint": "Resistor_SMD:R_0805_2012Metric",
+            "manufacturer": "",
+            "mpn": "X",
+            "supplier_sku": "",
+            "description": "",
+            "category": "resistors",
+            LOOKUP_CONFIDENCE_KEY: CONFIDENCE_MEDIUM,
+        }
+        monkeypatch.setattr(Component, "db", dm)
+        Component("JIT_MED", comp_data=data)
+        board = Board(size_mm=(60, 40))
+        with pytest.raises(DRCViolationError) as ei:
+            run_drc(board)
+        # Deterministic offender ordering (sorted)
+        assert "OPENHAC_REQUIRE_VERIFIED_PARTS" in str(ei.value)
 
     def test_fails_invalid_dimensions(self):
         board = Board(size_mm=(0, 40))

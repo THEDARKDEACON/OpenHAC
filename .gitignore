@@ -23,6 +23,11 @@ env/
 *.kicad_sch
 *.kicad_pro
 *.openhac-manifest.json
+*.openhac-manifest.json.sha256
+# OpenHaC secondary handoff artifacts (JSON/MD) and reports
+*.openhac-*.json
+*.openhac-*.md
+*.openhac-*.txt
 # KiCad CLI schematic ERC (SCH-003) and default *.rpt naming
 *.kicad_sch.erc.txt
 *-erc.rpt
@@ -33,6 +38,9 @@ env/
 *.erc
 _autosave-*
 fp-info-cache
+# Local KiCad library tables (project/user config; do not commit)
+fp-lib-table
+sym-lib-table
 # IPC-2581 (kicad-cli pcb export ipc2581, MFG-001)
 *.ipc2581
 # KiCad 6+ project backups folder (if created locally)
@@ -43,6 +51,8 @@ fp-info-cache
 openhac_local.db
 # OpenHaC compile --zip-release default naming
 *-release.zip
+# Fab export / other build zips (when writing into repo tree)
+*.zip
 
 # =============================================================================
 # SPICE outputs

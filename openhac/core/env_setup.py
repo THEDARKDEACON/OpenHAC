@@ -38,11 +38,11 @@ class KiCadNotFoundError(EnvironmentError):
 
 
 def _resolve_symbol_path() -> str:
-    """Locate the KiCad 8 symbol directory.
+    """Locate a KiCad symbol directory (prefer user env, then common installs).
 
     Checks, in order:
-      1. The ``KICAD8_SYMBOL_DIR`` environment variable (user override).
-      2. The standard install paths for the detected platform.
+      1. One of the ``KICAD*_SYMBOL_DIR`` environment variables (user override).
+      2. Standard install paths for the detected platform.
 
     Returns:
         The validated absolute path to the symbol directory.
@@ -50,10 +50,17 @@ def _resolve_symbol_path() -> str:
     Raises:
         KiCadNotFoundError: If no valid symbol directory is found.
     """
-    # 1. Honour explicit environment variable
-    env_path = os.environ.get("KICAD8_SYMBOL_DIR")
-    if env_path and os.path.isdir(env_path):
-        return env_path
+    # 1. Honour explicit environment variable(s)
+    for key in (
+        "KICAD9_SYMBOL_DIR",
+        "KICAD8_SYMBOL_DIR",
+        "KICAD7_SYMBOL_DIR",
+        "KICAD6_SYMBOL_DIR",
+        "KICAD_SYMBOL_DIR",
+    ):
+        env_path = os.environ.get(key)
+        if env_path and os.path.isdir(env_path):
+            return env_path
 
     # 2. Platform-specific defaults
     platform = sys.platform
@@ -66,10 +73,9 @@ def _resolve_symbol_path() -> str:
     # 3. Nothing found — raise
     tried = ", ".join(candidates) if candidates else f"(no known paths for {platform})"
     raise KiCadNotFoundError(
-        f"KiCad 8 symbol library not found.\n"
+        f"KiCad symbol library not found.\n"
         f"Searched: {tried}\n"
-        f"Install KiCad 8 in the default directory, or set the "
-        f"KICAD8_SYMBOL_DIR environment variable to a valid symbol path."
+        f"Install KiCad, or set a KICAD*_SYMBOL_DIR environment variable to a valid symbol path."
     )
 
 
@@ -96,8 +102,23 @@ def bootstrap_environment() -> None:
         _bootstrapped = True
         return
 
+    # If symbol path was auto-detected and no explicit KiCad symbol env hints are set,
+    # seed a default so other components (doctor/reporting) see a consistent env state.
+    if not any(
+        (os.environ.get(k) or "").strip()
+        for k in (
+            "KICAD9_SYMBOL_DIR",
+            "KICAD8_SYMBOL_DIR",
+            "KICAD7_SYMBOL_DIR",
+            "KICAD6_SYMBOL_DIR",
+            "KICAD_SYMBOL_DIR",
+        )
+    ):
+        os.environ.setdefault("KICAD8_SYMBOL_DIR", sym_path)
+    os.environ.setdefault("OPENHAC_KICAD_SYMBOL_DIRS", sym_path)
+
     # Default footprint root for pcbnew .pretty resolution (no-op if user already set env)
-    if not os.environ.get("KICAD9_FOOTPRINT_DIR") and not os.environ.get("KICAD8_FOOTPRINT_DIR"):
+    if not any((os.environ.get(k) or "").strip() for k in ("KICAD9_FOOTPRINT_DIR", "KICAD8_FOOTPRINT_DIR", "KICAD_FOOTPRINT_DIR")):
         for _fp in (
             "/usr/share/kicad/footprints",
             "/usr/local/share/kicad/footprints",

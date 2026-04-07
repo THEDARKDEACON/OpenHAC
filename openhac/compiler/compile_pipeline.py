@@ -126,7 +126,8 @@ def phase_schematic(state: CompileState) -> None:
 
     state.sch_path = _artifact_path(state.project_name, ".kicad_sch", state.output_dir)
     state.pro_path = _artifact_path(state.project_name, ".kicad_pro", state.output_dir)
-    generate_schematic(state.sch_path, state.board)
+    pinpos_report = _artifact_path(state.project_name, ".openhac-sch-pinpos-report.json", state.output_dir)
+    generate_schematic(state.sch_path, state.board, pinpos_report_path=pinpos_report)
     generate_project_file(state.pro_path)
 
     if not state.kicad_sch_erc:
@@ -179,6 +180,10 @@ def phase_release_zip(state: CompileState) -> None:
 
     base = Path(state.output_dir).resolve() if state.output_dir is not None else Path.cwd().resolve()
     out = zip_project_outputs(base, state.project_name, state.release_zip_path)
+    # Deterministic mode: avoid patching the manifest and rebuilding the zip.
+    # The normal two-pass flow intentionally creates a self-reference mismatch (see mfg005_release_zip_sha256_note).
+    if os.environ.get("OPENHAC_DETERMINISTIC", "").strip().lower() in ("1", "true", "yes", "on"):
+        return
     sidecar = bool(getattr(state.board, "write_manifest_sha256_sidecar", False))
     if os.environ.get("OPENHAC_MANIFEST_SHA256_SIDECAR", "").lower() in ("1", "true", "yes"):
         sidecar = True

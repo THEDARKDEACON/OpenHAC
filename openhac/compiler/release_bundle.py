@@ -8,6 +8,8 @@ from pathlib import Path
 
 logger = logging.getLogger("openhac.release")
 
+_DETERMINISTIC_ZIP_DT = (1980, 1, 1, 0, 0, 0)
+
 # Suffixes we consider part of a named OpenHaC / KiCad compile bundle.
 _RELEASE_SUFFIXES: tuple[str, ...] = (
     ".net",
@@ -18,6 +20,11 @@ _RELEASE_SUFFIXES: tuple[str, ...] = (
     ".openhac-manifest.json",
     ".openhac-manifest.json.sha256",
     ".openhac-fab-handoff.md",
+    ".openhac-stackup-handoff.json",
+    ".openhac-power-rails.json",
+    ".openhac-rail-conversions.json",
+    ".openhac-unverified-parts.json",
+    ".openhac-sch-pinpos-report.json",
     ".openhac-netclass-hint.md",
     ".openhac-diff-pair-constraints.json",
     ".openhac-no-autoroute-constraints.json",
@@ -44,16 +51,28 @@ def zip_project_outputs(base: Path, project_name: str, zip_path: str | Path) -> 
     out = Path(zip_path).resolve()
     out.parent.mkdir(parents=True, exist_ok=True)
 
+    files: list[Path] = []
+    for p in sorted(base.iterdir(), key=lambda x: x.name):
+        if not p.is_file():
+            continue
+        if not p.name.startswith(f"{project_name}"):
+            continue
+        if not any(p.name.endswith(s) for s in _RELEASE_SUFFIXES):
+            continue
+        files.append(p.resolve())
+
     added = 0
-    with zipfile.ZipFile(out, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-        for p in sorted(base.iterdir()):
-            if not p.is_file():
-                continue
-            if not p.name.startswith(f"{project_name}"):
-                continue
-            if not any(p.name.endswith(s) for s in _RELEASE_SUFFIXES):
-                continue
-            zf.write(p, arcname=p.name)
+    with zipfile.ZipFile(out, "w") as zf:
+        for p in files:
+            info = zipfile.ZipInfo(p.name)
+            info.date_time = _DETERMINISTIC_ZIP_DT
+            info.compress_type = zipfile.ZIP_DEFLATED
+            try:
+                mode = p.stat().st_mode
+                info.external_attr = (mode & 0xFFFF) << 16
+            except OSError:
+                pass
+            zf.writestr(info, p.read_bytes())
             added += 1
 
     logger.info("Wrote release zip %s (%s files)", out, added)

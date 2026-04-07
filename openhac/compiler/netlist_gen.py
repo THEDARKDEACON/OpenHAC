@@ -3,6 +3,7 @@ import logging
 from skidl import generate_netlist
 
 from openhac.circuit import get_default_circuit
+from openhac.util.sort_keys import natural_key
 
 logger = logging.getLogger("openhac.netlist")
 
@@ -77,10 +78,11 @@ def generate_logic_and_bom(
             sorted(BOM_PROFILE_PROD_OMITTED_COLUMNS),
         )
     logger.info("Exporting BOM to %s...", bom_path)
-    with open(bom_path, "w", newline="") as csvfile:
-        writer = csv.DictWriter(csvfile, fieldnames=fieldnames)
+    with open(bom_path, "w", newline="", encoding="utf-8") as csvfile:
+        writer = csv.DictWriter(csvfile, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
-        for part in get_default_circuit().parts:
+        parts = sorted(get_default_circuit().parts, key=lambda p: natural_key(getattr(p, "ref", "")))
+        for part in parts:
             full = {
                 "Reference": part.ref,
                 "Value": part.value,

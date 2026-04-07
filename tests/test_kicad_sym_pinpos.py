@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 
 import openhac.core  # noqa: F401
+import json
 from skidl import Net, Part
 
 from openhac.compiler.kicad_sym_pinpos import (
@@ -44,6 +45,14 @@ def test_find_device_library_with_fixture_path(monkeypatch):
     assert p.name == "Device.kicad_sym"
     m = load_symbol_pin_positions(p, "R")
     assert m and m["1"][1] == pytest.approx(5.08)
+
+
+def test_find_device_library_with_kicad6_symbol_dir(monkeypatch):
+    monkeypatch.setenv("KICAD6_SYMBOL_DIR", str(_FIXTURE_SYM.parent))
+    clear_symbol_pin_cache()
+    p = find_symbol_library_file("Device")
+    assert p is not None
+    assert p.name == "Device.kicad_sym"
 
 
 def test_schematic_wires_use_library_offsets_when_fixture_on_path(tmp_path, monkeypatch):
@@ -88,3 +97,32 @@ def test_empty_resolver_matches_index_stub_geometry(tmp_path, monkeypatch):
     assert len(geom["wires"]) == 1
     x1, y1, x2, y2 = geom["wires"][0]
     assert y2 - y1 == pytest.approx(2.54, rel=1e-3)
+
+
+def test_openhac_schematic_stub_only_env_forces_stub_geometry_and_report(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENHAC_KICAD_SYMBOL_DIRS", str(_FIXTURE_SYM.parent))
+    monkeypatch.setenv("OPENHAC_SCHEMATIC_STUB_ONLY", "1")
+    clear_symbol_pin_cache()
+
+    n = Net("N12")
+    r1 = Part("Device", "R", value="1k", ref="R1")
+    r2 = Part("Device", "R", value="1k", ref="R2")
+    r1[1] += n
+    r2[2] += n
+
+    from openhac.circuit import get_default_circuit
+
+    c = get_default_circuit()
+    geom = schematic_geometry(c)
+    assert len(geom["wires"]) == 1
+    x1, y1, x2, y2 = geom["wires"][0]
+    assert y2 - y1 == pytest.approx(2.54, rel=1e-3)
+
+    out = tmp_path / "stubonly.kicad_sch"
+    rep = tmp_path / "stubonly.openhac-sch-pinpos-report.json"
+    generate_schematic(str(out), Board(size_mm=(10, 10)), pinpos_report_path=str(rep))
+    payload = json.loads(rep.read_text(encoding="utf-8"))
+    assert payload.get("schema") == "openhac.sch_pinpos_report.v1"
+    assert int(payload.get("resolved_pin_count") or 0) == 0
+    assert int(payload.get("stub_pin_count") or 0) >= 2
