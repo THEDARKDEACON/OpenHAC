@@ -4,7 +4,7 @@ import warnings
 from unittest.mock import patch, MagicMock
 
 import pytest
-from skidl import Net
+from skidl import Net, Part
 
 from openhac.core.base import (
     Component,
@@ -124,6 +124,11 @@ class TestModule:
             mod.add(comp)
         assert len(mod.components) == 1
         assert comp._owning_module is mod
+        assert comp.part.fields.get("OpenHaC_Module") == "test"
+
+        raw = Part("Device", "R", value="1k", ref="R99")
+        mod.add(raw)
+        assert raw.fields.get("OpenHaC_Module") == "test"
 
     def test_declare_interface(self):
         mod = Module("test")

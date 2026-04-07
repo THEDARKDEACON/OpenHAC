@@ -153,6 +153,15 @@ def load_symbol_pin_positions(lib_file: Path, symbol_name: str) -> dict[str, tup
 
 def part_library_name(part) -> str:
     """KiCad library nick (e.g. ``Device``) for *part*; SKiDL stores a ``SchLib`` on ``part.lib``."""
+    # For SKiDL-native parts (tool=SKIDL) we can emit a project-local library and use a stable nick.
+    try:
+        tool = getattr(part, "tool", None)
+        import skidl  # local import to avoid hard dependency during docs builds
+
+        if tool == getattr(skidl, "SKIDL", None):
+            return "OpenHaC"
+    except Exception:
+        pass
     L = getattr(part, "lib", None)
     if L is None:
         return ""

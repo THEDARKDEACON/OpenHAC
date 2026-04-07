@@ -18,6 +18,17 @@ def _artifact_path(project_name: str, suffix: str, output_dir: str | os.PathLike
     return str(p / stem)
 
 
+def _normalize_compile_goal(v: str | None) -> str:
+    s = str(v or "").strip().lower()
+    if not s:
+        return "handoff"
+    if s in ("handoff", "hand-off", "hand_off", "kicad", "review"):
+        return "handoff"
+    if s in ("fabrication", "fab", "push_button_fab", "push-button-fab", "pushbuttonfab"):
+        return "fabrication"
+    raise ValueError(f"compile_goal must be 'handoff' or 'fabrication', got {v!r}")
+
+
 class Board:
     def __init__(
         self,
@@ -34,6 +45,7 @@ class Board:
         min_test_points: int | None = None,
         release_tag: str | None = None,
         build_profile: str | None = None,
+        compile_goal: str | None = None,
         bom_profile: str | None = None,
         strict_footprint_pin_pad_match: bool = False,
         max_jlc_extended_parts: int | None = None,
@@ -107,6 +119,10 @@ class Board:
         self.release_tag: str | None = release_tag
         #: Optional profile name for manifest (e.g. ``production``); env ``OPENHAC_BUILD_PROFILE`` also supported.
         self.build_profile: str | None = build_profile
+        #: Compile gating policy: ``handoff`` (reviewable KiCad artifacts) vs ``fabrication`` (stricter pass/fail).
+        #: Env ``OPENHAC_COMPILE_GOAL`` overrides when set for the run.
+        _cg_env = os.environ.get("OPENHAC_COMPILE_GOAL", "").strip()
+        self.compile_goal: str = _normalize_compile_goal(_cg_env or compile_goal)
         #: Optional BOM labeling profile: ``prod`` / ``production`` / ``cm`` strips internal & alternate columns from CSV (LIB-004).
         _bp = bom_profile
         if isinstance(_bp, str):
@@ -152,6 +168,10 @@ class Board:
         self._stackup_references: list[dict] = []
         #: Optional analog/mixed-signal merge handoff for manifest (SIG-006): ``{"net_a", "net_b", "via"}``.
         self._net_merge_hints: list[dict] = []
+        #: Keepout intent records (PCB keepout stretch): ``{"x_mm","y_mm","w_mm","h_mm","layers","purpose"}``.
+        self._keepout_rect_intents: list[dict] = []
+        #: Net-tie intents (SIG-006 / PCB): ``{"net_a","net_b","x_mm","y_mm","footprint","note"}``.
+        self._net_tie_intents: list[dict] = []
         #: Net object identities (`id(net)`) that require PWR_FLAG in ERC (SCH-004).
         self._explicit_power_net_ids: set[int] = set()
         #: Optional power rail documentation records for manifest / handoff (SCH-004): ``{"rail_name", "net"}``.
@@ -196,6 +216,11 @@ class Board:
             self.power_net_prefixes: tuple[str, ...] = tuple(str(x).strip().lower() for x in pnp if str(x).strip())
         else:
             self.power_net_prefixes = ()
+
+    def effective_compile_goal(self) -> str:
+        """Return the compile goal, honoring env override."""
+        env = os.environ.get("OPENHAC_COMPILE_GOAL", "").strip()
+        return _normalize_compile_goal(env or getattr(self, "compile_goal", None))
 
     def _propagate_board_ref(self, module):
         """Stamp *module* and nested :class:`Module` children with ``_openhac_host_board`` (this board)."""
@@ -263,14 +288,24 @@ class Board:
         return net
 
     def declare_net_merge_hint(self, net_a, net_b, via: str):
-        """Document intended star-point / ferrite merge between two nets; manifest handoff only (SIG-006)."""
-        self._net_merge_hints.append(
-            {
-                "net_a": str(getattr(net_a, "name", net_a)),
-                "net_b": str(getattr(net_b, "name", net_b)),
-                "via": str(via),
-            }
-        )
+        """Document intended star-point / ferrite merge between two nets (SIG-006).
+
+        Stretch: if *via* indicates a net-tie, OpenHaC also records a ``declare_net_tie`` intent so the
+        generated PCB can include a physical net-tie footprint when pcbnew is available.
+        """
+        rec = {
+            "net_a": str(getattr(net_a, "name", net_a)),
+            "net_b": str(getattr(net_b, "name", net_b)),
+            "via": str(via),
+        }
+        self._net_merge_hints.append(rec)
+
+        via_s = str(via or "").strip().lower()
+        if "net_tie" in via_s or "nett ie" in via_s or "net-tie" in via_s:
+            try:
+                self.declare_net_tie(net_a, net_b, note=f"from declare_net_merge_hint(via={via!r})")
+            except Exception:
+                pass
         return (net_a, net_b)
 
     def register_length_match_group(self, name: str, nets: list):
@@ -322,6 +357,62 @@ class Board:
         if note is not None and str(note).strip():
             rec["note"] = str(note).strip()
         self._mounting_hole_intents.append(rec)
+        return rec
+
+    def declare_keepout_rect(
+        self,
+        x_mm: float,
+        y_mm: float,
+        w_mm: float,
+        h_mm: float,
+        *,
+        layers: tuple[str, ...] = ("F.Cu", "B.Cu"),
+        purpose: str = "copper_tracks_vias",
+        note: str | None = None,
+    ) -> dict:
+        """Record a rectangular keepout intent (stretch).
+
+        This is used for pcbnew rule areas / keepout zones in the generated PCB when pcbnew is available.
+        """
+        rec: dict = {
+            "x_mm": float(x_mm),
+            "y_mm": float(y_mm),
+            "w_mm": float(w_mm),
+            "h_mm": float(h_mm),
+            "layers": [str(x) for x in layers] if layers else ["F.Cu", "B.Cu"],
+            "purpose": str(purpose),
+        }
+        if note is not None and str(note).strip():
+            rec["note"] = str(note).strip()
+        self._keepout_rect_intents.append(rec)
+        return rec
+
+    def declare_net_tie(
+        self,
+        net_a,
+        net_b,
+        *,
+        x_mm: float | None = None,
+        y_mm: float | None = None,
+        footprint: str = "NetTie:NetTie-2_SMD_Pad2.0mm",
+        note: str | None = None,
+    ) -> dict:
+        """Declare a net-tie footprint intent bridging *net_a* and *net_b* (stretch).
+
+        This is primarily used for mixed-signal ground tying (SIG-006) and will be emitted to the PCB
+        when pcbnew is available.
+        """
+        rec: dict = {
+            "net_a": str(getattr(net_a, "name", net_a)),
+            "net_b": str(getattr(net_b, "name", net_b)),
+            "footprint": str(footprint),
+        }
+        if x_mm is not None and y_mm is not None:
+            rec["x_mm"] = float(x_mm)
+            rec["y_mm"] = float(y_mm)
+        if note is not None and str(note).strip():
+            rec["note"] = str(note).strip()
+        self._net_tie_intents.append(rec)
         return rec
 
     def declare_dfm_reference(
@@ -441,6 +532,8 @@ class Board:
         spice_analysis_lines: list[str] | None = None,
         spice_analysis_json_path: str | os.PathLike[str] | None = None,
         output_dir: str | os.PathLike[str] | None = None,
+        run_ngspice: bool = False,
+        ngspice_log_path: str | os.PathLike[str] | None = None,
     ):
         logger.info(f"Preparing to simulate analog hardware graph: {project_name}")
 
@@ -473,6 +566,13 @@ class Board:
 
             cir_path = _artifact_path(project_name, ".cir", output_dir)
             generate_spice(cir_path, analysis_lines=analysis_lines)
+            if run_ngspice:
+                from openhac.compiler.ngspice_runner import run_ngspice_headless
+
+                lp = ngspice_log_path
+                if lp is None and output_dir is not None:
+                    lp = _artifact_path(project_name, ".cir.ngspice.log", output_dir)
+                run_ngspice_headless(cir_path, log_path=lp)
         except Exception as e:
             logger.error("SIMULATION ABORTED DUE TO PHYSICS RULES!")
             raise e

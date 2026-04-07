@@ -27,6 +27,7 @@ class CompileState:
     auto_route: bool
     export_schematic: bool
     allow_risky_part_lookups: bool
+    compile_goal: str = field(init=False)
     kicad_sch_erc: bool
     kicad_sch_erc_format: str
     source_script_path: str | os.PathLike[str] | None
@@ -43,12 +44,50 @@ class CompileState:
     def __post_init__(self) -> None:
         self.skip_layout = os.environ.get("OPENHAC_SKIP_LAYOUT", "").lower() in ("1", "true", "yes")
         from openhac.core.board import _artifact_path
+        self.compile_goal = self.board.effective_compile_goal()
 
         self.net_path = _artifact_path(self.project_name, ".net", self.output_dir)
         self.bom_path = (
             _artifact_path(self.project_name, ".csv", self.output_dir) if self.generate_bom else None
         )
         self.pcb_path = _artifact_path(self.project_name, ".kicad_pcb", self.output_dir)
+
+
+def phase_post_layout_checks(state: CompileState) -> None:
+    """Post-layout checks gated by compile goal.
+
+    Handoff mode: warnings are acceptable to preserve artifacts for review.
+    Fabrication mode: later phases will treat violations as build-stopping errors.
+    """
+    if state.skip_layout:
+        return
+    if not Path(state.pcb_path).is_file():
+        return
+    from openhac.compiler.pcb_fit import pcb_fit_violations_for_pcb_path
+    from openhac.compiler.rule_check import DRCViolationError
+
+    # Use the same geometry min-edge default as DRC baseline unless overridden later.
+    margin_mm = 0.0
+    try:
+        from openhac.compiler.rule_check import _effective_drc_defaults
+
+        margin_mm = float(_effective_drc_defaults(state.board).get("min_edge_clearance_mm", 0.0))
+    except Exception:
+        margin_mm = 0.0
+
+    viols = pcb_fit_violations_for_pcb_path(
+        state.pcb_path,
+        state.board,
+        margin_mm=margin_mm,
+        check_keepouts=True,
+    )
+    if not viols:
+        return
+    if state.compile_goal == "fabrication":
+        raise DRCViolationError("PCB fit gate failed (fabrication mode):\n" + "\n".join(f"  • {v}" for v in viols))
+    for v in viols:
+        logger.warning("%s", v)
+    return
 
 
 def phase_warn_multilayer_stackup(state: CompileState) -> None:
@@ -104,31 +143,72 @@ def phase_layout(state: CompileState) -> None:
 def phase_autoroute(state: CompileState) -> None:
     if state.skip_layout or not state.auto_route:
         return
-    if state.board._no_autoroute_net_names:
+    if not Path(state.pcb_path).is_file():
         logger.warning(
-            "PCB-007: declare_no_autoroute_net() set for %s — skipping FreeRouting "
-            "(route high-speed or sensitive nets manually in KiCad).",
-            state.board._no_autoroute_net_names,
+            "PCB autoroute skipped: PCB file was not generated at %s (layout phase failed or was mocked).",
+            state.pcb_path,
         )
         return
-    from openhac.compiler.autoroute_cli import run_freerouting
+    from openhac.compiler.autoroute_cli import run_freerouting, fallback_route_with_pcbnew
+    from openhac.core.base import FreeRoutingNotFoundError, AutorouterFailedError
 
     logger.info("Running auto-router...")
-    run_freerouting(state.pcb_path)
+    try:
+        if state.board._no_autoroute_net_names:
+            # Stretch: FreeRouting cannot be told about per-net exclusions here, so we conservatively
+            # skip FreeRouting but still attempt a pcbnew fallback that can avoid those nets.
+            if state.compile_goal == "fabrication":
+                raise AutorouterFailedError(
+                    "Fabrication mode requires a production-grade routing flow; "
+                    "per-net no-autoroute exclusions are not supported in this handoff. "
+                    f"Blocked nets: {state.board._no_autoroute_net_names}."
+                )
+            raise FreeRoutingNotFoundError(
+                f"PCB-007: declare_no_autoroute_net() set for {state.board._no_autoroute_net_names}."
+            )
+        run_freerouting(state.pcb_path)
+    except FreeRoutingNotFoundError as e:
+        if state.compile_goal == "fabrication":
+            raise AutorouterFailedError(
+                f"Fabrication mode routing gate failed: {str(e).strip()} "
+                "(install/configure FreeRouting or switch compile_goal=handoff)."
+            ) from e
+        # CI / dev machines often have pcbnew but not FreeRouting. Provide a best-effort
+        # fallback so the emitted .kicad_pcb contains tracks (useful for demos/tests),
+        # while still encouraging real routing via FreeRouting or KiCad for production.
+        logger.warning("%s Falling back to pcbnew minimal router.", str(e).strip())
+        fallback_route_with_pcbnew(
+            state.pcb_path, no_autoroute_nets=list(getattr(state.board, "_no_autoroute_net_names", None) or [])
+        )
 
 
 def phase_schematic(state: CompileState) -> None:
     if not state.export_schematic:
         return
     from openhac.compiler.project_gen import generate_project_file
-    from openhac.compiler.schematic_gen import generate_schematic
+    from openhac.compiler.schematic_gen import generate_schematic, write_generated_symbol_library
     from openhac.core.board import _artifact_path
+    from openhac.circuit import get_default_circuit
 
     state.sch_path = _artifact_path(state.project_name, ".kicad_sch", state.output_dir)
     state.pro_path = _artifact_path(state.project_name, ".kicad_pro", state.output_dir)
     pinpos_report = _artifact_path(state.project_name, ".openhac-sch-pinpos-report.json", state.output_dir)
-    generate_schematic(state.sch_path, state.board, pinpos_report_path=pinpos_report)
-    generate_project_file(state.pro_path)
+
+    # Generate project-local symbol library for SKiDL-native parts so KiCad renders them.
+    gen_sym_path = _artifact_path(state.project_name, ".openhac-generated.kicad_sym", state.output_dir)
+    sym_path = None
+    try:
+        sym_path = write_generated_symbol_library(gen_sym_path, get_default_circuit(), nickname="OpenHaC")
+    except Exception:
+        sym_path = None
+
+    generate_schematic(
+        state.sch_path,
+        state.board,
+        pinpos_report_path=pinpos_report,
+        generated_symbol_lib_path=sym_path,
+    )
+    generate_project_file(state.pro_path, sym_lib_path=sym_path, sym_lib_nick="OpenHaC")
 
     if not state.kicad_sch_erc:
         return
@@ -202,6 +282,7 @@ DEFAULT_COMPILE_PHASES: tuple[Callable[[CompileState], None], ...] = (
     phase_interface_validation,
     phase_netlist_bom,
     phase_layout,
+    phase_post_layout_checks,
     phase_autoroute,
     phase_schematic,
     phase_manifest,

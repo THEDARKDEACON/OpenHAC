@@ -230,6 +230,25 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
 
         fp.SetPosition(_to_board_vec(pcbnew_mod, x_mm, y_mm))
 
+        # Optional rotation hint (degrees) carried on SKiDL part fields.
+        try:
+            fields = getattr(part, "fields", None)
+            rot = None
+            if isinstance(fields, dict) and fields.get("OpenHaC_Rotation_Deg") is not None:
+                rot = float(fields.get("OpenHaC_Rotation_Deg"))
+            if rot is not None:
+                # KiCad pcbnew uses tenths of degrees in older APIs; in newer it is degrees.
+                # Try common setters; ignore if unavailable.
+                if hasattr(fp, "SetOrientationDegrees"):
+                    fp.SetOrientationDegrees(rot)
+                elif hasattr(fp, "SetOrientation"):
+                    try:
+                        fp.SetOrientation(int(rot * 10))
+                    except Exception:
+                        fp.SetOrientation(rot)
+        except Exception:
+            pass
+
         for pin in part.pins:
             try:
                 if SKIDL_NC is not None and pin.net is SKIDL_NC:

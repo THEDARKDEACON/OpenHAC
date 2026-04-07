@@ -206,6 +206,8 @@ def test_compile_writes_net_csv_and_manifest(tmp_path, seeded_resistor_db, monke
     cef = data.get("compile_env_flags") or {}
     assert isinstance(cef, dict) and "openhac_skip_layout" in cef
     assert "openhac_require_verified_parts" in cef
+    kev = data.get("kicad_env") or {}
+    assert isinstance(kev, dict)
     assert data.get("pcb_routing_handoff_schema") == "openhac.pcb_routing_handoff.v1"
     assert any(s.endswith(".net") for s in data["release_bundle_suffixes"])
     assert all(r["JLC_Class"] == "Extended" for r in r_rows)
@@ -975,6 +977,8 @@ def test_manifest_includes_pcb_pour_mount_and_dfm_refs(tmp_path, seeded_resistor
     board = Board(size_mm=(40.0, 40.0))
     board.declare_copper_pour_intent(gnd, layer="B.Cu", purpose="ground")
     board.declare_mounting_hole(2.5, 2.5, 2.2, note="M2.5")
+    board.declare_keepout_rect(1.0, 1.0, 5.0, 6.0, layers=("F.Cu",), purpose="placement", note="antenna keepout")
+    board.declare_net_tie(vcc, gnd, note="star point", x_mm=7.0, y_mm=7.0)
     dfm = tmp_path / "dfm.txt"
     dfm.write_text("checklist\n", encoding="utf-8")
     board.declare_dfm_reference(dfm, role="cm_dfm", documentation_note="run before fab")
@@ -994,6 +998,8 @@ def test_manifest_includes_pcb_pour_mount_and_dfm_refs(tmp_path, seeded_resistor
     mf = json.loads((tmp_path / "mech_meta.openhac-manifest.json").read_text(encoding="utf-8"))
     assert len(mf.get("copper_pour_intents") or []) == 1
     assert len(mf.get("mounting_hole_intents") or []) == 1
+    assert len(mf.get("keepout_rect_intents") or []) == 1
+    assert len(mf.get("net_tie_intents") or []) == 1
     assert (mf.get("dfm_references") or [{}])[0].get("role") == "cm_dfm"
     aux = tmp_path / "mech_meta.openhac-pcb-auxiliary-constraints.json"
     assert aux.is_file()
@@ -1001,11 +1007,15 @@ def test_manifest_includes_pcb_pour_mount_and_dfm_refs(tmp_path, seeded_resistor
     assert aux_payload.get("schema") == "openhac.pcb_auxiliary_handoff.v1"
     assert len(aux_payload.get("copper_pour_intents") or []) == 1
     assert len(aux_payload.get("mounting_hole_intents") or []) == 1
+    assert len(aux_payload.get("keepout_rect_intents") or []) == 1
+    assert len(aux_payload.get("net_tie_intents") or []) == 1
     assert mf.get("pcb_auxiliary_handoff_schema") == "openhac.pcb_auxiliary_handoff.v1"
     assert mf.get("pcb_auxiliary_handoff_suffix") == ".openhac-pcb-auxiliary-constraints.json"
     rj = json.loads((tmp_path / "mech_meta.openhac-pcb-routing-handoff.json").read_text(encoding="utf-8"))
     assert rj.get("copper_pour_intents")
     assert rj.get("mounting_hole_intents")
+    assert rj.get("keepout_rect_intents")
+    assert rj.get("net_tie_intents")
 
 
 def test_compile_release_zip_contains_artifacts(tmp_path, seeded_resistor_db, monkeypatch):

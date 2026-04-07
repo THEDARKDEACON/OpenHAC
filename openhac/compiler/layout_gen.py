@@ -160,6 +160,22 @@ def generate_layout(netlist_path: str, output_pcb_path: str, board):
 
         place_circuit_on_board(pcb, board, pcbnew)
 
+        # Stretch: emit copper pours + mounting holes when declared on the Board.
+        try:
+            from openhac.compiler.pcb_postprocess import (
+                apply_copper_pour_intents,
+                apply_keepout_rect_intents,
+                apply_mounting_hole_intents,
+                apply_net_tie_intents,
+            )
+
+            apply_keepout_rect_intents(pcb, board, pcbnew)
+            apply_net_tie_intents(pcb, board, pcbnew)
+            apply_mounting_hole_intents(pcb, board, pcbnew)
+            apply_copper_pour_intents(pcb, board, pcbnew)
+        except Exception as e:
+            logger.warning("PCB post-process helpers failed (continuing): %s", e)
+
         pcbnew.SaveBoard(output_pcb_path, pcb)
         logger.info("Board outline and footprints generated successfully.")
     except Exception as e:

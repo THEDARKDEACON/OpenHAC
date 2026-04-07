@@ -180,6 +180,8 @@ def _compile_env_flags() -> dict[str, bool]:
         "openhac_allow_risky_parts": _truthy_env("OPENHAC_ALLOW_RISKY_PARTS"),
         "openhac_require_verified_parts": _truthy_env("OPENHAC_REQUIRE_VERIFIED_PARTS"),
         "openhac_schematic_stub_only": _truthy_env("OPENHAC_SCHEMATIC_STUB_ONLY"),
+        "openhac_compile_goal_fabrication": os.environ.get("OPENHAC_COMPILE_GOAL", "").strip().lower()
+        in ("fabrication", "fab"),
         "openhac_deterministic_uuids": _truthy_env("OPENHAC_DETERMINISTIC_UUIDS"),
         "openhac_deterministic_schematic": _truthy_env("OPENHAC_DETERMINISTIC_SCHEMATIC"),
         "openhac_deterministic_manifest": _truthy_env("OPENHAC_DETERMINISTIC_MANIFEST"),
@@ -846,12 +848,16 @@ def _write_pcb_auxiliary_constraints_json(base: Path, project_name: str, board) 
     """PCB-009 / PCB-010: standalone JSON for copper pour + mounting hole intent (CM / layout tooling)."""
     pours = list(getattr(board, "_copper_pour_intents", None) or [])
     mounts = list(getattr(board, "_mounting_hole_intents", None) or [])
-    if not pours and not mounts:
+    keepouts = list(getattr(board, "_keepout_rect_intents", None) or [])
+    netties = list(getattr(board, "_net_tie_intents", None) or [])
+    if not pours and not mounts and not keepouts and not netties:
         return
     payload = {
         "schema": "openhac.pcb_auxiliary_handoff.v1",
         "copper_pour_intents": pours,
         "mounting_hole_intents": mounts,
+        "keepout_rect_intents": keepouts,
+        "net_tie_intents": netties,
     }
     out = base / f"{project_name}.openhac-pcb-auxiliary-constraints.json"
     out.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
@@ -899,7 +905,19 @@ def _write_pcb_routing_handoff_json(
     nmh = list(getattr(board, "_net_merge_hints", None) or [])
     pours = list(getattr(board, "_copper_pour_intents", None) or [])
     mounts = list(getattr(board, "_mounting_hole_intents", None) or [])
-    if not nar and not diff_pairs and not lmg and not nroles and not nmh and not pours and not mounts:
+    keepouts = list(getattr(board, "_keepout_rect_intents", None) or [])
+    netties = list(getattr(board, "_net_tie_intents", None) or [])
+    if (
+        not nar
+        and not diff_pairs
+        and not lmg
+        and not nroles
+        and not nmh
+        and not pours
+        and not mounts
+        and not keepouts
+        and not netties
+    ):
         return
     payload = {
         "schema": "openhac.pcb_routing_handoff.v1",
@@ -910,6 +928,8 @@ def _write_pcb_routing_handoff_json(
         "net_merge_hints": nmh,
         "copper_pour_intents": pours,
         "mounting_hole_intents": mounts,
+        "keepout_rect_intents": keepouts,
+        "net_tie_intents": netties,
     }
     if netclass_suggestions:
         payload["netclass_suggestions"] = list(netclass_suggestions)
@@ -1224,6 +1244,14 @@ def write_compile_manifest(
     if mounts_m:
         manifest["mounting_hole_intents"] = list(mounts_m)
         manifest["mounting_hole_intent_count"] = len(mounts_m)
+    kos_m = getattr(board, "_keepout_rect_intents", None) or []
+    if kos_m:
+        manifest["keepout_rect_intents"] = list(kos_m)
+        manifest["keepout_rect_intent_count"] = len(kos_m)
+    nt_m = getattr(board, "_net_tie_intents", None) or []
+    if nt_m:
+        manifest["net_tie_intents"] = list(nt_m)
+        manifest["net_tie_intent_count"] = len(nt_m)
     _pcb_aux_json = base / f"{project_name}.openhac-pcb-auxiliary-constraints.json"
     if _pcb_aux_json.is_file():
         manifest["pcb_auxiliary_handoff_schema"] = "openhac.pcb_auxiliary_handoff.v1"
@@ -1281,6 +1309,22 @@ def write_compile_manifest(
             "python_executable": sys.executable,
         }
     manifest["compile_env_flags"] = _compile_env_flags()
+    manifest["kicad_env"] = {
+        k: os.environ.get(k)
+        for k in sorted(
+            (
+                "OPENHAC_KICAD_SYMBOL_DIRS",
+                "KICAD9_SYMBOL_DIR",
+                "KICAD8_SYMBOL_DIR",
+                "KICAD7_SYMBOL_DIR",
+                "KICAD6_SYMBOL_DIR",
+                "KICAD_SYMBOL_DIR",
+                "KICAD9_FOOTPRINT_DIR",
+                "KICAD8_FOOTPRINT_DIR",
+                "KICAD_FOOTPRINT_DIR",
+            )
+        )
+    }
     _kcv = _try_kicad_cli_version()
     if _kcv:
         manifest["kicad_cli_version"] = _kcv
@@ -1304,6 +1348,7 @@ def write_compile_manifest(
     manifest["compile_options"] = {
         "auto_route": bool(auto_route),
         "skip_layout": bool(skip_layout),
+        "compile_goal": str(getattr(board, "effective_compile_goal", lambda: getattr(board, "compile_goal", "handoff"))()),
         "release_zip_requested": bool(release_zip_path),
     }
     if release_zip_path:
@@ -1523,10 +1568,12 @@ def write_compile_manifest(
         "openhac.compiler.compile_manifest._write_stackup_handoff_json"
     )
     manifest["pcb009_copper_pour_handoff_note"] = (
-        "declare_copper_pour_intent is documentation + manifest; pcbnew copper zones are not emitted by OpenHaC (PCB-009)."
+        "declare_copper_pour_intent is emitted to manifest and, when pcbnew is available, OpenHaC adds a best-effort "
+        "rectangular copper zone to the generated .kicad_pcb (PCB-009 stretch). Review/finalize zones in KiCad for fab."
     )
     manifest["pcb010_mounting_hole_handoff_note"] = (
-        "declare_mounting_hole is documentation + manifest; NPTH drill geometry is not emitted by OpenHaC (PCB-010)."
+        "declare_mounting_hole is emitted to manifest and, when pcbnew + MountingHole.pretty are available, OpenHaC "
+        "adds best-effort mounting hole footprints to the generated .kicad_pcb (PCB-010 stretch). Verify mechanicals in KiCad."
     )
     manifest["rel001_reliability_policy_key_catalog"] = [
         "ambient_operating_temp_c",

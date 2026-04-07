@@ -5,7 +5,7 @@ This document (**STR-001**) states what the toolchain aims to do today versus wh
 ## Tier A — Logic & manufacturing data
 
 - Declarative Python (`Module`, `Interface`, `Board`) driving **SKiDL** netlists.
-- **Hierarchical KiCad schematics** — generated `.kicad_sch` is **flat** only; no multi-sheet hierarchy in the exporter (**SCH-002**).
+- **Hierarchical KiCad schematics** — default `.kicad_sch` export is **flat**. Optional **multi-sheet** export is available via `OPENHAC_SCHEMATIC_MULTI_SHEET=1`, which emits one subsheet per `OpenHaC_Module` tag and uses **global labels** for cross-sheet connectivity (**SCH-002 stretch**).
 - **BOM** (`.csv`) with LCSC-oriented fields where the database provides them.
 - **ERC** (floating nets, unconnected pins, power flags, power budget) and **DRC** (board bounds, IPC-2152 vs design min trace width). OpenHaC ERC is a **pre-check** on the SKiDL graph; optional **`kicad-cli sch erc`** (``openhac compile --kicad-erc``) runs KiCad's schematic ERC on the exported ``.kicad_sch``.
 - **SQLite** component catalog + optional **jlcsearch** sync / JIT lookup.

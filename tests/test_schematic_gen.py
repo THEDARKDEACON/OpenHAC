@@ -145,6 +145,22 @@ def test_generate_schematic_is_deterministic_with_umbrella_env(tmp_path, monkeyp
     assert out1.read_text(encoding="utf-8") == out2.read_text(encoding="utf-8")
 
 
+def test_generate_schematic_emits_rotation_from_part_field(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    n = Net("PAIR")
+    a = Part("Device", "R", value="1k", ref="RA")
+    b = Part("Device", "R", value="1k", ref="RB")
+    # Rotation hint for one part.
+    a.fields["OpenHaC_Rotation_Deg"] = "90"
+    a[2] += n
+    b[2] += n
+    out = tmp_path / "rot.kicad_sch"
+    generate_schematic(str(out), Board(size_mm=(10, 10)))
+    text = out.read_text(encoding="utf-8")
+    assert '(symbol (lib_id "Device:R") (at ' in text
+    assert " 90" in text
+
+
 def _norm_wires(segs):
     return sorted(tuple(round(x, 4) for x in w) for w in segs)
 

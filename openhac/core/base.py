@@ -2,6 +2,17 @@ from __future__ import annotations
 
 import logging
 import urllib.parse
+
+# Ensure KiCad/SKiDL environment variables are seeded before importing SKiDL symbols.
+# This reduces noisy warnings like "KICAD*_SYMBOL_DIR environment variable is missing".
+try:
+    from openhac.core.env_setup import bootstrap_environment as _bootstrap_environment
+
+    _bootstrap_environment()
+except Exception:
+    # Never make env bootstrap failures fatal for imports/tests.
+    pass
+
 from skidl import Part, Net, Bus
 from openhac.database.db_manager import DatabaseManager
 from openhac.core.compile_context import get_compile_context
@@ -420,16 +431,36 @@ class Module:
         self.components.append(component)
         if isinstance(component, Component):
             component._owning_module = self
+            # Tag the underlying SKiDL part so schematic/BOM tooling can group by module.
+            try:
+                p = getattr(component, "part", None)
+                if p is not None and hasattr(p, "fields") and isinstance(p.fields, dict):
+                    p.fields.setdefault("OpenHaC_Module", str(self.name))
+            except Exception:
+                pass
         elif isinstance(component, Module):
             hb = getattr(self, "_openhac_host_board", None)
             if hb is not None:
                 hb._propagate_board_ref(component)
+        else:
+            # Allow direct SKiDL Parts to be added to modules (common in stress-test scripts).
+            try:
+                if hasattr(component, "fields") and isinstance(component.fields, dict):
+                    component.fields.setdefault("OpenHaC_Module", str(self.name))
+            except Exception:
+                pass
         return component
 
     def add_part(self, generic_name: str, **kwargs):
         """Like ``add(Component(...))`` but passes *this* module as ``parent_module`` so board strict flags apply at construction."""
         c = Component(generic_name, parent_module=self, **kwargs)
         self.components.append(c)
+        try:
+            p = getattr(c, "part", None)
+            if p is not None and hasattr(p, "fields") and isinstance(p.fields, dict):
+                p.fields.setdefault("OpenHaC_Module", str(self.name))
+        except Exception:
+            pass
         return c
 
     def declare_interface(self, name: str, *nets) -> "Interface":

@@ -30,6 +30,11 @@ def test_bootstrap_environment_sets_default_symbol_and_footprint_env(monkeypatch
     env_setup.bootstrap_environment()
 
     assert (env_setup.os.environ.get("KICAD8_SYMBOL_DIR") or "").endswith("symbols")
+    assert (env_setup.os.environ.get("KICAD9_SYMBOL_DIR") or "").endswith("symbols")
+    assert (env_setup.os.environ.get("KICAD7_SYMBOL_DIR") or "").endswith("symbols")
+    assert (env_setup.os.environ.get("KICAD6_SYMBOL_DIR") or "").endswith("symbols")
     assert env_setup.os.environ.get("OPENHAC_KICAD_SYMBOL_DIRS") is not None
     assert env_setup.os.environ.get("KICAD8_FOOTPRINT_DIR") == "/usr/share/kicad/footprints"
+    assert env_setup.os.environ.get("KICAD9_FOOTPRINT_DIR") == "/usr/share/kicad/footprints"
+    assert env_setup.os.environ.get("KICAD_FOOTPRINT_DIR") == "/usr/share/kicad/footprints"
 

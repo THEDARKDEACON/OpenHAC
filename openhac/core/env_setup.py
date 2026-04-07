@@ -102,19 +102,10 @@ def bootstrap_environment() -> None:
         _bootstrapped = True
         return
 
-    # If symbol path was auto-detected and no explicit KiCad symbol env hints are set,
-    # seed a default so other components (doctor/reporting) see a consistent env state.
-    if not any(
-        (os.environ.get(k) or "").strip()
-        for k in (
-            "KICAD9_SYMBOL_DIR",
-            "KICAD8_SYMBOL_DIR",
-            "KICAD7_SYMBOL_DIR",
-            "KICAD6_SYMBOL_DIR",
-            "KICAD_SYMBOL_DIR",
-        )
-    ):
-        os.environ.setdefault("KICAD8_SYMBOL_DIR", sym_path)
+    # Seed common KiCad symbol env keys so upstream tooling (and SKiDL) doesn't emit
+    # noisy "KICAD*_SYMBOL_DIR missing" warnings on some platforms. Respect explicit user values.
+    for k in ("KICAD9_SYMBOL_DIR", "KICAD8_SYMBOL_DIR", "KICAD7_SYMBOL_DIR", "KICAD6_SYMBOL_DIR"):
+        os.environ.setdefault(k, sym_path)
     os.environ.setdefault("OPENHAC_KICAD_SYMBOL_DIRS", sym_path)
 
     # Default footprint root for pcbnew .pretty resolution (no-op if user already set env)
@@ -125,7 +116,8 @@ def bootstrap_environment() -> None:
             os.path.expanduser("~/.local/share/kicad/8.0/footprints"),
         ):
             if os.path.isdir(_fp):
-                os.environ.setdefault("KICAD8_FOOTPRINT_DIR", _fp)
+                for k in ("KICAD9_FOOTPRINT_DIR", "KICAD8_FOOTPRINT_DIR", "KICAD_FOOTPRINT_DIR"):
+                    os.environ.setdefault(k, _fp)
                 break
 
     try:

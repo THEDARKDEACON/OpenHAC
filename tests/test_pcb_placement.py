@@ -13,6 +13,86 @@ from openhac.core.base import Component, Module
 from openhac.core.board import Board
 
 
+def test_place_circuit_applies_rotation_field(monkeypatch, tmp_path):
+    """Stretch: OpenHaC_Rotation_Deg on SKiDL part fields is applied to pcbnew footprints when possible."""
+    from skidl import Net, Part
+
+    # Minimal fake pcbnew footprint + pcb board.
+    class _Fp:
+        def __init__(self):
+            self.rot_deg = None
+
+        def SetReference(self, _):
+            pass
+
+        def SetValue(self, _):
+            pass
+
+        def SetPosition(self, _):
+            pass
+
+        def SetOrientationDegrees(self, d):
+            self.rot_deg = float(d)
+
+        def Pads(self):
+            return []
+
+    class _Plugin:
+        def FootprintLoad(self, *_args, **_kwargs):
+            return _Fp()
+
+    class _Pcb:
+        def __init__(self):
+            self.items = []
+
+        def Add(self, x):
+            self.items.append(x)
+
+        def GetNetsByName(self):
+            # Net assignment not used in this test.
+            return {}
+
+    class _PcbNew:
+        class PCB_IO_MGR:
+            KICAD_SEXP = 1
+
+            @staticmethod
+            def PluginFind(_):
+                return _Plugin()
+
+        @staticmethod
+        def FromMM(v):
+            return int(v * 1_000_000)
+
+        @staticmethod
+        def VECTOR2I(x, y):
+            return (x, y)
+
+        class NETINFO_ITEM:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+    # Build circuit with one rotated part.
+    n = Net("N")
+    p = Part("Device", "R", value="1k", ref="R1", footprint="Resistor_SMD:R_0603_1608Metric")
+    p.fields["OpenHaC_Rotation_Deg"] = "45"
+    p[1] += n
+
+    # Ensure footprint directory resolver returns something.
+    monkeypatch.setattr(
+        "openhac.compiler.pcb_placement.resolve_pretty_directory",
+        lambda _lib: str(tmp_path),
+    )
+
+    from openhac.compiler.pcb_placement import place_circuit_on_board
+
+    pcb = _Pcb()
+    board = Board(size_mm=(10, 10))
+    place_circuit_on_board(pcb, board, _PcbNew)
+    fps = [x for x in pcb.items if isinstance(x, _Fp)]
+    assert fps and fps[0].rot_deg == 45.0
+
+
 class TestParseFootprintId:
 
     def test_valid(self):

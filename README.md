@@ -9,6 +9,7 @@ Write your hardware design in Python. Define components, wire modules together, 
 - `.net` + `.csv` — SKiDL netlist and BOM (LCSC-oriented fields when available)
 - `.kicad_pcb` — KiCad board with outline, **footprint placement**, and pad nets (optional **autoroute** via FreeRouting)
 - `.kicad_sch` / `.kicad_pro` — optional schematic + project stub (when `export_schematic=True`)
+- `sym-lib-table` + `*.openhac-generated.kicad_sym` — project-local symbol library for SKiDL-native parts (prevents `?` symbols in KiCad)
 - `.openhac-manifest.json` — build output inventory (after a successful `compile`; optional `output_dir` / `openhac compile -o DIR` bundles artifacts — **MFG-005** / **STR-002**)
 - `.cir` — ngspice-oriented SPICE netlist from `Board.simulate()`
 
@@ -16,6 +17,11 @@ Write your hardware design in Python. Define components, wire modules together, 
 **Release engineering:** See [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md) and [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md) for spec tracking.
 
 **Tier C / autorouter honesty (PCB-007 / SIG-002):** FreeRouting is **placement/routing assistance**. It is **not** a substitute for manual **high-speed** routing, **differential-pair** impedance control, or **EMC** review — `Board.route_differential_pair()` is stored as a constraint but **not** consumed by the placer/router; controlled pairs must be finished in KiCad.
+
+**PCB fab-intent (keepouts / net-ties / pours):**
+- **Keepouts**: `Board.declare_keepout_rect(...)` emits a best-effort pcbnew **rule-area keepout** rectangle into the generated `.kicad_pcb` (when `pcbnew` is available). Use this for antenna zones, edge connector clearance, and “no copper/placement” regions.
+- **Net-ties**: `Board.declare_net_tie(net_a, net_b, ...)` emits a **NetTie** footprint into the `.kicad_pcb` with pad-1/pad-2 assigned to each net (when footprint libraries are available). `Board.declare_net_merge_hint(..., via="net_tie")` also records a net-tie intent automatically (SIG-006 stretch).
+- **Copper pours**: `Board.declare_copper_pour_intent(...)` emits best-effort rectangular copper zones on requested layers (when `pcbnew` is available). Always review/finalize zones and clearances in KiCad before fab.
 
 **CLI:** `openhac --version` prints the installed package version (aligned with HTTP User-Agent).
 
@@ -65,6 +71,7 @@ Dependencies are declared in **`pyproject.toml`** (no separate `requirements.txt
 **Requirements:**
 - Python 3.11+
 - KiCad 7 or 8 with Python bindings (for PCB/schematic output)
+- For PCB layout generation, OpenHaC needs the **`pcbnew` Python module** (KiCad Python bindings), not just a `pcbnew` binary on `PATH`.
 - KiCad footprint libraries on disk — set **`KICAD8_FOOTPRINT_DIR`** (or **`KICAD9_FOOTPRINT_DIR`**) to the folder that contains `*.pretty` directories (e.g. `/usr/share/kicad/footprints` on Linux) so the compiler can place footprints
 - Java runtime (for FreeRouting autorouter)
 
@@ -76,11 +83,13 @@ Dependencies are declared in **`pyproject.toml`** (no separate `requirements.txt
 |----------|---------|
 | **`OPENHAC_DB_PATH`** | Path to the SQLite component catalog (default: `openhac/database/openhac.db` inside the install). Use a writable path for CI or multi-project isolation. |
 | **`OPENHAC_SKIP_LAYOUT`** | If `1` / `true` / `yes`, `Board.compile()` skips KiCad `pcbnew` layout generation and autoroute — emits **`.net`**, **`.csv`**, and manifest only (headless CI / logic-only builds). |
+| **`OPENHAC_COMPILE_GOAL`** | Compile gate: `handoff` (reviewable KiCad outputs; best-effort routing allowed) vs `fabrication` (fail-closed gates like PCB fit + requiring a production router). |
 | **`OPENHAC_DETERMINISTIC`** | If set, prefer byte-stable outputs (stable zip entries, stable schematic UUIDs/ordering, stable manifest fields) for golden/CI artifact comparisons. |
 | **`OPENHAC_STRICT_JIT`** | If set, medium-confidence live/JIT part lookups are treated like low-confidence unless risky lookups are explicitly allowed (see `openhac compile --strict-jit`). |
 | **`OPENHAC_ALLOW_RISKY_PARTS`** | Allows low/medium JIT mappings when strict JIT is on (escape hatch; prefer an explicit DB seed/sync for production). |
 | **`OPENHAC_REQUIRE_VERIFIED_PARTS`** | If set, DRC fails when any **medium/low** confidence JIT parts are present (production gate). |
 | **`OPENHAC_KICAD_SYMBOL_DIRS`** | Pathsep-separated extra symbol search dirs for SCH-001 pin-position lookup (prepended ahead of KiCad defaults). |
+| **`OPENHAC_SCHEMATIC_MULTI_SHEET`** | If set, schematic export emits a root sheet + one subsheet per `OpenHaC_Module` tag (connectivity via global labels). |
 | **`OPENHAC_RELEASE_TAG`** | Optional string recorded in **``release_tag``** on the compile manifest (STR-002); CLI **``--release-tag``** overrides for one run. |
 | **`OPENHAC_BUILD_PROFILE`** | Optional string recorded as **``build_profile``** in the manifest (e.g. `production`). |
 
@@ -237,6 +246,7 @@ Or use the CLI (requires a top-level variable named `board`; do not call `board.
 ```bash
 openhac compile my_design.py --name my_board
 openhac compile my_design.py --no-route --no-schematic
+openhac compile my_design.py --compile-goal fabrication   # stricter gates (fit checks; requires production router)
 openhac compile my_design.py --strict-jit    # reject medium-confidence JIT unless risky parts allowed
 openhac compile my_design.py --production     # strict KiCad symbols + strict JIT for this compile (LIB-004 / LIB-003)
 openhac compile my_design.py --require-verified-parts   # fail if any medium/low confidence JIT parts are present
@@ -244,6 +254,22 @@ openhac compile my_design.py --skip-layout --deterministic -o out/    # headless
 openhac compile my_design.py -o dist/rel --release-tag v1.0.0 --build-profile production --zip-release
 openhac compile my_design.py --kicad-erc --kicad-erc-json   # JSON ERC report for parsing (SCH-003)
 ```
+
+### Stress-test example (`flight_controller.py`)
+
+This repo includes a deliberately large circuit definition (`flight_controller.py`) intended to stress OpenHaC’s netlist/BOM/schematic/layout pipeline.
+
+Compile it into `out/` (project opens in KiCad, includes a PCB + schematic):
+
+```bash
+python3 -m openhac doctor --strict-layout
+python3 -m openhac compile flight_controller.py --name fc_stress --deterministic -o out/
+```
+
+Notes:
+- If **FreeRouting** is installed and `FREEROUTING_JAR` is set, OpenHaC will use it for autorouting.
+- If `FREEROUTING_JAR` is not set but `pcbnew` imports, OpenHaC falls back to a **minimal pcbnew-based router** that adds a small number of tracks so the output PCB is not “empty”.
+- Open the result via `out/fc_stress.kicad_pro` in KiCad.
 
 With **`--skip-layout`** (or **`OPENHAC_SKIP_LAYOUT=1`**), the same CLI can produce netlist + BOM + manifest without `pcbnew` (useful in CI). Use **`--deterministic`** (or env **`OPENHAC_DETERMINISTIC=1`**) for stable artifacts suitable for golden comparisons. Use **`--zip-release`** (optional **`--zip-release-path`**) to archive emitted artifacts.
 
@@ -253,8 +279,12 @@ Toolchain/config preflight:
 openhac doctor --json
 openhac doctor --strict-headless --json   # require kicad-cli + symbol config
 openhac doctor --strict-layout --json     # require pcbnew + footprint config
+openhac doctor --strict-config --json     # require lib table or KICAD*_DIR hints only
+openhac doctor --strict-routing --json    # require java + FREEROUTING_JAR (autorouter)
 openhac doctor --print-env                # print best-effort export lines
 ```
+
+The `doctor --json` payload also includes a `kicad_env` map (relevant `KICAD*_SYMBOL_DIR` / `KICAD*_FOOTPRINT_DIR` vars plus `OPENHAC_KICAD_SYMBOL_DIRS`) and the compile manifest records the same map under `kicad_env` for audit/debug.
 
 **FreeRouting autorouter** requires the jar path:
 

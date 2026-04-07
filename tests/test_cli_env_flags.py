@@ -18,6 +18,7 @@ def test_cmd_compile_sets_skip_layout_and_db_path_and_verified_gate(tmp_path, mo
     prev_skip = os.environ.get("OPENHAC_SKIP_LAYOUT")
     prev_db = os.environ.get("OPENHAC_DB_PATH")
     prev_req = os.environ.get("OPENHAC_REQUIRE_VERIFIED_PARTS")
+    prev_sym_dirs = os.environ.get("OPENHAC_KICAD_SYMBOL_DIRS")
     prev_sym = os.environ.get("KICAD8_SYMBOL_DIR")
     prev_fp = os.environ.get("KICAD8_FOOTPRINT_DIR")
 
@@ -29,7 +30,13 @@ def test_cmd_compile_sets_skip_layout_and_db_path_and_verified_gate(tmp_path, mo
         assert (os.environ.get("OPENHAC_DB_PATH") or "") == "X.db"
         assert (os.environ.get("OPENHAC_REQUIRE_VERIFIED_PARTS") or "") == "1"
         assert (os.environ.get("KICAD8_SYMBOL_DIR") or "") == "SYM"
+        assert (os.environ.get("KICAD9_SYMBOL_DIR") or "") == "SYM"
+        assert (os.environ.get("KICAD7_SYMBOL_DIR") or "") == "SYM"
+        assert (os.environ.get("KICAD6_SYMBOL_DIR") or "") == "SYM"
         assert (os.environ.get("KICAD8_FOOTPRINT_DIR") or "") == "FP"
+        assert (os.environ.get("KICAD9_FOOTPRINT_DIR") or "") == "FP"
+        assert (os.environ.get("KICAD_FOOTPRINT_DIR") or "") == "FP"
+        assert (os.environ.get("OPENHAC_KICAD_SYMBOL_DIRS") or "") == "/sym/a:/sym/b"
         called["ok"] = True
 
     monkeypatch.setattr(Board, "compile", _fake_compile, raising=True)
@@ -57,6 +64,7 @@ def test_cmd_compile_sets_skip_layout_and_db_path_and_verified_gate(tmp_path, mo
         manifest_sha256_sidecar=False,
         deterministic=False,
         db_path="X.db",
+        kicad_symbol_dirs="/sym/a:/sym/b",
         kicad_symbol_dir="SYM",
         kicad_footprint_dir="FP",
     )
@@ -67,6 +75,7 @@ def test_cmd_compile_sets_skip_layout_and_db_path_and_verified_gate(tmp_path, mo
     assert os.environ.get("OPENHAC_SKIP_LAYOUT") == prev_skip
     assert os.environ.get("OPENHAC_DB_PATH") == prev_db
     assert os.environ.get("OPENHAC_REQUIRE_VERIFIED_PARTS") == prev_req
+    assert os.environ.get("OPENHAC_KICAD_SYMBOL_DIRS") == prev_sym_dirs
     assert os.environ.get("KICAD8_SYMBOL_DIR") == prev_sym
     assert os.environ.get("KICAD8_FOOTPRINT_DIR") == prev_fp
 
