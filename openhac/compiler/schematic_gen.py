@@ -498,11 +498,73 @@ def _emit_sheet_symbol(f, *, sheet_name: str, sheet_file: str, x: float, y: floa
     su = _uuid_for(f"sheet:{sheet_name}:{sheet_file}:{x:.3f},{y:.3f}")
     safe_name = kicad_string_escape(sheet_name)
     safe_file = kicad_string_escape(sheet_file)
-    f.write(f'  (sheet (at {_fmt_mm(x)} {_fmt_mm(y)}) (size {_fmt_mm(w)} {_fmt_mm(h)})\n')
+    f.write(f'  (sheet (at {_fmt_mm(x)} {_fmt_mm(y)} 0) (size {_fmt_mm(w)} {_fmt_mm(h)})\n')
+    # Minimal stroke/fill so KiCad treats this as a proper sheet symbol.
+    f.write('    (stroke (width 0.1524) (type default) (color 0 0 0 0))\n')
+    f.write('    (fill (color 0 0 0 0))\n')
     f.write(f'    (uuid "{su}")\n')
-    f.write("    (property \"Sheet name\" \"" + safe_name + "\" (at 0 0 0) (effects (font (size 1.27 1.27))))\n")
-    f.write("    (property \"Sheet file\" \"" + safe_file + "\" (at 0 0 0) (effects (font (size 1.27 1.27))))\n")
+    f.write(
+        "    (property \"Sheet name\" \""
+        + safe_name
+        + "\" (at "
+        + _fmt_mm(x + 1.0)
+        + " "
+        + _fmt_mm(y + 1.0)
+        + " 0) (effects (font (size 1.27 1.27))))\n"
+    )
+    f.write(
+        "    (property \"Sheet file\" \""
+        + safe_file
+        + "\" (at "
+        + _fmt_mm(x + 1.0)
+        + " "
+        + _fmt_mm(y + 3.0)
+        + " 0) (effects (font (size 1.27 1.27))))\n"
+    )
+    # Instances are optional for KiCad to open, but keep output minimal for determinism.
     f.write("  )\n")
+
+
+def _emit_sheet_pin(f, *, name: str, pin_type: str, x: float, y: float, rot: float = 0.0) -> None:
+    pu = _uuid_for(f"sheet_pin:{name}:{x:.3f},{y:.3f}:{pin_type}")
+    safe = kicad_string_escape(name)
+    f.write(f'    (pin "{safe}" {pin_type} (at {_fmt_mm(x)} {_fmt_mm(y)} {rot})\n')
+    f.write('      (effects (font (size 1.27 1.27)) (justify left))\n')
+    f.write(f'      (uuid "{pu}")\n')
+    f.write("    )\n")
+
+
+def _emit_hierarchical_label(f, *, name: str, pin_type: str, x: float, y: float) -> None:
+    """Child-sheet hierarchical label matching a parent sheet pin (KiCad S-expression)."""
+    lu = _uuid_for(f"hier_label:{name}:{x:.3f},{y:.3f}:{pin_type}")
+    safe = kicad_string_escape(name)
+    f.write(f'  (hierarchical_label "{safe}" (shape {pin_type}) (at {_fmt_mm(x)} {_fmt_mm(y)} 0)\n')
+    f.write('    (effects (font (size 1.27 1.27)) (justify left))\n')
+    f.write(f'    (uuid "{lu}")\n')
+    f.write("  )\n")
+
+
+def _interface_nets_for_module(module) -> list:
+    """Flatten module.required_interfaces into a stable list of nets for sheet pins."""
+    ifaces = getattr(module, "required_interfaces", None) or {}
+    out: list = []
+    for iname in sorted(ifaces.keys()):
+        iface = ifaces[iname]
+        for net in getattr(iface, "signals", []) or []:
+            out.append(net)
+    return out
+
+
+def _schematic_lint(board, circuit) -> list[str]:
+    """Best-effort schematic lint (Phase-1 quality gate)."""
+    violations: list[str] = []
+    # Require module interface nets to be named.
+    for mod in getattr(board, "modules", None) or []:
+        for net in _interface_nets_for_module(mod):
+            n = str(getattr(net, "name", "") or "").strip()
+            if not n or n == "?":
+                violations.append(f"Schematic lint: module {getattr(mod,'name','?')!r} interface net has no name.")
+    return violations
 
 
 def _nets_requiring_global_labels(circuit) -> dict:
@@ -603,6 +665,13 @@ def generate_schematic(
         else:
             label_resolver = EmptySymbolPinResolver() if _truthy_env("OPENHAC_SCHEMATIC_STUB_ONLY") else SymbolPinResolver()
 
+        # Lint before writing outputs so failures are deterministic.
+        lint = _schematic_lint(board, circuit)
+        if lint and board.effective_compile_goal() == "fabrication":
+            raise SchematicGenerationError("Schematic lint failed (fabrication mode):\n" + "\n".join(f"  • {v}" for v in lint))
+        for v in lint:
+            logger.warning("%s", v)
+
         if not multi_sheet:
             with open(output_path, "w", encoding="utf-8") as f:
                 # Header
@@ -652,34 +721,47 @@ def generate_schematic(
                 for net_name, lx, ly in _labels_for_module_sheet(circuit, "", part_placements, label_resolver):
                     _emit_net_label(f, net_name, lx, ly)
 
-                # Emit sheet symbols for each non-empty module group.
+                # Emit sheet symbols (with pins) for each top-level module.
                 mods = sorted([m for m in by_mod.keys() if m], key=lambda s: (s == "", s))
                 sx, sy = 10.0, 10.0
                 sw, sh = 60.0, 20.0
                 gap = 10.0
                 for i, mod_name in enumerate(mods):
                     fname = f"{stem}.{_safe_sheet_filename(mod_name)}.kicad_sch"
-                    _emit_sheet_symbol(
-                        f,
-                        sheet_name=mod_name,
-                        sheet_file=fname,
-                        x=sx,
-                        y=sy + i * (sh + gap),
-                        w=sw,
-                        h=sh,
-                    )
+                    x0 = sx
+                    y0 = sy + i * (sh + gap)
+                    _emit_sheet_symbol(f, sheet_name=mod_name, sheet_file=fname, x=x0, y=y0, w=sw, h=sh)
+
+                    # Add hierarchical pins for this module's declared interfaces (if we can find the module object).
+                    mod_obj = None
+                    for mm in getattr(board, "modules", None) or []:
+                        if str(getattr(mm, "name", "")) == mod_name:
+                            mod_obj = mm
+                            break
+                    if mod_obj is not None:
+                        nets = _interface_nets_for_module(mod_obj)
+                        # Stable unique names.
+                        seen: set[str] = set()
+                        pin_names: list[str] = []
+                        for net in nets:
+                            nn = str(getattr(net, "name", "") or "").strip()
+                            if nn and nn not in seen:
+                                seen.add(nn)
+                                pin_names.append(nn)
+                        # Pin placement: left side of sheet.
+                        px = x0
+                        py = y0 + 5.0
+                        for j, pname in enumerate(pin_names[:20]):  # cap to avoid insane sheet symbol
+                            _emit_sheet_pin(f, name=pname, pin_type="passive", x=px, y=py + j * 2.54, rot=0.0)
 
                 f.write(")\n")
 
-            # Write each subsheet with its module’s parts and local wiring, plus global labels as needed.
+            # Write each subsheet: module’s parts + local wires + hierarchical labels for interface nets.
             for mod_name in mods:
                 sheet_file = out_dir / f"{stem}.{_safe_sheet_filename(mod_name)}.kicad_sch"
                 sheet_uuid = _uuid_for(f"schematic:sheet:{mod_name}")
                 sheet_parts = sorted(by_mod.get(mod_name, []) or [], key=_part_stable_key)
 
-                # Reuse the global geometry wires; filter to wires whose endpoints correspond to pins on this sheet’s parts.
-                # Since geometry is not annotated per-wire, we regenerate geometry for the module’s circuit subset is future;
-                # here we keep only symbol placement and rely on global labels to preserve connectivity across sheets.
                 with open(sheet_file, "w", encoding="utf-8") as sf:
                     sf.write('(kicad_sch (version 20231120) (generator openhac)\n')
                     sf.write(f'  (uuid "{sheet_uuid}")\n')
@@ -690,9 +772,49 @@ def generate_schematic(
                         part_uuid = _uuid_for(f"symbol:{mod_name}:{ref}")
                         _emit_symbol_instance(sf, part, x, y, part_uuid)
 
-                    # Emit labels for cross-sheet nets and multi-drop nets to preserve connectivity.
-                    for net_name, lx, ly in _labels_for_module_sheet(circuit, mod_name, part_placements, label_resolver):
-                        _emit_net_label(sf, net_name, lx, ly)
+                    # Local wiring: only nets fully contained in this module.
+                    for net in sorted(list(circuit.nets), key=_net_stable_key):
+                        pins = sorted_net_pins(net)
+                        if len(pins) < 2:
+                            continue
+                        mods_on_net = {_module_field(p.part) for p in pins}
+                        if mods_on_net == {mod_name}:
+                            for i2 in range(len(pins) - 1):
+                                a = pins[i2]
+                                b2 = pins[i2 + 1]
+                                ax, ay = part_placements.get(a.part, (0.0, 0.0))
+                                bx, by = part_placements.get(b2.part, (0.0, 0.0))
+                                axw, ayw = _pin_world_xy(a, a.part, (ax, ay), label_resolver)
+                                bxw, byw = _pin_world_xy(b2, b2.part, (bx, by), label_resolver)
+                                _emit_wire(sf, axw, ayw, bxw, byw)
+
+                    # Hierarchical labels: for interface nets, place a hierarchical_label at first local pin.
+                    mod_obj = None
+                    for mm in getattr(board, "modules", None) or []:
+                        if str(getattr(mm, "name", "")) == mod_name:
+                            mod_obj = mm
+                            break
+                    if mod_obj is not None:
+                        iface_net_names = []
+                        seen = set()
+                        for net in _interface_nets_for_module(mod_obj):
+                            nn = str(getattr(net, "name", "") or "").strip()
+                            if nn and nn not in seen:
+                                seen.add(nn)
+                                iface_net_names.append(nn)
+                        for nn in iface_net_names[:40]:
+                            # Find a pin in this module on that net.
+                            net_obj = next((n for n in circuit.nets if (getattr(n, "name", None) or str(n)) == nn), None)
+                            if net_obj is None:
+                                continue
+                            pins = sorted_net_pins(net_obj)
+                            local_pin = next((p for p in pins if _module_field(p.part) == mod_name), None)
+                            if local_pin is None:
+                                continue
+                            px, py = part_placements.get(local_pin.part, (0.0, 0.0))
+                            lxw, lyw = _pin_world_xy(local_pin, local_pin.part, (px, py), label_resolver)
+                            _emit_hierarchical_label(sf, name=nn, pin_type="passive", x=lxw + 2.54, y=lyw)
+                            _emit_wire(sf, lxw, lyw, lxw + 2.54, lyw)
 
                     sf.write(")\n")
 

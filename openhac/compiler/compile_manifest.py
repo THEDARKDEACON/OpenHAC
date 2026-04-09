@@ -180,8 +180,7 @@ def _compile_env_flags() -> dict[str, bool]:
         "openhac_allow_risky_parts": _truthy_env("OPENHAC_ALLOW_RISKY_PARTS"),
         "openhac_require_verified_parts": _truthy_env("OPENHAC_REQUIRE_VERIFIED_PARTS"),
         "openhac_schematic_stub_only": _truthy_env("OPENHAC_SCHEMATIC_STUB_ONLY"),
-        "openhac_compile_goal_fabrication": os.environ.get("OPENHAC_COMPILE_GOAL", "").strip().lower()
-        in ("fabrication", "fab"),
+        "openhac_compile_goal_fabrication": os.environ.get("OPENHAC_COMPILE_GOAL", "").strip().lower() in ("fabrication", "fab"),
         "openhac_deterministic_uuids": _truthy_env("OPENHAC_DETERMINISTIC_UUIDS"),
         "openhac_deterministic_schematic": _truthy_env("OPENHAC_DETERMINISTIC_SCHEMATIC"),
         "openhac_deterministic_manifest": _truthy_env("OPENHAC_DETERMINISTIC_MANIFEST"),
@@ -1054,6 +1053,12 @@ def write_compile_manifest(
     _write_pcb_routing_handoff_json(
         base, project_name, board, diff_pairs_early, netclass_suggestions
     )
+    try:
+        from openhac.compiler.sipi_handoff import write_sipi_handoff_json
+
+        write_sipi_handoff_json(base, project_name, board)
+    except Exception:
+        pass
     if generate_bom:
         _write_bom_alternates_json(base, project_name, board)
     _write_bom_expand_hint_md(base, project_name, board)
@@ -1061,6 +1066,13 @@ def write_compile_manifest(
     _write_autoroute_policy_md(
         base, project_name, board, diff_pairs_early, auto_route=auto_route, skip_layout=skip_layout
     )
+    try:
+        from openhac.compiler.evidence_bundle import write_attestation_json, write_evidence_markdown
+
+        write_evidence_markdown(base, project_name, board)
+        write_attestation_json(base, project_name, board)
+    except Exception:
+        pass
 
     def add_if_exists(rel_name: str) -> None:
         p = (base / rel_name).resolve()
@@ -1093,11 +1105,14 @@ def write_compile_manifest(
     add_if_exists(f"{project_name}.openhac-mixed-signal-hint.md")
     add_if_exists(f"{project_name}.openhac-mixed-signal-constraints.json")
     add_if_exists(f"{project_name}.openhac-pcb-routing-handoff.json")
+    add_if_exists(f"{project_name}.openhac-sipi-handoff.json")
     add_if_exists(f"{project_name}.openhac-bom-alternates.json")
     add_if_exists(f"{project_name}.openhac-si-stackup-reminder.md")
     add_if_exists(f"{project_name}.openhac-bom-expand-hint.md")
     add_if_exists(f"{project_name}.openhac-spice-model-hint.md")
     add_if_exists(f"{project_name}.openhac-autoroute-policy.md")
+    add_if_exists(f"{project_name}.openhac-evidence.md")
+    add_if_exists(f"{project_name}.openhac-attestation.json")
     add_if_exists(f"{project_name}.net")
     add_if_exists(f"{project_name}.kicad_pcb")
     if generate_bom:
@@ -1351,6 +1366,9 @@ def write_compile_manifest(
         "compile_goal": str(getattr(board, "effective_compile_goal", lambda: getattr(board, "compile_goal", "handoff"))()),
         "release_zip_requested": bool(release_zip_path),
     }
+    pm = getattr(board, "_last_pcb_metrics", None)
+    if isinstance(pm, dict) and pm:
+        manifest["pcb_metrics"] = dict(pm)
     if release_zip_path:
         manifest["release_zip_path"] = str(Path(release_zip_path).resolve())
     manifest["compile_strictness"] = {

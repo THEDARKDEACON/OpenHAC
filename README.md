@@ -11,6 +11,9 @@ Write your hardware design in Python. Define components, wire modules together, 
 - `.kicad_sch` / `.kicad_pro` — optional schematic + project stub (when `export_schematic=True`)
 - `sym-lib-table` + `*.openhac-generated.kicad_sym` — project-local symbol library for SKiDL-native parts (prevents `?` symbols in KiCad)
 - `.openhac-manifest.json` — build output inventory (after a successful `compile`; optional `output_dir` / `openhac compile -o DIR` bundles artifacts — **MFG-005** / **STR-002**)
+- `*.openhac-evidence.md` — evidence index for review/sign-off (checks run, key metrics)
+- `*.openhac-attestation.json` — optional attestation metadata (when enabled)
+- `*.openhac-sipi-handoff.json` — consolidated SI/PI intent handoff bundle
 - `.cir` — ngspice-oriented SPICE netlist from `Board.simulate()`
 
 **Scope:** See [docs/SCOPE.md](docs/SCOPE.md) for capability tiers and non-goals.  
@@ -89,7 +92,8 @@ Dependencies are declared in **`pyproject.toml`** (no separate `requirements.txt
 | **`OPENHAC_ALLOW_RISKY_PARTS`** | Allows low/medium JIT mappings when strict JIT is on (escape hatch; prefer an explicit DB seed/sync for production). |
 | **`OPENHAC_REQUIRE_VERIFIED_PARTS`** | If set, DRC fails when any **medium/low** confidence JIT parts are present (production gate). |
 | **`OPENHAC_KICAD_SYMBOL_DIRS`** | Pathsep-separated extra symbol search dirs for SCH-001 pin-position lookup (prepended ahead of KiCad defaults). |
-| **`OPENHAC_SCHEMATIC_MULTI_SHEET`** | If set, schematic export emits a root sheet + one subsheet per `OpenHaC_Module` tag (connectivity via global labels). |
+| **`OPENHAC_SCHEMATIC_MULTI_SHEET`** | If set, schematic export emits a root sheet + one subsheet per module, with sheet pins + child hierarchical labels derived from `Module.declare_interface()` nets. |
+| **`OPENHAC_ATTEST_SIGNER`** | If set, OpenHaC emits `*.openhac-attestation.json` metadata with `signer=<value>` (signing is future; metadata is useful now). |
 | **`OPENHAC_RELEASE_TAG`** | Optional string recorded in **``release_tag``** on the compile manifest (STR-002); CLI **``--release-tag``** overrides for one run. |
 | **`OPENHAC_BUILD_PROFILE`** | Optional string recorded as **``build_profile``** in the manifest (e.g. `production`). |
 
@@ -270,6 +274,7 @@ Notes:
 - If **FreeRouting** is installed and `FREEROUTING_JAR` is set, OpenHaC will use it for autorouting.
 - If `FREEROUTING_JAR` is not set but `pcbnew` imports, OpenHaC falls back to a **minimal pcbnew-based router** that adds a small number of tracks so the output PCB is not “empty”.
 - Open the result via `out/fc_stress.kicad_pro` in KiCad.
+- When `OPENHAC_COMPILE_GOAL=fabrication`, OpenHaC will also run **KiCad PCB DRC** (`kicad-cli pcb drc`) and fail closed on violations.
 
 With **`--skip-layout`** (or **`OPENHAC_SKIP_LAYOUT=1`**), the same CLI can produce netlist + BOM + manifest without `pcbnew` (useful in CI). Use **`--deterministic`** (or env **`OPENHAC_DETERMINISTIC=1`**) for stable artifacts suitable for golden comparisons. Use **`--zip-release`** (optional **`--zip-release-path`**) to archive emitted artifacts.
 

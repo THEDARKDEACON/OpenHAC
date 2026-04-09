@@ -32,6 +32,8 @@ env/
 *.kicad_sch.erc.txt
 *-erc.rpt
 *.kicad_sch.erc.json
+# KiCad CLI PCB DRC reports (fabrication gate)
+*.kicad_pcb.drc.txt
 *.kicad_prl
 # KiCad / editor lock files (e.g. ~project.kicad_pcb.lck)
 *.lck
@@ -58,6 +60,7 @@ openhac_local.db
 # SPICE outputs
 # =============================================================================
 *.cir
+*.cir.ngspice.log
 
 # =============================================================================
 # Log files

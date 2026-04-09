@@ -35,6 +35,8 @@ class Board:
         size_mm: tuple,
         layers: int = 2,
         *,
+        board_class: str | None = None,
+        quality_gates: dict | None = None,
         strict: bool = False,
         strict_kicad: bool = False,
         fab_profile: str | None = None,
@@ -70,6 +72,22 @@ class Board:
             strict_jit_lookups = True
         self.size_mm = size_mm
         self.layers = layers
+        #: Target board class/profile (future: drives placement/routing policies and strict gates).
+        #: Examples: ``digital_2layer``, ``power_motor``, ``highspeed``, ``rf``, ``mixedsignal``.
+        self.board_class: str = str(board_class or "generic").strip() or "generic"
+        #: Quality gate config (compiler loop scaffold). Keys are intentionally free-form in Phase 0.
+        #: Later phases will standardize schema and surface it in CLI/manifest.
+        self.quality_gates: dict = dict(quality_gates) if quality_gates else {}
+        # Merge profile defaults (explicit gates override defaults).
+        try:
+            from openhac.compiler.board_profiles import resolve_board_profile
+
+            prof = resolve_board_profile(self.board_class)
+            merged = dict(prof.default_quality_gates or {})
+            merged.update(self.quality_gates)
+            self.quality_gates = merged
+        except Exception:
+            pass
         self.modules = []
         self.constraints = []
         #: When True, :attr:`strict_kicad` and :attr:`strict_jit_lookups` were both enabled (LIB-003 umbrella).
@@ -499,7 +517,20 @@ class Board:
         self.all_modules = self._get_all_modules()
 
         from openhac.core.compile_context import OpenHaCCompileContext, compile_context_reset, compile_context_set
-        from openhac.compiler.compile_pipeline import DEFAULT_COMPILE_PHASES, CompileState, run_compile_phases
+        from openhac.compiler.compile_pipeline import DEFAULT_COMPILE_PHASES, CompileState, run_compile_loop
+
+        # Deterministic mode: seed Python RNG so any downstream library randomness
+        # (e.g. SKiDL tags) is stable across runs with identical construction order.
+        try:
+            det = os.environ.get("OPENHAC_DETERMINISTIC", "").strip().lower() in ("1", "true", "yes", "on")
+            if det:
+                import hashlib
+                import random
+
+                seed = int(hashlib.sha256(str(project_name).encode("utf-8")).hexdigest()[:8], 16)
+                random.seed(seed)
+        except Exception:
+            pass
 
         ctx = OpenHaCCompileContext(self, allow_risky_part_lookups=allow_risky_part_lookups)
         tok = compile_context_set(ctx)
@@ -517,7 +548,8 @@ class Board:
                 output_dir=output_dir,
                 release_zip_path=release_zip_path,
             )
-            run_compile_phases(state, DEFAULT_COMPILE_PHASES)
+            max_attempts = int(getattr(self, "quality_gates", {}).get("max_attempts", 1) or 1)
+            run_compile_loop(state, generate_phases=DEFAULT_COMPILE_PHASES, max_attempts=max_attempts)
         except Exception as e:
             logger.error("COMPILER ABORTED DUE TO PHYSICS RULES OR PIPELINE ERROR: %s", e)
             raise
@@ -534,6 +566,7 @@ class Board:
         output_dir: str | os.PathLike[str] | None = None,
         run_ngspice: bool = False,
         ngspice_log_path: str | os.PathLike[str] | None = None,
+        require_spice_models: bool = False,
     ):
         logger.info(f"Preparing to simulate analog hardware graph: {project_name}")
 
@@ -546,6 +579,7 @@ class Board:
 
             run_erc(self)
             from openhac.compiler.spice_gen import generate_spice
+            from openhac.circuit import get_default_circuit
 
             analysis_lines = spice_analysis_lines
             if analysis_lines is None and spice_analysis_json_path is not None:
@@ -565,6 +599,20 @@ class Board:
                     analysis_lines = preset_analysis_lines(preset_name)
 
             cir_path = _artifact_path(project_name, ".cir", output_dir)
+            if require_spice_models:
+                try:
+                    from openhac.compiler.spice_gen import spice_model_coverage_summary
+
+                    s = spice_model_coverage_summary(get_default_circuit())
+                    need = int(s.get("parts_requiring_models", 0) or 0)
+                    have = int(s.get("parts_with_models", 0) or 0)
+                    if need > have:
+                        raise ValueError(
+                            f"SPICE model coverage gate failed: {have}/{need} model-required parts "
+                            f"have Spice_Subckt annotations."
+                        )
+                except Exception as e:
+                    raise
             generate_spice(cir_path, analysis_lines=analysis_lines)
             if run_ngspice:
                 from openhac.compiler.ngspice_runner import run_ngspice_headless

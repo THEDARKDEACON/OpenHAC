@@ -28,6 +28,8 @@ class CompileState:
     export_schematic: bool
     allow_risky_part_lookups: bool
     compile_goal: str = field(init=False)
+    board_class: str = field(init=False)
+    quality_gates: dict = field(init=False)
     kicad_sch_erc: bool
     kicad_sch_erc_format: str
     source_script_path: str | os.PathLike[str] | None
@@ -40,11 +42,14 @@ class CompileState:
     sch_path: str | None = field(init=False)
     pro_path: str | None = field(init=False)
     erc_report_name: str | None = field(default=None, init=False)
+    pcb_metrics: dict = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         self.skip_layout = os.environ.get("OPENHAC_SKIP_LAYOUT", "").lower() in ("1", "true", "yes")
         from openhac.core.board import _artifact_path
         self.compile_goal = self.board.effective_compile_goal()
+        self.board_class = str(getattr(self.board, "board_class", "generic") or "generic")
+        self.quality_gates = dict(getattr(self.board, "quality_gates", None) or {})
 
         self.net_path = _artifact_path(self.project_name, ".net", self.output_dir)
         self.bom_path = (
@@ -98,6 +103,25 @@ def phase_warn_multilayer_stackup(state: CompileState) -> None:
             "Finish stackup in KiCad; see docs/stackup_template.yaml (SIG-001).",
             b.layers,
         )
+
+
+def phase_kicad_pcb_drc(state: CompileState) -> None:
+    """Fabrication-mode PCB DRC gate via `kicad-cli pcb drc`."""
+    if state.compile_goal != "fabrication":
+        return
+    if state.skip_layout:
+        return
+    if not Path(state.pcb_path).is_file():
+        return
+    from openhac.compiler.kicad_pcb_drc import run_kicad_pcb_drc
+
+    # Write a report artifact next to other outputs for debugging.
+    report = None
+    try:
+        report = Path(state.output_dir) / f"{state.project_name}.kicad_pcb.drc.txt" if state.output_dir else None
+    except Exception:
+        report = None
+    run_kicad_pcb_drc(state.pcb_path, output_report=report, strict=True)
 
 
 def phase_erc_drc(state: CompileState) -> None:
@@ -179,6 +203,41 @@ def phase_autoroute(state: CompileState) -> None:
         logger.warning("%s Falling back to pcbnew minimal router.", str(e).strip())
         fallback_route_with_pcbnew(
             state.pcb_path, no_autoroute_nets=list(getattr(state.board, "_no_autoroute_net_names", None) or [])
+        )
+
+
+def phase_routing_metrics(state: CompileState) -> None:
+    """Collect routing metrics and enforce minimal quality thresholds."""
+    if state.skip_layout:
+        return
+    if not Path(state.pcb_path).is_file():
+        return
+    from openhac.compiler.pcb_metrics import compute_pcb_metrics
+    from openhac.compiler.routing_policy import effective_routing_quality_thresholds
+    from openhac.core.base import AutorouterFailedError
+
+    metrics = compute_pcb_metrics(state.pcb_path)
+    state.pcb_metrics = dict(metrics or {})
+    try:
+        state.board._last_pcb_metrics = dict(state.pcb_metrics)
+    except Exception:
+        pass
+
+    if not state.auto_route:
+        return
+    if state.compile_goal != "fabrication":
+        return
+
+    thr = effective_routing_quality_thresholds(state.board)
+    tc = int(state.pcb_metrics.get("track_count", 0) or 0)
+    vc = int(state.pcb_metrics.get("via_count", 0) or 0)
+    if tc < int(thr["min_track_count"]):
+        raise AutorouterFailedError(
+            f"Fabrication mode routing gate: track_count={tc} below min_track_count={thr['min_track_count']}."
+        )
+    if vc > int(thr["max_via_count"]):
+        raise AutorouterFailedError(
+            f"Fabrication mode routing gate: via_count={vc} exceeds max_via_count={thr['max_via_count']}."
         )
 
 
@@ -284,6 +343,8 @@ DEFAULT_COMPILE_PHASES: tuple[Callable[[CompileState], None], ...] = (
     phase_layout,
     phase_post_layout_checks,
     phase_autoroute,
+    phase_routing_metrics,
+    phase_kicad_pcb_drc,
     phase_schematic,
     phase_manifest,
     phase_release_zip,
@@ -296,3 +357,61 @@ COMPILE_PIPELINE_PHASE_NAMES: tuple[str, ...] = tuple(fn.__name__ for fn in DEFA
 def run_compile_phases(state: CompileState, phases: tuple[Callable[[CompileState], None], ...]) -> None:
     for fn in phases:
         fn(state)
+
+
+def run_compile_loop(
+    state: CompileState,
+    *,
+    generate_phases: tuple[Callable[[CompileState], None], ...] = DEFAULT_COMPILE_PHASES,
+    max_attempts: int = 1,
+) -> None:
+    """Explicit generate→gate→repair scaffold.
+
+    Phase-0 behavior is intentionally conservative: run the existing phase list once.
+    Later todos will split phases into generate vs gate and add repair/backtracking.
+    """
+    if max_attempts < 1:
+        max_attempts = 1
+    last_err: Exception | None = None
+    for attempt in range(1, max_attempts + 1):
+        try:
+            run_compile_phases(state, generate_phases)
+            return
+        except Exception as e:
+            last_err = e
+            # Repair hook (Phase-0/2 foundation): apply small, safe mutations and retry.
+            if attempt >= max_attempts:
+                raise
+            try:
+                _repair_after_failure(state, e)
+            except Exception as repair_e:
+                logger.warning("Repair hook failed (continuing): %s", repair_e)
+            logger.warning("Compile attempt %s/%s failed; retrying after repair hook: %s", attempt, max_attempts, e)
+            continue
+    if last_err is not None:
+        raise last_err
+
+
+def _repair_after_failure(state: CompileState, err: Exception) -> None:
+    """Best-effort repair actions before retrying the compile loop."""
+    # Placement heuristics are cheap and safe to (re)apply.
+    try:
+        from openhac.compiler.layout_heuristics import apply_layout_heuristics
+
+        apply_layout_heuristics(state.board)
+    except Exception:
+        pass
+
+    # Optional: auto-expand board outline on fit violations (useful for early iterations).
+    try:
+        from openhac.compiler.rule_check import DRCViolationError
+
+        if isinstance(err, DRCViolationError):
+            gates = dict(getattr(state.board, "quality_gates", None) or {})
+            expand = float(gates.get("auto_expand_board_mm", 0.0) or 0.0)
+            if expand > 0 and "outside Edge.Cuts" in str(err):
+                w, h = getattr(state.board, "size_mm", (0.0, 0.0))
+                state.board.size_mm = (float(w) + expand, float(h) + expand)
+                logger.warning("Repair: expanded board size to %sx%smm (auto_expand_board_mm=%s).", *state.board.size_mm, expand)
+    except Exception:
+        pass

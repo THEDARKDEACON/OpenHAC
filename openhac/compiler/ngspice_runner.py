@@ -7,6 +7,20 @@ from pathlib import Path
 from openhac.core.base import OpenHaCError
 
 
+def parse_ngspice_log(text: str) -> dict:
+    """Very small log parser for ngspice batch output.
+
+    This is not a full results extractor; it provides stable summary signals for CI/golden tests.
+    """
+    s = text or ""
+    low = s.lower()
+    return {
+        "log_bytes": int(len(s.encode("utf-8", errors="replace"))),
+        "error_line_count": int(sum(1 for ln in low.splitlines() if "error" in ln)),
+        "warning_line_count": int(sum(1 for ln in low.splitlines() if "warn" in ln)),
+    }
+
+
 def run_ngspice_headless(
     cir_path: str | Path,
     *,

@@ -102,3 +102,24 @@ def generate_spice(
     except Exception as e:
         logger.error("Native SPICE generation failed: %s", e)
         raise e
+
+
+def spice_model_coverage_summary(circuit) -> dict[str, int]:
+    """Best-effort summary of which parts have SPICE model annotations (SIM stretch)."""
+    parts = list(getattr(circuit, "parts", []) or [])
+    need = 0
+    have = 0
+    for part in parts:
+        # Passives and explicit sources are allowed to use value-based lines.
+        pref = (getattr(part, "ref_prefix", None) or "").strip().upper()
+        if pref in ("R", "C", "L", "V", "I"):
+            continue
+        need += 1
+        subckt = ""
+        try:
+            subckt = (part.fields.get("Spice_Subckt") or "").strip()
+        except Exception:
+            subckt = ""
+        if subckt:
+            have += 1
+    return {"parts_requiring_models": int(need), "parts_with_models": int(have)}

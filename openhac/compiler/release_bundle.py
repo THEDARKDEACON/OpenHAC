@@ -39,6 +39,8 @@ _RELEASE_SUFFIXES: tuple[str, ...] = (
     ".openhac-spice-model-hint.md",
     ".openhac-autoroute-policy.md",
     ".openhac-si-stackup-reminder.md",
+    ".openhac-evidence.md",
+    ".openhac-attestation.json",
     ".cir",
     ".kicad_sch.erc.txt",
     ".kicad_sch.erc.json",
