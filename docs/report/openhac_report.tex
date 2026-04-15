@@ -1,0 +1,180 @@
+\documentclass[11pt]{report}
+
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage{hyperref}
+\usepackage{listings}
+\usepackage{xcolor}
+\usepackage{longtable}
+\usepackage{booktabs}
+
+\hypersetup{
+  colorlinks=true,
+  linkcolor=blue,
+  urlcolor=blue,
+  citecolor=blue
+}
+
+\lstdefinestyle{openhac}{
+  basicstyle=\ttfamily\small,
+  breaklines=true,
+  columns=fullflexible,
+  frame=single,
+  framerule=0.2pt,
+  rulecolor=\color{black!30},
+  backgroundcolor=\color{black!2},
+}
+
+\title{OpenHaC: Hardware-as-Code\\A Detailed Technical Report}
+\author{OpenHaC Project}
+\date{\today}
+
+\begin{document}
+\maketitle
+\tableofcontents
+
+\chapter{Executive summary}
+
+OpenHaC is a Python-first toolchain for defining hardware in code and producing KiCad-compatible outputs.
+This report documents:
+\begin{itemize}
+  \item the architecture and compile pipeline,
+  \item artifact outputs and handoff formats,
+  \item the quality gates used to move toward fabrication-grade results,
+  \item verification hooks (SPICE and SI/PI intent),
+  \item reproducibility and release evidence.
+\end{itemize}
+
+\chapter{Scope and positioning}
+
+\section{What OpenHaC is}
+\begin{itemize}
+  \item A compiler from a declarative Python design graph (SKiDL-based) into KiCad project artifacts.
+  \item A policy engine: ERC/DRC gates, strictness modes, fabrication profiles, and evidence generation.
+\end{itemize}
+
+\section{What OpenHaC is not (yet)}
+Some engineering domains cannot be fully proven without measurements and external tools (e.g. EMC compliance).
+OpenHaC therefore uses a layered approach: encode intent, enforce hard checks, and export evidence.
+
+\chapter{Architecture overview}
+
+\section{High-level structure}
+\begin{itemize}
+  \item \textbf{Core:} \texttt{openhac/core/} (\texttt{Board}, \texttt{Module}, \texttt{Component})
+  \item \textbf{Compiler:} \texttt{openhac/compiler/} (pipeline phases and generators)
+  \item \textbf{Database:} \texttt{openhac/database/} (component catalog, offers, alternates)
+\end{itemize}
+
+\section{Core primitives}
+\subsection{Board}
+\texttt{Board} is the top-level orchestrator. It owns:
+\begin{itemize}
+  \item geometry: \texttt{size\_mm}, \texttt{layers},
+  \item modules and constraints,
+  \item compile policy: \texttt{compile\_goal}, \texttt{board\_class}, \texttt{quality\_gates},
+  \item optional fabrication intent: keepouts, pours, net-ties, mounting holes.
+\end{itemize}
+
+\subsection{Module and Interface}
+\texttt{Module} groups parts and exposes named \texttt{Interface}s.
+Interfaces are used as the natural boundary for hierarchical schematics and connectivity linting.
+
+\chapter{Compile pipeline}
+
+\section{Pipeline phases}
+OpenHaC compiles via ordered phases (ERC/DRC, netlist/BOM, layout, routing, schematic, manifest, release zip).
+The pipeline supports a compile loop scaffold that can retry after applying best-effort repairs.
+
+\section{Compile goal: handoff vs fabrication}
+\begin{itemize}
+  \item \textbf{handoff:} preserve artifacts for review; allow best-effort routing fallback.
+  \item \textbf{fabrication:} fail-closed gates (PCB fit, routing thresholds, KiCad PCB DRC).
+\end{itemize}
+
+\section{Board classes and profiles}
+Board class is a profile input that sets defaults for quality gates and (over time) will drive
+placement and routing strategies.
+
+\chapter{Schematic generation}
+
+\section{Symbol resolution}
+OpenHaC supports KiCad \texttt{.kicad\_sym} pin coordinate lookup for accurate wire endpoints.
+For SKiDL-native parts, OpenHaC can generate a project-local symbol library so KiCad does not render \texttt{?}.
+
+\section{Hierarchy export}
+Multi-sheet export can emit:
+\begin{itemize}
+  \item a root sheet with sheet symbols,
+  \item sheet pins derived from \texttt{Module.declare\_interface()} nets,
+  \item child sheets with matching hierarchical labels,
+  \item per-sheet wiring for nets contained within a module.
+\end{itemize}
+
+\section{Schematic lint}
+Schematic lint is a best-effort quality gate: e.g. interface nets should be named.
+In fabrication mode, lint violations are treated as failures; in handoff mode they are warnings.
+
+\chapter{PCB layout and routing}
+
+\section{Placement}
+OpenHaC uses module-level constraints and (optionally) Z3 solving for placement.
+Post-processing via \texttt{pcbnew} can emit keepouts, net-ties, mounting holes, and copper pours.
+
+\section{Routing}
+Two routing paths exist:
+\begin{itemize}
+  \item FreeRouting DSN/SES flow (preferred for real routing assistance).
+  \item A minimal \texttt{pcbnew}-based fallback that draws straight-line tracks (handoff only).
+\end{itemize}
+
+\section{Routing metrics and gates}
+Fabrication mode can enforce minimal routing-quality thresholds (e.g. minimum track count) and then run KiCad PCB DRC
+(\texttt{kicad-cli pcb drc}) as the authoritative physical-rule gate.
+
+\chapter{Verification}
+
+\section{SPICE}
+OpenHaC generates an ngspice-oriented \texttt{.cir} netlist from the same graph.
+Optional gates can require that model-required parts have \texttt{Spice\_Subckt} annotations and can run ngspice headlessly.
+
+\section{SI/PI handoff}
+OpenHaC records intent for:
+\begin{itemize}
+  \item differential pairs,
+  \item length-match groups,
+  \item net roles and merge hints,
+  \item stackup references.
+\end{itemize}
+These are packaged as a consolidated handoff JSON for downstream tools and review.
+
+\chapter{Reproducibility and release evidence}
+
+\section{Determinism}
+Deterministic mode aims for byte-stable artifacts where possible (sorted JSON, stable timestamps, stable zip entries).
+
+\section{Evidence bundle}
+Evidence artifacts include:
+\begin{itemize}
+  \item manifest output inventory,
+  \item evidence index markdown,
+  \item optional attestation metadata.
+\end{itemize}
+
+\chapter{Appendix: commands}
+
+\section{Compile}
+\begin{lstlisting}[style=openhac]
+openhac compile design.py --name out --compile-goal handoff -o build/
+openhac compile design.py --name out --compile-goal fabrication -o build/
+\end{lstlisting}
+
+\section{Simulate}
+\begin{lstlisting}[style=openhac]
+openhac simulate design.py --name sim -o build/ --spice-preset op
+openhac simulate design.py --name sim -o build/ --run-ngspice
+\end{lstlisting}
+
+\end{document}
+

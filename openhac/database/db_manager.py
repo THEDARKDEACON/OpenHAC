@@ -25,6 +25,38 @@ _V3_COLUMNS = {
     "spice_subckt": "TEXT",
 }
 
+# Columns added in schema v6 (Pinout storage for SKiDL removal)
+_V6_COLUMNS = {
+    "pinout_json": "TEXT",  # JSON array of pin objects: [{"num": "1", "name": "VIN", "type": "power"}, ...]
+    "symbol_data": "TEXT",  # KiCad symbol data for schematic generation
+}
+
+# Columns added in schema v7 (Complete component data - Phase 3)
+_V7_COLUMNS = {
+    # Thermal characteristics
+    "thermal_json": "TEXT",  # JSON: {"r_theta_ja": 45.0, "max_tj": 125, "max_power": 0.5}
+    # Package dimensions (mm)
+    "package_length_mm": "REAL",
+    "package_width_mm": "REAL",
+    "package_height_mm": "REAL",
+    "lead_pitch_mm": "REAL",
+    # Lifecycle and compliance
+    "lifecycle_status": "TEXT",  # Active, NRND, Obsolete, Preview
+    "compliance_flags": "TEXT",  # Comma-separated: RoHS,REACH,AEC-Q100,MIL-STD
+    # Supply chain
+    "lead_time_days": "INTEGER",
+    "moq": "INTEGER",  # Minimum order quantity
+    # Alternative parts
+    "alternative_mpns": "TEXT",  # JSON array of equivalent MPNs
+    # Simulation models
+    "spice_model_path": "TEXT",
+    "ibis_model_path": "TEXT",
+    # Manufacturer info
+    "manufacturer_info_json": "TEXT",  # JSON: {"location": "CN", "certs": ["ISO9001"]}
+    # Application info
+    "typical_applications": "TEXT",  # Comma-separated reference design names
+}
+
 
 class DatabaseManager:
     def __init__(self, db_path=DB_PATH):
@@ -41,6 +73,8 @@ class DatabaseManager:
             self._migrate_v3(conn)
             self._migrate_v4(conn)
             self._migrate_v5_part_alternates_group(conn)
+            self._migrate_v6_pinout(conn)
+            self._migrate_v7_complete_data(conn)
             conn.commit()
 
     @staticmethod
@@ -86,6 +120,24 @@ class DatabaseManager:
         existing = {row[1] for row in cur.fetchall()}
         if "alternate_group_id" not in existing:
             conn.execute("ALTER TABLE part_alternates ADD COLUMN alternate_group_id TEXT")
+
+    @staticmethod
+    def _migrate_v6_pinout(conn):
+        """SKiDL-001: Add pinout and symbol data columns for native netlist generation (idempotent)."""
+        cursor = conn.execute("PRAGMA table_info(components)")
+        existing = {row[1] for row in cursor.fetchall()}
+        for col_name, col_def in _V6_COLUMNS.items():
+            if col_name not in existing:
+                conn.execute(f"ALTER TABLE components ADD COLUMN {col_name} {col_def}")
+
+    @staticmethod
+    def _migrate_v7_complete_data(conn):
+        """DATA-001: Add thermal, dimensions, lifecycle, compliance, and supply chain data (idempotent)."""
+        cursor = conn.execute("PRAGMA table_info(components)")
+        existing = {row[1] for row in cursor.fetchall()}
+        for col_name, col_def in _V7_COLUMNS.items():
+            if col_name not in existing:
+                conn.execute(f"ALTER TABLE components ADD COLUMN {col_name} {col_def}")
 
     def get_component(self, generic_name: str) -> dict:
         """Fetches a component by its generic name."""

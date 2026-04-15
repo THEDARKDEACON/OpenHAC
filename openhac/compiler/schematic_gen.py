@@ -141,10 +141,151 @@ def _fmt_mm(x: float) -> str:
     return s if s else "0"
 
 
+def _detect_symbol_type(part) -> str:
+    """Detect component type from footprint/ref prefix for appropriate symbol shape."""
+    fp = str(getattr(part, 'footprint', '') or '').lower()
+    ref = str(getattr(part, 'ref', '') or '').lower()
+    name = str(getattr(part, 'name', '') or '').lower()
+
+    # Check reference prefix first
+    if ref.startswith('r'):
+        return 'resistor'
+    if ref.startswith('c'):
+        return 'capacitor'
+    if ref.startswith('l'):
+        return 'inductor'
+    if ref.startswith('d'):
+        return 'diode'
+    if ref.startswith('led') or 'led' in name:
+        return 'led'
+    if ref.startswith('q'):
+        return 'transistor'
+    if ref.startswith('y') or 'xtal' in name or 'crystal' in fp:
+        return 'crystal'
+    if ref.startswith('f'):
+        return 'fuse'
+    if ref.startswith('sw') or 'switch' in name:
+        return 'switch'
+    if ref.startswith('j') or 'conn' in name or 'header' in fp:
+        return 'connector'
+    # ICs default to rectangle
+    return 'ic'
+
+
+def _resistor_graphic() -> str:
+    """Zig-zag resistor symbol centered at origin."""
+    # Standard resistor: 10 segments in zig-zag pattern
+    segments = [
+        "      (polyline (pts (xy -3.81 0) (xy -3.175 0)) (stroke (width 0.254)))",
+        "      (polyline (pts (xy -3.175 0) (xy -2.54 1.016) (xy -1.905 -1.016) (xy -1.27 1.016)) (stroke (width 0.254)))",
+        "      (polyline (pts (xy -1.27 1.016) (xy -0.635 -1.016) (xy 0 1.016)) (stroke (width 0.254)))",
+        "      (polyline (pts (xy 0 1.016) (xy 0.635 -1.016) (xy 1.27 1.016)) (stroke (width 0.254)))",
+        "      (polyline (pts (xy 1.27 1.016) (xy 1.905 -1.016) (xy 2.54 0)) (stroke (width 0.254)))",
+        "      (polyline (pts (xy 2.54 0) (xy 3.175 0)) (stroke (width 0.254)))",
+    ]
+    return "\n".join(segments)
+
+
+def _capacitor_graphic() -> str:
+    """Parallel plate capacitor symbol."""
+    return """      (polyline (pts (xy -0.508 -1.27) (xy -0.508 1.27)) (stroke (width 0.254)))
+      (polyline (pts (xy 0.508 -1.27) (xy 0.508 1.27)) (stroke (width 0.254)))
+      (polyline (pts (xy -3.175 0) (xy -0.508 0)) (stroke (width 0.254)))
+      (polyline (pts (xy 0.508 0) (xy 3.175 0)) (stroke (width 0.254)))"""
+
+
+def _inductor_graphic() -> str:
+    """Coil inductor symbol."""
+    return """      (arc (start -1.27 0) (mid -0.635 0.635) (end 0 0) (stroke (width 0.254)))
+      (arc (start 0 0) (mid 0.635 0.635) (end 1.27 0) (stroke (width 0.254)))
+      (arc (start 1.27 0) (mid 1.905 0.635) (end 2.54 0) (stroke (width 0.254)))
+      (arc (start 2.54 0) (mid 3.175 0.635) (end 3.81 0) (stroke (width 0.254)))
+      (polyline (pts (xy -3.81 0) (xy -1.27 0)) (stroke (width 0.254)))
+      (polyline (pts (xy 3.81 0) (xy 5.08 0)) (stroke (width 0.254)))"""
+
+
+def _diode_graphic() -> str:
+    """Diode symbol with triangle and bar."""
+    return """      (polyline (pts (xy -1.27 -1.27) (xy -1.27 1.27) (xy 1.27 0) (xy -1.27 -1.27)) (stroke (width 0.254)) (fill (type none)))
+      (polyline (pts (xy 1.27 -1.27) (xy 1.27 1.27)) (stroke (width 0.254)))
+      (polyline (pts (xy -2.54 0) (xy -1.27 0)) (stroke (width 0.254)))
+      (polyline (pts (xy 1.27 0) (xy 2.54 0)) (stroke (width 0.254)))"""
+
+
+def _led_graphic() -> str:
+    """LED symbol (diode with arrows)."""
+    return """      (polyline (pts (xy -1.27 -1.27) (xy -1.27 1.27) (xy 1.27 0) (xy -1.27 -1.27)) (stroke (width 0.254)) (fill (type none)))
+      (polyline (pts (xy 1.27 -1.27) (xy 1.27 1.27)) (stroke (width 0.254)))
+      (polyline (pts (xy -2.54 0) (xy -1.27 0)) (stroke (width 0.254)))
+      (polyline (pts (xy 1.27 0) (xy 2.54 0)) (stroke (width 0.254)))
+      (polyline (pts (xy 0.508 1.778) (xy 1.27 2.54)) (stroke (width 0.254)))
+      (polyline (pts (xy 1.016 2.286) (xy 1.27 2.54) (xy 0.762 2.54)) (stroke (width 0.254)))
+      (polyline (pts (xy -0.254 1.016) (xy 0.508 1.778)) (stroke (width 0.254)))
+      (polyline (pts (xy 0.254 1.524) (xy 0.508 1.778) (xy 0 1.778)) (stroke (width 0.254)))"""
+
+
+def _transistor_graphic() -> str:
+    """MOSFET symbol."""
+    return """      (circle (center 0 0) (radius 2.54) (stroke (width 0.254)) (fill (type none)))
+      (polyline (pts (xy -2.54 0) (xy -1.27 0)) (stroke (width 0.254)))
+      (polyline (pts (xy -1.27 -1.905) (xy -1.27 1.905)) (stroke (width 0.254)))
+      (polyline (pts (xy -1.27 -1.27) (xy 0.635 -1.27)) (stroke (width 0.254)))
+      (polyline (pts (xy -1.27 0) (xy 0.635 0)) (stroke (width 0.254)))
+      (polyline (pts (xy -1.27 1.27) (xy 0.635 1.27)) (stroke (width 0.254)))
+      (polyline (pts (xy 0.635 -1.905) (xy 0.635 1.905)) (stroke (width 0.254)))
+      (polyline (pts (xy 0.635 0) (xy 2.54 0)) (stroke (width 0.254)))"""
+
+
+def _crystal_graphic() -> str:
+    """Crystal symbol with two plates."""
+    return """      (rectangle (start -1.27 -1.27) (end 1.27 1.27) (stroke (width 0.254)) (fill (type none)))
+      (polyline (pts (xy -2.54 -1.27) (xy -2.54 1.27)) (stroke (width 0.254)))
+      (polyline (pts (xy 2.54 -1.27) (xy 2.54 1.27)) (stroke (width 0.254)))
+      (polyline (pts (xy -3.81 -1.27) (xy -3.81 1.27)) (stroke (width 0.254)))
+      (polyline (pts (xy 3.81 -1.27) (xy 3.81 1.27)) (stroke (width 0.254)))
+      (polyline (pts (xy -3.81 0) (xy -3.175 0)) (stroke (width 0.254)))
+      (polyline (pts (xy 3.175 0) (xy 3.81 0)) (stroke (width 0.254)))"""
+
+
+def _fuse_graphic() -> str:
+    """Fuse symbol (rectangle with leads)."""
+    return """      (rectangle (start -1.27 -0.635) (end 1.27 0.635) (stroke (width 0.254)) (fill (type none)))
+      (polyline (pts (xy -3.175 0) (xy -1.27 0)) (stroke (width 0.254)))
+      (polyline (pts (xy 1.27 0) (xy 3.175 0)) (stroke (width 0.254)))"""
+
+
+def _ic_graphic(name: str, pin_count: int) -> str:
+    """IC rectangle with appropriate size for pin count."""
+    # Calculate height based on pin count (2.54mm per pin pair)
+    height_pins = max(pin_count // 2, 4)
+    h = height_pins * 1.27  # half spacing
+    w = 5.08  # standard width
+    return f'      (rectangle (start -{w} -{h}) (end {w} {h}) (stroke (width 0.254)) (fill (type none)))'
+
+
+def _get_graphic_for_type(sym_type: str, name: str, pin_count: int) -> str:
+    """Return appropriate graphic for component type."""
+    graphics = {
+        'resistor': _resistor_graphic(),
+        'capacitor': _capacitor_graphic(),
+        'inductor': _inductor_graphic(),
+        'diode': _diode_graphic(),
+        'led': _led_graphic(),
+        'transistor': _transistor_graphic(),
+        'crystal': _crystal_graphic(),
+        'fuse': _fuse_graphic(),
+        'switch': _fuse_graphic(),  # Rectangle for now
+        'connector': _ic_graphic(name, pin_count),
+        'ic': _ic_graphic(name, pin_count),
+    }
+    return graphics.get(sym_type, _ic_graphic(name, pin_count))
+
+
 def write_generated_symbol_library(output_path: str, circuit, *, nickname: str = "OpenHaC") -> str | None:
-    """Write a minimal KiCad ``.kicad_sym`` for SKiDL-native parts.
+    """Write a KiCad ``.kicad_sym`` for SKiDL-native parts with component-appropriate symbols.
 
     This prevents KiCad showing '?' placeholders when symbols are not available in system libraries.
+    Generates type-appropriate symbols: resistors as zig-zags, capacitors as plates, etc.
     Returns the written path, or None if nothing was generated.
     """
     parts = list(getattr(circuit, "parts", []) or [])
@@ -164,34 +305,62 @@ def write_generated_symbol_library(output_path: str, circuit, *, nickname: str =
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    def _sym_header(name: str) -> str:
-        # very small rectangle body, pins around left/right.
+    def _sym_header(name: str, ref_prefix: str, sym_type: str, pin_count: int) -> str:
+        # Choose appropriate reference prefix and graphic
+        graphic = _get_graphic_for_type(sym_type, name, pin_count)
         return (
             f'  (symbol "{name}" (in_bom yes) (on_board yes)\n'
-            f'    (property "Reference" "U" (at 0 4 0) (effects (font (size 1.27 1.27))))\n'
-            f'    (property "Value" "{name}" (at 0 -4 0) (effects (font (size 1.27 1.27))))\n'
+            f'    (property "Reference" "{ref_prefix}" (at 0 5.08 0) (effects (font (size 1.27 1.27))))\n'
+            f'    (property "Value" "{name}" (at 0 -5.08 0) (effects (font (size 1.27 1.27))))\n'
             f'    (symbol "{name}_0_1"\n'
-            f'      (rectangle (start -5 3) (end 5 -3) (stroke (width 0.254) (type default)) (fill (type none)))\n'
+            f'{graphic}\n'
         )
 
     def _sym_footer(name: str) -> str:
         return "    )\n  )\n"
 
-    def _pin_block(num: str, pname: str, x: float, y: float, rot: float) -> str:
+    def _pin_block(num: str, pname: str, x: float, y: float, rot: float, side: str) -> str:
         # Use pin numbers for SCH-001 resolver (number "N") with (at x y rot).
         safe_name = pname.replace('"', "'")
+        pin_type = "passive"
+        # Power pins get power type
+        if any(p in pname.upper() for p in ['VCC', 'VDD', '3V3', '5V', 'VBAT', 'GND', 'VSS']):
+            pin_type = "power_in" if side == "left" else "power_out"
+        # Output pins
+        if any(p in pname.upper() for p in ['OUT', 'OUTPUT']):
+            pin_type = "output"
         return (
-            f'      (pin passive line (at {_fmt_mm(x)} {_fmt_mm(y)} {_fmt_mm(rot)}) (length 2.54)\n'
-            f'        (name "{safe_name}" (effects (font (size 1 1))))\n'
-            f'        (number "{num}" (effects (font (size 1 1))))\n'
+            f'      (pin {pin_type} line (at {_fmt_mm(x)} {_fmt_mm(y)} {_fmt_mm(rot)}) (length 2.54)\n'
+            f'        (name "{safe_name}" (effects (font (size 0.8 0.8))))\n'
+            f'        (number "{num}" (effects (font (size 0.8 0.8))))\n'
             f"      )\n"
         )
 
+    def _get_ref_prefix(part) -> str:
+        """Get appropriate reference prefix for part."""
+        ref = str(getattr(part, 'ref', '') or '')
+        # Extract prefix (letters before numbers)
+        prefix = ''
+        for c in ref:
+            if c.isalpha():
+                prefix += c
+            else:
+                break
+        return prefix.upper() if prefix else 'U'
+
     # Stable order by symbol name.
     def _pname(p) -> str:
-        return (getattr(p, "name", None) or "").strip() or "?"
+        name = (getattr(p, "name", None) or "").strip()
+        ref = (getattr(p, "ref", None) or "").strip()
+        # Use actual part name if available, not "?"
+        if name and name != "?":
+            return name
+        # Fall back to reference designator if no name
+        if ref and ref != "?":
+            return ref
+        return "PART"
 
-    names = sorted({_pname(p) for p in skidl_parts if _pname(p) != "?"})
+    names = sorted({_pname(p) for p in skidl_parts})
     if not names:
         return None
 
@@ -207,20 +376,46 @@ def write_generated_symbol_library(output_path: str, circuit, *, nickname: str =
     for name in names:
         part = by_name[name]
         pins = list(getattr(part, "pins", []) or [])
-        lines.append(_sym_header(name))
+        ref_prefix = _get_ref_prefix(part)
+        sym_type = _detect_symbol_type(part)
 
-        # Place pins alternating left/right in a simple column.
-        left_x, right_x = -7.54, 7.54
-        y0 = 2.0
-        dy = 1.27
-        for i, pin in enumerate(pins):
-            num = str(getattr(pin, "num", "") or str(i + 1))
-            pname = str(getattr(pin, "name", "") or num)
-            y = y0 - i * dy
-            if i % 2 == 0:
-                lines.append(_pin_block(num, pname, left_x, y, 0))
-            else:
-                lines.append(_pin_block(num, pname, right_x, y, 180))
+        lines.append(_sym_header(name, ref_prefix, sym_type, len(pins)))
+
+        # Pin placement: left/right for 2-pin components, around rectangle for ICs
+        if sym_type in ('resistor', 'capacitor', 'inductor', 'diode', 'led', 'fuse') and len(pins) == 2:
+            # Horizontal: pins on left and right
+            for i, pin in enumerate(pins):
+                num = str(getattr(pin, "num", "") or str(i + 1))
+                pname = str(getattr(pin, "name", "") or num)
+                x = -5.08 if i == 0 else 5.08
+                rot = 180 if i == 0 else 0
+                lines.append(_pin_block(num, pname, x, 0, rot, "left" if i == 0 else "right"))
+        elif sym_type in ('crystal',) and len(pins) >= 2:
+            # Crystal: pins on left/right
+            pin_positions = [(-5.08, 0, 180), (5.08, 0, 0)]
+            for i, pin in enumerate(pins[:4]):
+                num = str(getattr(pin, "num", "") or str(i + 1))
+                pname = str(getattr(pin, "name", "") or num)
+                if i < len(pin_positions):
+                    x, y, rot = pin_positions[i]
+                    lines.append(_pin_block(num, pname, x, y, rot, "left" if x < 0 else "right"))
+        else:
+            # IC-style: pins on left and right edges
+            height_pins = max(len(pins) // 2, 4)
+            h = height_pins * 1.27
+            left_x, right_x = -5.08, 5.08
+            for i, pin in enumerate(pins):
+                num = str(getattr(pin, "num", "") or str(i + 1))
+                pname = str(getattr(pin, "name", "") or num)
+                if i < len(pins) // 2:
+                    # Left side, top to bottom
+                    y = h - (i * 2.54)
+                    lines.append(_pin_block(num, pname, left_x, y, 0, "left"))
+                else:
+                    # Right side, bottom to top
+                    idx = i - (len(pins) + 1) // 2
+                    y = -h + (idx * 2.54)
+                    lines.append(_pin_block(num, pname, right_x, y, 180, "right"))
 
         lines.append(_sym_footer(name))
     lines.append(")\n")

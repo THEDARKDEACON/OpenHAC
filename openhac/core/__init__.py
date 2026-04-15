@@ -1,6 +1,22 @@
-# Auto-configure KiCad 8 environment before any SKiDL usage
-from .env_setup import bootstrap_environment as _bootstrap_environment
-_bootstrap_environment()
+# OpenHaC Core - Hardware as Code
+# Native implementation without SKiDL dependency
 
 from .board import Board
 from .base import Component, Module, Interface
+from .part import Part, Pin
+from .net import Net, Bus
+from .circuit import Circuit, default_circuit, reset_default_circuit
+
+__all__ = [
+    "Board",
+    "Component",
+    "Module",
+    "Interface",
+    "Part",
+    "Pin",
+    "Net",
+    "Bus",
+    "Circuit",
+    "default_circuit",
+    "reset_default_circuit",
+]

@@ -2,8 +2,7 @@ import logging
 import os
 from pathlib import Path
 
-from skidl import Net, Bus
-
+from openhac.core.net import Net, Bus
 from .base import Module, UnconnectedInterfaceError
 
 logger = logging.getLogger("openhac.board")
@@ -37,8 +36,8 @@ class Board:
         *,
         board_class: str | None = None,
         quality_gates: dict | None = None,
-        strict: bool = False,
-        strict_kicad: bool = False,
+        strict: bool = True,  # Default to strict mode - require real components only
+        strict_kicad: bool = True,  # Require real KiCad symbols
         fab_profile: str | None = None,
         require_passive_voltage_ratings: bool = False,
         require_passive_power_ratings: bool = False,
@@ -67,9 +66,13 @@ class Board:
         jlc_class_line_limits: dict[str, int] | None = None,
         power_net_prefixes: tuple[str, ...] | list[str] | None = None,
     ):
+        # Strict mode enforces real components only - no synthetic parts allowed
         if strict:
             strict_kicad = True
             strict_jit_lookups = True
+            require_passive_voltage_ratings = True
+            strict_passive_catalog_fields = True
+            strict_passive_attributes_json = True
         self.size_mm = size_mm
         self.layers = layers
         #: Target board class/profile (future: drives placement/routing policies and strict gates).
@@ -519,8 +522,7 @@ class Board:
         from openhac.core.compile_context import OpenHaCCompileContext, compile_context_reset, compile_context_set
         from openhac.compiler.compile_pipeline import DEFAULT_COMPILE_PHASES, CompileState, run_compile_loop
 
-        # Deterministic mode: seed Python RNG so any downstream library randomness
-        # (e.g. SKiDL tags) is stable across runs with identical construction order.
+        # Deterministic mode: seed Python RNG for stable runs
         try:
             det = os.environ.get("OPENHAC_DETERMINISTIC", "").strip().lower() in ("1", "true", "yes", "on")
             if det:

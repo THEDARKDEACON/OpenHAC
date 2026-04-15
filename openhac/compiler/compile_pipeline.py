@@ -159,6 +159,11 @@ def phase_layout(state: CompileState) -> None:
         state.board.size_mm[1],
         state.board.layers,
     )
+
+    # Auto-calculate module bounding boxes from component footprints
+    for mod in state.board._get_all_modules():
+        mod.recalculate_bbox_from_components()
+
     from openhac.compiler.layout_gen import generate_layout
 
     generate_layout(state.net_path, state.pcb_path, state.board)

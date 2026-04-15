@@ -13,9 +13,29 @@ def solve_placement(board):
     except ImportError:
         logger.warning("Z3 solver not installed. Skipping algorithmic placement.")
         return False
-        
-    solver = Solver()
+
     all_mods = getattr(board, 'all_modules', board.modules)
+
+    # Debug: Log layout problem details
+    logger.info("Layout problem:")
+    logger.info(f"  Board: {board.size_mm[0]} x {board.size_mm[1]} mm ({board.layers} layers)")
+    logger.info(f"  Modules: {len(all_mods)}")
+    total_mod_area = 0.0
+    for mod in all_mods:
+        mod_area = mod.width * mod.height
+        total_mod_area += mod_area
+        logger.info(f"    - {mod.name}: {mod.width:.1f} x {mod.height:.1f} mm (area: {mod_area:.1f} mm², components: {len(mod.components)})")
+    board_area = board.size_mm[0] * board.size_mm[1]
+    utilization = (total_mod_area / board_area) * 100 if board_area > 0 else 0
+    logger.info(f"  Total component area: {total_mod_area:.1f} mm²")
+    logger.info(f"  Board area: {board_area:.1f} mm²")
+    logger.info(f"  Estimated utilization: {utilization:.1f}%")
+    if board.constraints:
+        logger.info(f"  User constraints: {len(board.constraints)}")
+        for rule in board.constraints:
+            logger.info(f"    - {rule['type']}: {rule['args']}")
+
+    solver = Solver()
     # 1. Bounds Constraints
     for mod in all_mods:
         mod.z3_x = Int(f"{mod.name}_x")
@@ -90,7 +110,8 @@ def solve_placement(board):
             solver.add(2 * item.z3_x + int(item.width) == int(board.size_mm[0]))
             solver.add(2 * item.z3_y + int(item.height) == int(board.size_mm[1]))
 
-    if solver.check() == sat:
+    result = solver.check()
+    if result == sat:
         logger.info("Z3 SAT (Satisfiable)! Optimal layout mathematical coordinates found:")
         model = solver.model()
         for mod in all_mods:
@@ -100,7 +121,69 @@ def solve_placement(board):
         return True
     else:
         logger.error("Z3 UNSAT! Spatial Constraints cannot be mathematically satisfied.")
-        return False
+
+        # Extract unsatisfiable core if available
+        try:
+            unsat_core = solver.unsat_core()
+            if unsat_core:
+                logger.error("Unsatisfiable core (failing constraints):")
+                for constraint in unsat_core:
+                    logger.error(f"  - {constraint}")
+        except Exception as e:
+            logger.debug(f"Could not extract unsat_core: {e}")
+
+        # Check if board is too small
+        board_area = board.size_mm[0] * board.size_mm[1]
+        total_mod_area = sum(m.width * m.height for m in all_mods)
+        if total_mod_area > board_area * 0.7:  # 70% utilization threshold
+            suggested_w = (total_mod_area * 1.5) ** 0.5 * 1.2
+            suggested_h = (total_mod_area * 1.5) ** 0.5
+            logger.error(f"Board appears too small: {total_mod_area:.1f} mm² components in {board_area:.1f} mm² board")
+            logger.error(f"Suggested board size: ~{suggested_w:.0f} x {suggested_h:.0f} mm")
+
+        raise LayoutGenerationError(
+            f"Layout constraints unsatisfiable: {len(all_mods)} modules in {board.size_mm[0]}x{board.size_mm[1]}mm board. "
+            f"Component area: {total_mod_area:.1f} mm², Board area: {board_area:.1f} mm². "
+            f"Try increasing board size or relaxing constraints."
+        )
+
+def solve_placement_with_relaxation(board, max_relaxations: int = 2) -> bool:
+    """Attempt layout with automatic constraint relaxation on failure.
+
+    Retries with progressively relaxed distance constraints (20% reduction per attempt)
+    to handle overly aggressive user constraints.
+    """
+    # Store original constraints for restoration
+    import copy
+    original_constraints = copy.deepcopy(board.constraints)
+
+    for attempt in range(max_relaxations + 1):
+        if attempt > 0:
+            logger.warning(f"Layout attempt {attempt} failed, relaxing distance constraints by 20%...")
+            # Relax distance constraints
+            for rule in board.constraints:
+                if rule['type'] in ('distance_min', 'distance_max'):
+                    args = list(rule['args'])
+                    args[2] = args[2] * 0.8  # Reduce distance requirement by 20%
+                    rule['args'] = tuple(args)
+
+        try:
+            result = solve_placement(board)
+            if result:
+                if attempt > 0:
+                    logger.info(f"Layout succeeded after {attempt} relaxation(s)")
+                return True
+        except LayoutGenerationError:
+            if attempt == max_relaxations:
+                # Restore original constraints before final raise
+                board.constraints = original_constraints
+                raise
+            # Continue to next relaxation attempt
+
+    # Restore original constraints
+    board.constraints = original_constraints
+    return False
+
 
 def assert_footprint_pin_pad_or_raise(board) -> None:
     """Raise :class:`LayoutGenerationError` if strict PCB-002 checks find pad↔pin mismatches."""
@@ -126,8 +209,11 @@ def generate_layout(netlist_path: str, output_pcb_path: str, board):
 
     assert_footprint_pin_pad_or_raise(board)
 
-    if not solve_placement(board):
-        logger.warning("Falling back to unoptimized geometry due to UNSAT.")
+    try:
+        if not solve_placement_with_relaxation(board, max_relaxations=2):
+            logger.warning("Falling back to unoptimized geometry due to UNSAT.")
+    except LayoutGenerationError:
+        logger.warning("Layout constraint satisfaction failed even with relaxation, proceeding with unoptimized placement")
     
     try:
         import pcbnew

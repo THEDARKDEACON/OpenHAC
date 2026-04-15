@@ -112,6 +112,16 @@ Status (all **48** spec IDs **Done** under Phase-1): **[docs/IMPLEMENTATION_STAT
 
 ---
 
+## LaTeX report
+
+A hand-maintained, detailed LaTeX report lives under `docs/report/`.
+
+Build the PDF (requires a LaTeX distribution providing `lualatex` or `pdflatex`):
+
+```bash
+python3 scripts/build_latex_report.py
+```
+
 ## Setup
 
 ### 1. Sync the component database

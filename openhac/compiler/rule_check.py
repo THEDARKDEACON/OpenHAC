@@ -696,6 +696,109 @@ _DRC_DEFAULTS = {
 }
 
 
+def _check_mcu_decoupling(board) -> list[str]:
+    """Check that MCU modules have adequate decoupling capacitors.
+    
+    Per ST/ARM guidelines: each power pin should have 100nF, plus bulk 4.7uF+.
+    """
+    v: list[str] = []
+    for mod in board._get_all_modules():
+        if "mcu" in mod.name.lower() or "stm32" in mod.name.lower():
+            caps_100nf = 0
+            caps_bulk = 0
+            for comp in mod.components:
+                name = str(getattr(comp, 'generic_name', '') or '').lower()
+                if '100nf' in name or '100n' in name:
+                    caps_100nf += 1
+                if '4u7' in name or '10u' in name:
+                    caps_bulk += 1
+            if caps_100nf < 2:
+                v.append(f"Module '{mod.name}' may have insufficient decoupling: {caps_100nf}x 100nF found, recommend 4+ per MCU guidelines.")
+            if caps_bulk < 1:
+                v.append(f"Module '{mod.name}' missing bulk decoupling capacitor (recommend 4.7uF+ for MCU VDD).")
+    return v
+
+
+def _check_crystal_loading(board) -> list[str]:
+    """Check that crystal oscillators have loading capacitors.
+    
+    HSE (8MHz): typically 18pF loading
+    LSE (32.768kHz): typically 12pF loading
+    """
+    v: list[str] = []
+    for mod in board._get_all_modules():
+        xtal_caps = 0
+        has_8mhz = False
+        has_32k = False
+        for comp in mod.components:
+            name = str(getattr(comp, 'generic_name', '') or '').lower()
+            fp = str(getattr(getattr(comp, 'part', None), 'footprint', '') or '').lower()
+            if 'xtal' in name or 'crystal' in fp:
+                if '8m' in name or '8mhz' in name:
+                    has_8mhz = True
+                if '32' in name and ('k' in name or 'hz' in name):
+                    has_32k = True
+            if 'pf' in name or '18pf' in name or '12pf' in name or '20pf' in name:
+                xtal_caps += 1
+        if has_8mhz and xtal_caps < 2:
+            v.append(f"Module '{mod.name}' has 8MHz crystal but only {xtal_caps} loading capacitors (need 2).")
+        if has_32k and xtal_caps < 2:
+            v.append(f"Module '{mod.name}' has 32.768kHz crystal but insufficient loading capacitors.")
+    return v
+
+
+def _check_power_sequencing(board) -> list[str]:
+    """Check power sequencing: analog rails should come up before or with digital.
+    
+    Also check that 3.3V rail is ready before sensitive analog sensors powered.
+    """
+    v: list[str] = []
+    has_ldo = False
+    has_buck = False
+    has_analog_sensor = False
+    
+    for mod in board._get_all_modules():
+        for comp in mod.components:
+            name = str(getattr(comp, 'generic_name', '') or '').lower()
+            if 'ldo' in name:
+                has_ldo = True
+            if 'buck' in name:
+                has_buck = True
+        # Check for analog sensors (IMU, baro, mag)
+        if any(x in mod.name.lower() for x in ['imu', 'baro', 'mag', 'sensor']):
+            has_analog_sensor = True
+    
+    # If we have both buck and LDO, the LDO should feed analog sensors
+    if has_buck and has_ldo and has_analog_sensor:
+        logger.info("Power architecture check: Buck -> LDO -> Analog sensors detected (good for noise isolation).")
+    elif has_analog_sensor and not has_ldo:
+        v.append("Analog sensors present without LDO for noise isolation. Consider adding dedicated analog 3.3V rail.")
+    
+    return v
+
+
+def _check_highspeed_signals(board) -> list[str]:
+    """Check for potential high-speed signal issues.
+    
+    - SPI > 10MHz should have series termination
+    - USB needs impedance control
+    """
+    v: list[str] = []
+    # Check for SPI interfaces without apparent series resistors
+    for mod in board._get_all_modules():
+        has_spi = False
+        has_series_r = False
+        for comp in mod.components:
+            name = str(getattr(comp, 'generic_name', '') or '').lower()
+            if 'spi' in name:
+                has_spi = True
+            if any(x in name for x in ['27r', '33r', '22r', 'series']):
+                has_series_r = True
+        if has_spi and not has_series_r:
+            logger.warning(f"Module '{mod.name}' has SPI interface. Consider 22-33Ω series resistors for signal integrity at high speeds.")
+    return v
+
+
 def run_drc(board):
     """Run Design Rule Checks on the board.
 
@@ -1008,6 +1111,12 @@ def run_drc(board):
             "not applied by OpenHaC placement or FreeRouting (SIG-002). "
             "diff_pair_intent is recorded in the compile manifest for KiCad handoff."
         )
+
+    # EE-Grade Design Rule Checks
+    violations.extend(_check_mcu_decoupling(board))
+    violations.extend(_check_crystal_loading(board))
+    violations.extend(_check_power_sequencing(board))
+    violations.extend(_check_highspeed_signals(board))
 
     ms_issue = _mixed_signal_ground_merge_issue(board)
     if ms_issue:

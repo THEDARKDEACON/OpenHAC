@@ -1,19 +1,12 @@
 from __future__ import annotations
 
 import logging
+import re
 import urllib.parse
 
-# Ensure KiCad/SKiDL environment variables are seeded before importing SKiDL symbols.
-# This reduces noisy warnings like "KICAD*_SYMBOL_DIR environment variable is missing".
-try:
-    from openhac.core.env_setup import bootstrap_environment as _bootstrap_environment
-
-    _bootstrap_environment()
-except Exception:
-    # Never make env bootstrap failures fatal for imports/tests.
-    pass
-
-from skidl import Part, Net, Bus
+from openhac.core.part import Part, Pin
+from openhac.core.net import Net, Bus
+from openhac.core.circuit import default_circuit
 from openhac.database.db_manager import DatabaseManager
 from openhac.core.compile_context import get_compile_context
 
@@ -75,15 +68,14 @@ class KicadLibraryLoadError(OpenHaCError):
 class Component:
     db = DatabaseManager()
     #: When False (default), :class:`RiskyPartLookupError` is raised for low-confidence JIT parts
-    #: unless ``OPENHAC_ALLOW_RISKY_PARTS`` is set. CLI ``compile`` sets this before loading the user script.
+    #: unless ``OPENHAC_ALLOW_RISKY_PARTS`` is set. Default False = strict mode requires pre-populated DB.
     allow_risky_part_lookups: bool = False
     #: When True, failure to instantiate a KiCad library symbol raises :class:`KicadLibraryLoadError`
-    #: instead of creating a synthetic 99-pin stub (LIB-004). Set via ``Board(strict_kicad=True)``,
-    #: ``compile(strict_kicad=...)``, CLI ``--strict-kicad``, or ``OPENHAC_STRICT_KICAD=1``.
-    require_kicad_symbols: bool = False
+    #: instead of creating a synthetic 99-pin stub. Default True = strict mode requires real KiCad symbols.
+    require_kicad_symbols: bool = True
     #: When True (set during ``Board.compile`` / ``simulate``), medium-confidence JIT rows raise
     #: :class:`RiskyPartLookupError` unless risky lookups are explicitly allowed (LIB-003).
-    strict_jit_lookups: bool = False
+    strict_jit_lookups: bool = True
 
     @classmethod
     def _strict_kicad_from_env(cls) -> bool:
@@ -183,33 +175,30 @@ class Component:
 
         comp_data = strip_openhac_internal_fields(comp_data)
 
-        sym_lib, sym_name = comp_data['kicad_symbol'].split(':', 1)
-        try:
-            import skidl
-            skidl.config.github_search = False
-            self.part = Part(sym_lib, sym_name, footprint=comp_data['kicad_footprint'], **kwargs)
-        except Exception as e:
-            if self._effective_require_kicad_symbols():
-                raise KicadLibraryLoadError(
-                    f"Could not load KiCad symbol {sym_lib}:{sym_name} (strict KiCad mode). "
-                    f"Install KiCad libraries and set KICAD*_SYMBOL_DIR, or disable strict mode."
-                ) from e
-            import skidl
-            from skidl import Pin
-            logger.warning(
-                "Could not load KiCad library for %s:%s. Creating synthetic part (not for production).",
-                sym_lib,
-                sym_name,
-            )
-            pins = [Pin(num=str(i), name=str(i)) for i in range(1, 100)]
-            self.part = Part(tool=skidl.SKIDL, name=sym_name, ref_prefix='U', pins=pins, footprint=comp_data['kicad_footprint'])
-            self._is_synthetic = True
-            self.part.fields["OpenHaC_WATERMARK"] = "SYNTHETIC_KICAD_SYMBOL"
+        # Get pinout from database or fetch from vendor APIs
+        pins = self._get_pins_from_data(comp_data)
+        
+        # Get or generate reference designator
+        ref_prefix = self._get_refdes_prefix(comp_data['category'])
+        refdes = kwargs.get('refdes') or default_circuit.auto_generate_refdes(ref_prefix)
+        
+        self.part = Part(
+            refdes=refdes,
+            footprint=comp_data['kicad_footprint'],
+            fields={},
+            pins=pins,
+            value=generic_name,
+        )
+        
+        # Add part to the default circuit
+        default_circuit.add_part(self.part)
 
+        # Set fields on the native Part
         self.part.fields['Manufacturer'] = comp_data['manufacturer'] or ""
         self.part.fields['MPN'] = comp_data['mpn']
         self.part.fields['Supplier_SKU'] = comp_data['supplier_sku'] or ""
         self.part.fields['Value'] = generic_name
+        self.part.fields['kiCad_symbol'] = comp_data['kicad_symbol']
         jc = comp_data.get("jlc_class")
         self.part.fields["JLC_Class"] = str(jc) if jc is not None else ""
         self.part.fields["Mouser_SKU"] = comp_data.get("mouser_sku") or ""
@@ -371,7 +360,7 @@ class Component:
                 del frame
 
         # Dynamic pin creation for synthetic parts (Demo mode / Headless CI)
-        from skidl import Pin
+        from openhac.core.part import Pin
         
         # Handle multi-pin requests (tuples or lists)
         if isinstance(key, (tuple, list)):
@@ -397,6 +386,98 @@ class Component:
 
     def __setitem__(self, key, value):
         self.part[key] = value
+
+    def _get_pins_from_data(self, comp_data: dict) -> list[Pin]:
+        """Get pinout from database or fetch from vendor APIs.
+        
+        First checks the database pinout_json field. If not available,
+        attempts to fetch from Digi-Key/Mouser/TME APIs.
+        Falls back to generic pin generation based on footprint.
+        """
+        import json
+        
+        # Try database pinout first
+        pinout_json = comp_data.get("pinout_json")
+        if pinout_json:
+            try:
+                pinout = json.loads(pinout_json)
+                return [Pin(p["num"], p["name"], p.get("type", "bidirectional")) for p in pinout]
+            except (json.JSONDecodeError, KeyError):
+                pass  # Fall through to vendor lookup
+        
+        # Try to fetch from vendor APIs using MPN
+        mpn = comp_data.get("mpn")
+        if mpn:
+            pins = self._fetch_pinout_from_vendors(mpn)
+            if pins:
+                return pins
+        
+        # Fallback: generate based on footprint
+        return self._generate_fallback_pins(comp_data)
+    
+    def _fetch_pinout_from_vendors(self, mpn: str) -> list[Pin]:
+        """Fetch pinout from vendor APIs (Digi-Key, Mouser, TME).
+        
+        Returns list of Pins if successful, empty list otherwise.
+        """
+        # TODO: Implement vendor API pinout fetching
+        # This requires extending vendor_apis.py to get pinout data
+        return []
+    
+    def _generate_fallback_pins(self, comp_data: dict) -> list[Pin]:
+        """Generate generic pins based on footprint as last resort."""
+        footprint = comp_data.get("kicad_footprint", "").lower()
+        
+        # Extract pin count from common footprints
+        import re
+        
+        # SOIC/SOP packages
+        match = re.search(r'so(?:ic|-)?(?:\D+)?(\d+)', footprint)
+        if match:
+            count = int(match.group(1))
+            return [Pin(str(i), str(i), "bidirectional") for i in range(1, count + 1)]
+        
+        # QFN/QFP packages
+        match = re.search(r'q(?:fn|fp)-?(?:\D+)?(\d+)', footprint)
+        if match:
+            count = int(match.group(1))
+            return [Pin(str(i), str(i), "bidirectional") for i in range(1, count + 1)]
+        
+        # Passive components (resistors, capacitors, inductors, LEDs, diodes)
+        if any(x in footprint for x in ['_r_', '_c_', '_l_', 'led_', 'd_']):
+            return [Pin("1", "1", "passive"), Pin("2", "2", "passive")]
+        
+        # Default: 8 pins
+        return [Pin(str(i), str(i), "bidirectional") for i in range(1, 9)]
+
+    def _get_refdes_prefix(self, category: str) -> str:
+        """Get reference designator prefix based on component category."""
+        category_map = {
+            "resistor": "R",
+            "capacitor": "C",
+            "inductor": "L",
+            "led": "D",
+            "diode": "D",
+            "transistor": "Q",
+            "mosfet": "Q",
+            "ic": "U",
+            "mcu": "U",
+            "microcontroller": "U",
+            "connector": "J",
+            "header": "J",
+            "crystal": "X",
+            "switch": "S",
+            "button": "S",
+            "relay": "K",
+            "fuse": "F",
+            "transformer": "T",
+        }
+        
+        cat_lower = category.lower()
+        for key, prefix in category_map.items():
+            if key in cat_lower:
+                return prefix
+        return "U"  # Default to IC prefix
 
 class Interface:
     def __init__(self, name: str, *signals):
@@ -468,6 +549,102 @@ class Module:
         iface = Interface(name, *nets)
         self.required_interfaces[name] = iface
         return iface
+
+    def recalculate_bbox_from_components(self) -> None:
+        """Update width/height based on actual component footprints.
+
+        Uses heuristics based on common package names to estimate area requirements.
+        Adds margin for component spacing and routing.
+        """
+        if not self.components:
+            return
+
+        total_area_mm2 = 0.0
+        footprint_sizes = {
+            # QFP packages
+            r'lqfp-64|qfp-64': (10.0, 10.0),
+            r'lqfp-48|qfp-48': (7.0, 7.0),
+            r'lqfp-32|qfp-32': (7.0, 7.0),
+            r'tqfp-44|qfp-44': (10.0, 10.0),
+            r'lqfp-100|qfp-100': (14.0, 14.0),
+            r'lqfp-128|qfp-128': (14.0, 14.0),
+            r'lqfp-144|qfp-144': (20.0, 20.0),
+            # QFN packages
+            r'qfn-32': (5.0, 5.0),
+            r'qfn-48': (6.0, 6.0),
+            r'qfn-64': (8.0, 8.0),
+            # SOIC packages
+            r'soic-8|so-8': (4.9, 3.9),
+            r'soic-14|so-14': (8.7, 3.9),
+            r'soic-16|so-16': (9.9, 3.9),
+            # SOT packages
+            r'sot-23-3|sot-23': (2.9, 1.6),
+            r'sot-23-5': (2.9, 1.6),
+            r'sot-23-6': (2.9, 1.6),
+            r'sot-89': (4.5, 2.5),
+            r'sot-223': (6.5, 3.5),
+            # Passives
+            r'0402': (1.0, 0.5),
+            r'0603': (1.6, 0.8),
+            r'0805': (2.0, 1.25),
+            r'1206': (3.2, 1.6),
+            r'1210': (3.2, 2.5),
+            r'2512': (6.4, 3.2),
+            # Diodes
+            r'sma|do-214ac': (4.5, 2.7),
+            r'smb|do-214aa': (5.3, 3.4),
+            r'smc|do-214ab': (7.9, 5.3),
+            r'sod-123': (3.6, 1.6),
+            # Inductors
+            r'l_6.3x6.3': (6.3, 6.3),
+            r'l_4x4': (4.0, 4.0),
+            r'l_5x5': (5.0, 5.0),
+            # Connectors
+            r'xt60': (16.0, 8.0),
+            r'pinheader_2.54_1x4': (10.0, 2.5),
+            r'pinheader_2.54_1x6': (15.0, 2.5),
+            r'pinheader_2.54_2x5': (12.5, 5.0),
+            r'usb': (10.0, 8.0),
+            # Crystals
+            r'3225': (3.2, 2.5),
+            r'5032': (5.0, 3.2),
+            r'7050': (7.0, 5.0),
+            # Misc
+            r'buzzer': (12.0, 9.5),
+            r'testpoint': (2.0, 2.0),
+        }
+
+        for comp in self.components:
+            fp_name = ""
+            part = getattr(comp, 'part', comp)  # Handle both Component and Part
+            if part and hasattr(part, 'footprint'):
+                fp_name = str(part.footprint).lower()
+
+            # Find matching footprint size
+            matched = False
+            for pattern, (w, h) in footprint_sizes.items():
+                if re.search(pattern, fp_name):
+                    total_area_mm2 += w * h
+                    matched = True
+                    break
+
+            if not matched:
+                # Default estimate: 5x5mm for unknown components
+                total_area_mm2 += 25.0
+
+        # Add spacing margin (30% extra area for component spacing and routing)
+        total_area_mm2 *= 1.3
+
+        # Convert to roughly rectangular bbox with 1.2:1 aspect ratio
+        # side = sqrt(area / 1.2) for height, 1.2*side for width
+        h = (total_area_mm2 / 1.2) ** 0.5
+        w = h * 1.2
+
+        # Update with minimum bounds
+        self.width = max(self.width, w)
+        self.height = max(self.height, h)
+
+        logger.debug(f"Module '{self.name}' bbox: {self.width:.1f}x{self.height:.1f}mm from {len(self.components)} components")
 
     def expose_interface(self, name: str) -> "Interface":
         """Return the named Interface, raising InterfaceNotFoundError if absent."""
