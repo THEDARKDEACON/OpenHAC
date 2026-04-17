@@ -18,6 +18,9 @@ from openhac.core.base import Component, LayoutGenerationError, Module
 
 logger = logging.getLogger("openhac.pcb_placement")
 
+# Best-effort compile post-report capture (dev/handoff diagnostics).
+_PAD_MISMATCH_EVENTS: list[dict] = []
+
 
 def parse_footprint_id(footprint: str | None) -> tuple[str, str] | None:
     """Split ``Library:FootprintName`` into ``(library, name)``."""
@@ -95,7 +98,7 @@ def pin_pad_coverage_warnings(circuit) -> list[str]:
         pads = footprint_pad_numbers_from_library(fpid[0], fpid[1])
         if pads is None:
             continue
-        for pin in part.pins:
+        for pin in _iter_unique_pins(part):
             try:
                 if SKIDL_NC is not None and pin.net is SKIDL_NC:
                     continue
@@ -103,13 +106,42 @@ def pin_pad_coverage_warnings(circuit) -> list[str]:
                 pass
             if pin.net is None:
                 continue
-            pnum = str(pin.num)
-            if pnum not in pads:
-                messages.append(
-                    f"Part {part.ref}: footprint {part.footprint!r} has no pad {pnum!r} "
-                    f"for net {getattr(pin.net, 'name', pin.net)}; PCB net assignment may fail."
-                )
+            pnum = str(getattr(pin, "num", None) or getattr(pin, "number", None) or "")
+            pname = str(getattr(pin, "name", "") or "").strip()
+            if not pnum and not pname:
+                continue
+            if _pin_covers_footprint_pad(pnum, pname, pads):
+                continue
+            key = pnum or pname
+            messages.append(
+                f"Part {part.ref}: footprint {part.footprint!r} has no pad matching pin {key!r} "
+                f"(name={pname!r}) for net {getattr(pin.net, 'name', pin.net)}; PCB net assignment may fail."
+            )
     return sorted(messages)
+
+
+def _pin_covers_footprint_pad(pnum: str, pname: str, pads: set[str]) -> bool:
+    """Return True if *pnum* or *pname* (case-insensitive) exists on the footprint pad set."""
+    if not pads:
+        return False
+    n = str(pnum or "").strip()
+    nm = str(pname or "").strip()
+    low = {str(p).lower() for p in pads}
+    if n and n in pads:
+        return True
+    if nm and nm in pads:
+        return True
+    if n and n.lower() in low:
+        return True
+    if nm and nm.lower() in low:
+        return True
+    # LED A/K ↔ 1/2 when footprint is numeric-only
+    alias = {"a": "1", "k": "2", "c": "2", "anode": "1", "cathode": "2"}
+    for lbl in (nm, n):
+        al = lbl.lower()
+        if al in alias and alias[al] in pads:
+            return True
+    return False
 
 
 def resolve_pretty_directory(library_name: str) -> str | None:
@@ -122,8 +154,52 @@ def resolve_pretty_directory(library_name: str) -> str | None:
     return None
 
 
+def _fp_size_mm_for_part(
+    part,
+    plugin,
+    pcbnew_mod,
+    cache: dict[tuple[str, str], tuple[float, float]],
+    *,
+    grid_mm: float,
+) -> tuple[float, float]:
+    """Return footprint width/height in mm from pcbnew load, or ``(grid_mm, grid_mm)``."""
+    fpid = parse_footprint_id(getattr(part, "footprint", None))
+    if fpid is None:
+        return (grid_mm, grid_mm)
+    if fpid in cache:
+        return cache[fpid]
+    pretty_dir = resolve_pretty_directory(fpid[0])
+    if not pretty_dir:
+        cache[fpid] = (grid_mm, grid_mm)
+        return cache[fpid]
+    try:
+        fp = plugin.FootprintLoad(pretty_dir, fpid[1])
+        if fp is None:
+            raise ValueError("FootprintLoad returned None")
+        bb = fp.GetBoundingBox()
+        if hasattr(bb, "GetWidth") and hasattr(bb, "GetHeight"):
+            w_iu = abs(int(bb.GetWidth()))
+            h_iu = abs(int(bb.GetHeight()))
+        else:
+            w_iu = abs(int(bb.GetRight()) - int(bb.GetLeft()))
+            h_iu = abs(int(bb.GetBottom()) - int(bb.GetTop()))
+        w_mm = float(pcbnew_mod.ToMM(w_iu))
+        h_mm = float(pcbnew_mod.ToMM(h_iu))
+        out = (max(w_mm, 0.4), max(h_mm, 0.4))
+    except Exception:
+        out = (grid_mm, grid_mm)
+    cache[fpid] = out
+    return out
+
+
 def collect_skidl_part_positions(board) -> dict[object, tuple[float, float]]:
-    """Map each SKiDL ``Part`` to ``(x_mm, y_mm)`` using module placement + local grid."""
+    """Map each SKiDL ``Part`` to ``(x_mm, y_mm)`` using module placement + local grid.
+
+    When ``OPENHAC_PLACEMENT_USE_FP_BBOX`` is enabled (default) and pcbnew can load
+    footprints, parts are laid out in rows using each footprint's bounding-box size
+    plus ``OPENHAC_PLACEMENT_FP_GAP_MM`` so large packages do not sit on a fixed
+    7 mm pitch. Falls back to a fixed ``OPENHAC_PLACEMENT_GRID_MM`` grid otherwise.
+    """
     positions: dict[object, tuple[float, float]] = {}
     all_mods = getattr(board, "all_modules", None)
     if not all_mods and hasattr(board, "_get_all_modules"):
@@ -131,20 +207,67 @@ def collect_skidl_part_positions(board) -> dict[object, tuple[float, float]]:
     if not all_mods:
         all_mods = list(board.modules)
 
+    use_fp = os.environ.get("OPENHAC_PLACEMENT_USE_FP_BBOX", "1").strip().lower() not in ("0", "false", "no", "off")
+    plugin = None
+    pcbnew_mod = None
+    fp_cache: dict[tuple[str, str], tuple[float, float]] = {}
+    if use_fp:
+        try:
+            import pcbnew as _pn  # type: ignore
+
+            pcbnew_mod = _pn
+            plugin = _get_kicad_sexp_plugin(_pn)
+        except Exception:
+            use_fp = False
+
+    try:
+        gap_mm = float(os.environ.get("OPENHAC_PLACEMENT_FP_GAP_MM", "").strip() or 1.0)
+    except Exception:
+        gap_mm = 1.0
+
     for mod in all_mods:
         ax = float(mod.placed_x) if mod.placed_x is not None else 5.0
         ay = float(mod.placed_y) if mod.placed_y is not None else 5.0
-        idx = 0
+        try:
+            grid_mm = float(os.environ.get("OPENHAC_PLACEMENT_GRID_MM", "").strip() or 7.0)
+        except Exception:
+            grid_mm = 7.0
+        try:
+            cols = int(os.environ.get("OPENHAC_PLACEMENT_GRID_COLS", "").strip() or 6)
+        except Exception:
+            cols = 6
+        cols = max(1, cols)
+
+        items: list[object] = []
         for child in mod.components:
             if isinstance(child, Module):
                 continue
             part = getattr(child, "part", None)
             if part is None:
                 continue
-            col = idx % 8
-            row = idx // 8
-            positions[part] = (ax + col * 4.5, ay + row * 4.5)
-            idx += 1
+            items.append(part)
+
+        if use_fp and plugin is not None and pcbnew_mod is not None:
+            x_cursor = ax
+            y_row = ay
+            row_max_h = 0.0
+            col = 0
+            for part in items:
+                fw, fh = _fp_size_mm_for_part(part, plugin, pcbnew_mod, fp_cache, grid_mm=grid_mm)
+                positions[part] = (x_cursor, y_row)
+                row_max_h = max(row_max_h, fh + gap_mm)
+                col += 1
+                x_cursor += fw + gap_mm
+                if col >= cols:
+                    col = 0
+                    x_cursor = ax
+                    y_row += row_max_h
+                    row_max_h = 0.0
+        else:
+            for idx, part in enumerate(items):
+                c = idx % cols
+                r = idx // cols
+                positions[part] = (ax + c * grid_mm, ay + r * grid_mm)
     return positions
 
 
@@ -152,20 +275,109 @@ def _get_kicad_sexp_plugin(pcbnew):
     return pcbnew.PCB_IO_MGR.PluginFind(pcbnew.PCB_IO_MGR.KICAD_SEXP)
 
 
-def _find_pad(fp, pin_num: str):
-    key = str(pin_num)
-    for pad in fp.Pads():
+def _pad_keys(pad) -> list[str]:
+    """Best-effort pad identifiers from a pcbnew ``PAD`` (name vs number differ per library)."""
+    keys: list[str] = []
+    for getter in ("GetPadName", "GetNumber"):
         try:
-            if str(pad.GetPadName()) == key:
-                return pad
+            fn = getattr(pad, getter, None)
+            if not fn:
+                continue
+            s = str(fn()).strip()
+            if s and s not in keys:
+                keys.append(s)
         except Exception:
             pass
-        try:
-            if str(pad.GetNumber()) == key:
+    return keys
+
+
+def find_pad_for_pin(fp, pin_num: str, pin_name: str | None = None):
+    """Map a SKiDL/native logical pin to a pcbnew footprint pad.
+
+    Tries, in order:
+
+    1. ``FindPadByNumber`` / pad match for **pin number** (KiCad convention: matches footprint pad).
+    2. Same for **pin name** when it differs from the number (designs use ``part['VIN']`` while pads are ``VIN``).
+    3. Case-insensitive name match on ``GetPadName`` / ``GetNumber``.
+    4. LED/diode shorthand: ``A``/``K`` ↔ ``1``/``2`` when the footprint only exposes numeric pads.
+
+    Returns ``None`` if no pad matches.
+    """
+    raw_num = str(pin_num or "").strip()
+    raw_name = (str(pin_name).strip() if pin_name else "") or ""
+
+    candidates: list[str] = []
+    if raw_num:
+        candidates.append(raw_num)
+    if raw_name and raw_name not in candidates:
+        candidates.append(raw_name)
+
+    # KiCad FOOTPRINT API (preferred — matches GUI behavior)
+    try:
+        for c in candidates:
+            try:
+                p = fp.FindPadByNumber(c)
+                if p is not None:
+                    return p
+            except Exception:
+                pass
+    except Exception:
+        pass
+
+    # Walk pads (fallback + case-insensitive)
+    def _norm(s: str) -> str:
+        return str(s).strip().lower()
+
+    want = {_norm(x) for x in candidates if x}
+    if not want:
+        return None
+
+    pads = list(fp.Pads())
+    for pad in pads:
+        for k in _pad_keys(pad):
+            if _norm(k) in want:
                 return pad
-        except Exception:
-            pass
+
+    # LED / diode: symbol pins A/K often map to footprint 1/2
+    alias_map = {
+        "a": ("1", "2"),
+        "k": ("2", "1"),
+        "c": ("2", "1"),
+        "anode": ("1", "2"),
+        "cathode": ("2", "1"),
+    }
+    for label in (raw_name, raw_num):
+        al = _norm(label)
+        if al in alias_map:
+            for try_num in alias_map[al]:
+                try:
+                    p = fp.FindPadByNumber(try_num)
+                    if p is not None:
+                        return p
+                except Exception:
+                    pass
+                for pad in pads:
+                    for k in _pad_keys(pad):
+                        if k == try_num:
+                            return pad
+
     return None
+
+
+def _iter_unique_pins(part) -> list:
+    """Deduplicate pins: native :class:`~openhac.core.part.Part` indexes the same ``Pin`` by number and by name."""
+    pins_raw = part.pins.values() if isinstance(getattr(part, "pins", None), dict) else getattr(part, "pins", [])
+    if isinstance(pins_raw, dict):
+        pins_raw = pins_raw.values()
+    seen: set[int] = set()
+    out = []
+    for pin in pins_raw:
+        pid = id(pin)
+        if pid in seen:
+            continue
+        seen.add(pid)
+        out.append(pin)
+    return out
 
 
 def _to_board_vec(pcbnew, x_mm: float, y_mm: float):
@@ -184,7 +396,25 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
     except Exception:
         SKIDL_NC = None
 
-    circuit = get_default_circuit()
+    # Derive a circuit-like view from Board modules so placement works with native Parts.
+    class _BoardCircuitView:
+        def __init__(self, parts):
+            self.parts = parts
+
+    parts: list[object] = []
+    seen: set[int] = set()
+    for mod in getattr(board, "modules", []) or []:
+        for child in getattr(mod, "components", []) or []:
+            part = getattr(child, "part", None)
+            if part is None:
+                continue
+            pid = id(part)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            parts.append(part)
+
+    circuit = _BoardCircuitView(tuple(parts))
     for msg in pin_pad_coverage_warnings(circuit):
         logger.debug("%s", msg)
 
@@ -192,6 +422,11 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
     plugin = _get_kicad_sexp_plugin(pcbnew_mod)
     net_cache: dict[str, object] = {}
     fallback_i = 0
+    fabrication = False
+    try:
+        fabrication = str(getattr(board, "effective_compile_goal", lambda: "")()).strip().lower() == "fabrication"
+    except Exception:
+        fabrication = False
 
     for part in circuit.parts:
         fpid = parse_footprint_id(getattr(part, "footprint", None))
@@ -202,17 +437,22 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
         lib_name, fp_name = fpid
         pretty_dir = resolve_pretty_directory(lib_name)
         if not pretty_dir:
-            raise LayoutGenerationError(
+            msg = (
                 f"Footprint library directory not found for '{lib_name}.pretty'. "
-                f"Set KICAD8_FOOTPRINT_DIR (or KICAD9_FOOTPRINT_DIR) to your KiCad "
-                f"footprints root (folder that contains *.pretty). Searched: {footprint_search_roots()}"
+                f"Searched: {footprint_search_roots()}"
             )
+            if fabrication:
+                raise LayoutGenerationError(msg)
+            logger.warning("%s; skipping part %s in PCB placement (handoff/dev).", msg, getattr(part, "ref", "?"))
+            continue
 
         fp = plugin.FootprintLoad(pretty_dir, fp_name)
         if fp is None:
-            raise LayoutGenerationError(
-                f"Failed to load footprint '{fp_name}' from {pretty_dir} for part {part.ref}."
-            )
+            msg = f"Failed to load footprint '{fp_name}' from {pretty_dir} for part {getattr(part, 'ref', '?')}."
+            if fabrication:
+                raise LayoutGenerationError(msg)
+            logger.warning("%s Skipping part in PCB placement (handoff/dev).", msg)
+            continue
 
         pcb.Add(fp)
         fp.SetReference(part.ref)
@@ -249,7 +489,7 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
         except Exception:
             pass
 
-        for pin in part.pins:
+        for pin in _iter_unique_pins(part):
             try:
                 if SKIDL_NC is not None and pin.net is SKIDL_NC:
                     continue
@@ -264,20 +504,36 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
                 ni = pcbnew_mod.NETINFO_ITEM(pcb, net_name)
                 pcb.Add(ni)
                 net_cache[net_name] = ni
-            pad = _find_pad(fp, str(pin.num))
+            pnum = str(getattr(pin, "num", None) or getattr(pin, "number", None) or "")
+            pname = str(getattr(pin, "name", "") or "").strip()
+            if not pnum and not pname:
+                continue
+            pad = find_pad_for_pin(fp, pnum, pname or None)
             if pad is None:
                 logger.warning(
                     "Part %s: no pad matching SKiDL pin %s (%s); net %s not attached on PCB.",
                     part.ref,
-                    pin.num,
-                    getattr(pin, "name", ""),
+                    pnum or "?",
+                    pname,
                     net_name,
                 )
+                try:
+                    _PAD_MISMATCH_EVENTS.append(
+                        {
+                            "refdes": str(getattr(part, "ref", "") or ""),
+                            "footprint": str(getattr(part, "footprint", "") or ""),
+                            "pin_num": str(pnum),
+                            "pin_name": str(getattr(pin, "name", "") or ""),
+                            "net": str(net_name),
+                        }
+                    )
+                except Exception:
+                    pass
                 continue
             try:
                 pad.SetNet(net_cache[net_name])
             except Exception as e:
-                logger.warning("Part %s pin %s: SetNet failed: %s", part.ref, pin.num, e)
+                logger.warning("Part %s pin %s: SetNet failed: %s", part.ref, pnum, e)
 
     try:
         pcb.BuildConnectivity()

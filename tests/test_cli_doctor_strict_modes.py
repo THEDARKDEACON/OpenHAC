@@ -101,6 +101,15 @@ def test_doctor_strict_config_only_requires_config(monkeypatch, capsys):
     monkeypatch.delenv("KICAD8_SYMBOL_DIR", raising=False)
     monkeypatch.delenv("KICAD8_FOOTPRINT_DIR", raising=False)
     monkeypatch.delenv("OPENHAC_KICAD_SYMBOL_DIRS", raising=False)
+    for k in (
+        "KICAD9_SYMBOL_DIR",
+        "KICAD7_SYMBOL_DIR",
+        "KICAD6_SYMBOL_DIR",
+        "KICAD_SYMBOL_DIR",
+        "KICAD9_FOOTPRINT_DIR",
+        "KICAD_FOOTPRINT_DIR",
+    ):
+        monkeypatch.delenv(k, raising=False)
 
     args = _ns(
         db_path=None,

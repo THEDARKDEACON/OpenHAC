@@ -294,13 +294,14 @@ def fetch_and_map_part(query_params: dict) -> dict | None:
         except (json.JSONDecodeError, TypeError):
             extra = {}
 
+    manufacturer = best.get("manufacturer") or best.get("mfr") or ""
     comp_data = {
         "generic_name": generic_name,
         "kicad_symbol": symbol,
         "kicad_footprint": footprint,
-        "manufacturer": best.get("manufacturer", ""),
+        "manufacturer": manufacturer,
         "mpn": mpn,
-        "supplier_sku": f"C{lcsc}" if lcsc else "",
+        "supplier_sku": (f"C{lcsc}" if lcsc else ""),
         "description": description,
         "category": category,
         "attributes_json": json.dumps({
@@ -315,10 +316,24 @@ def fetch_and_map_part(query_params: dict) -> dict | None:
     }
 
     # Emit visible terminal notice
+    # Normalize supplier_sku to C12345 form.
+    if comp_data.get("supplier_sku"):
+        raw = str(comp_data["supplier_sku"]).strip()
+        up = raw.upper()
+        if up.isdigit():
+            comp_data["supplier_sku"] = f"C{up}"
+        elif up.startswith("C") and up[1:].isdigit():
+            comp_data["supplier_sku"] = f"C{up[1:]}"
+
     sku = comp_data["supplier_sku"]
     logger.info(
-        f"JIT: Fetched '{generic_name}' from live API → "
-        f"{mpn} ({sku}), footprint: {footprint}"
+        "JIT: query=%r category=%s selected_mpn=%s selected_sku=%s confidence=%s footprint=%s",
+        search_query,
+        category,
+        mpn,
+        sku,
+        comp_data.get(LOOKUP_CONFIDENCE_KEY, ""),
+        footprint,
     )
 
     return comp_data

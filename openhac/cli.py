@@ -81,6 +81,18 @@ def _find_board_instance(user_module):
     if isinstance(preferred, Board):
         return preferred
 
+    # Support a lazy factory to avoid constructing large boards at import time.
+    build = getattr(user_module, "build_board", None)
+    if callable(build):
+        try:
+            candidate = build()
+            if isinstance(candidate, Board):
+                return candidate
+        except Exception:
+            # Fall through to other discovery; caller will show the real exception
+            # when importing/constructing if needed.
+            raise
+
     found: list[tuple[str, object]] = []
     for name in dir(user_module):
         if name.startswith("_"):
@@ -183,6 +195,37 @@ def cmd_compile(args):
             bootstrap_environment()
         except Exception:
             pass
+
+        if getattr(args, "sync_jlc_before", False):
+            from openhac.database.sync_jlc import sync_catalog
+
+            cats = getattr(args, "sync_jlc_categories", None)
+            categories = cats.split(",") if cats else None
+            logger.info("Pipeline: syncing JLC catalog (categories=%s)...", categories or "default")
+            n = sync_catalog(categories=categories, verbose=True)
+            logger.info("Pipeline: JLC sync wrote %s components.", n)
+
+        if getattr(args, "pre_seed_file", None):
+            from openhac.database.sync_jlc import seed_from_file
+
+            logger.info("Pipeline: seeding DB from %s", args.pre_seed_file)
+            seed_from_file(str(args.pre_seed_file), verbose=True)
+
+        if getattr(args, "pre_enrich_json", None):
+            from openhac.database.db_manager import DatabaseManager
+            from openhac.database.enrich import batch_enrich_from_json_file
+
+            logger.info("Pipeline: enriching parts from %s", args.pre_enrich_json)
+            db = DatabaseManager()
+            attempted, updated = batch_enrich_from_json_file(
+                str(args.pre_enrich_json),
+                db=db,
+                vendor=str(getattr(args, "pre_enrich_vendor", "auto") or "auto"),
+                limit=int(getattr(args, "pre_enrich_limit", 0) or 0),
+                quiet=False,
+            )
+            logger.info("Pipeline: batch enrich attempted=%s updated=%s", attempted, updated)
+
         user_module = _load_user_script(args.script)
         board = _find_board_instance(user_module)
         if board is None:
@@ -191,6 +234,32 @@ def cmd_compile(args):
                 "named `board`, or expose exactly one Board at module level."
             )
             sys.exit(2)
+
+        if getattr(args, "auto_enrich_board", False):
+            from openhac.database.db_manager import DatabaseManager
+            from openhac.database.enrich import batch_enrich_targets, discover_enrich_targets_from_board, network_allowed
+
+            if not network_allowed():
+                logger.warning(
+                    "Auto-enrich-board: skipping online enrichment (network disabled via "
+                    "OPENHAC_NO_NETWORK or deterministic mode without OPENHAC_ALLOW_NETWORK)."
+                )
+            else:
+                db = DatabaseManager()
+                targets = discover_enrich_targets_from_board(board)
+                logger.info(
+                    "Auto-enrich-board: %s unique part(s) lack pinout/symbol metadata in the DB; running vendor enrich.",
+                    len(targets),
+                )
+                if targets:
+                    attempted, updated = batch_enrich_targets(
+                        targets,
+                        db=db,
+                        vendor=str(getattr(args, "auto_enrich_vendor", "auto") or "auto"),
+                        limit=int(getattr(args, "auto_enrich_limit", 0) or 0),
+                        quiet=False,
+                    )
+                    logger.info("Auto-enrich-board: attempted=%s updated=%s", attempted, updated)
 
         name = args.name or _default_project_name(args.script)
         export_schematic = not args.no_schematic
@@ -248,6 +317,9 @@ def cmd_compile(args):
             source_script_path=os.path.abspath(args.script),
             output_dir=getattr(args, "output_dir", None),
             release_zip_path=zip_path,
+            bbox_padding_mm=float(getattr(args, "bbox_padding_mm", 0.5) or 0.5),
+            deoverlap_max_iters=int(getattr(args, "deoverlap_iters", 200) or 200),
+            deoverlap_step_mm=float(getattr(args, "deoverlap_step_mm", 0.75) or 0.75),
         )
         logger.info("Compilation complete.")
     finally:
@@ -454,6 +526,19 @@ def cmd_doctor(args):
     freerouting_jar = os.environ.get("FREEROUTING_JAR")
     freerouting_jar_exists = bool((freerouting_jar or "").strip() and os.path.isfile(freerouting_jar or ""))
 
+    try:
+        from openhac.database.vendor_apis import vendor_apis_configured
+
+        vendor_apis_ok = vendor_apis_configured()
+    except Exception:
+        vendor_apis_ok = None
+    vendor_api_env_present = {
+        "digikey": bool((os.environ.get("DIGIKEY_CLIENT_ID") or "").strip() and (os.environ.get("DIGIKEY_CLIENT_SECRET") or "").strip()),
+        "mouser": bool((os.environ.get("MOUSER_API_KEY") or "").strip()),
+        "tme": bool((os.environ.get("TME_API_TOKEN") or "").strip() and (os.environ.get("TME_API_SECRET") or "").strip()),
+        "jlcpcb": bool((os.environ.get("JLCPCB_API_KEY") or "").strip()),
+    }
+
     cwd = os.getcwd()
     fp_lib_table_local = os.path.join(cwd, "fp-lib-table")
     sym_lib_table_local = os.path.join(cwd, "sym-lib-table")
@@ -495,6 +580,8 @@ def cmd_doctor(args):
         "java_present": bool(java),
         "freerouting_jar": freerouting_jar,
         "freerouting_jar_exists": freerouting_jar_exists,
+        "vendor_apis_configured": vendor_apis_ok,
+        "vendor_api_env_present": vendor_api_env_present,
         "fp_lib_table_present": any(os.path.isfile(p) for p in fp_lib_table_candidates),
         "sym_lib_table_present": any(os.path.isfile(p) for p in sym_lib_table_candidates),
         "fp_lib_table_candidates": fp_lib_table_candidates,
@@ -652,6 +739,50 @@ def cmd_seed(args):
         os.environ["OPENHAC_DB_PATH"] = _prev_db_path
 
 
+def cmd_database_enrich(args):
+    """Enrich missing part metadata (pinout, URLs, footprint verification) via vendor APIs."""
+    import json
+    from pathlib import Path
+
+    from openhac.database.db_manager import DatabaseManager
+    from openhac.database.enrich import batch_enrich_targets, parse_enrich_targets_from_json
+
+    _prev_db_path = os.environ.get("OPENHAC_DB_PATH")
+    if getattr(args, "db_path", None):
+        os.environ["OPENHAC_DB_PATH"] = str(getattr(args, "db_path"))
+
+    if getattr(args, "no_network", False):
+        os.environ["OPENHAC_NO_NETWORK"] = "1"
+
+    db = DatabaseManager()
+
+    skus_file = getattr(args, "skus_file", None)
+    raw = json.loads(Path(skus_file).read_text(encoding="utf-8")) if skus_file else None
+    targets = parse_enrich_targets_from_json(raw) if raw is not None else []
+
+    if not targets:
+        logger.error("No parts to enrich. Provide --skus-file with a list of parts.")
+        raise SystemExit(2)
+
+    limit = int(getattr(args, "limit", 0) or 0)
+    vendor = str(getattr(args, "vendor", "auto") or "auto")
+
+    attempted, updated = batch_enrich_targets(
+        targets,
+        db=db,
+        vendor=vendor,
+        limit=limit,
+        quiet=bool(getattr(args, "quiet", False)),
+    )
+
+    logger.info("Enrichment complete. attempted=%s updated=%s", attempted, updated)
+
+    if _prev_db_path is None:
+        os.environ.pop("OPENHAC_DB_PATH", None)
+    else:
+        os.environ["OPENHAC_DB_PATH"] = _prev_db_path
+
+
 def cmd_export_assembly(args):
     """Pick-and-place CSV only (front + back) via ``kicad-cli`` (MFG-002)."""
     from openhac.compiler.export_fab import export_assembly_csv
@@ -693,7 +824,10 @@ def _setup_logging(verbose: bool = False):
 
 
 def main():
+    from openhac.core.dotenv_load import load_repo_dotenv
     from openhac.version_info import get_version
+
+    load_repo_dotenv(quiet=True)
 
     parser = argparse.ArgumentParser(
         prog="openhac",
@@ -751,6 +885,25 @@ def main():
         "--no-schematic",
         action="store_true",
         help="Skip schematic and .kicad_pro export",
+    )
+    p_compile.add_argument(
+        "--bbox-padding-mm",
+        type=float,
+        default=0.5,
+        help="Extra padding (mm) applied to footprint bounding boxes for PCB fit / keepout checks and "
+        "post-process clamping/de-overlap. Default: 0.5",
+    )
+    p_compile.add_argument(
+        "--deoverlap-iters",
+        type=int,
+        default=200,
+        help="Max iterations for PCB de-overlap post-process (default: 200).",
+    )
+    p_compile.add_argument(
+        "--deoverlap-step-mm",
+        type=float,
+        default=0.75,
+        help="Step size (mm) for PCB de-overlap post-process (default: 0.75).",
     )
     p_compile.add_argument(
         "--allow-risky-parts",
@@ -838,6 +991,60 @@ def main():
         action="store_true",
         help="Write PROJECT.openhac-manifest.json.sha256 (STR-002); same as env OPENHAC_MANIFEST_SHA256_SIDECAR=1",
     )
+    p_compile.add_argument(
+        "--sync-jlc-before",
+        action="store_true",
+        help="Before compile, run JLC catalog sync (same as `openhac sync`; can be slow).",
+    )
+    p_compile.add_argument(
+        "--sync-jlc-categories",
+        default=None,
+        metavar="LIST",
+        help="With --sync-jlc-before, comma-separated category list (default: all configured categories).",
+    )
+    p_compile.add_argument(
+        "--pre-seed-file",
+        default=None,
+        metavar="PATH",
+        help="Before compile, seed the DB from JSON (same as `python -m openhac.database.sync_jlc --seed-file`).",
+    )
+    p_compile.add_argument(
+        "--pre-enrich-json",
+        default=None,
+        metavar="PATH",
+        help="Before compile, batch-enrich parts from JSON (same format as `openhac database enrich --skus-file`).",
+    )
+    p_compile.add_argument(
+        "--pre-enrich-vendor",
+        default="auto",
+        choices=("auto", "jlcpcb", "digikey", "mouser", "tme"),
+        help="Vendor preference for --pre-enrich-json (default: auto).",
+    )
+    p_compile.add_argument(
+        "--pre-enrich-limit",
+        default=0,
+        type=int,
+        help="Max enrichment attempts for --pre-enrich-json (0 = no limit).",
+    )
+    p_compile.add_argument(
+        "--auto-enrich-board",
+        action="store_true",
+        help="After loading the board script, discover parts missing pinout/symbol_data in the DB, run batch enrich "
+        "(requires vendor API env vars; see vendor_apis), then compile. "
+        "Implicit-pin warnings during script import are unchanged unless the DB was already filled (e.g. sync + enrich).",
+    )
+    p_compile.add_argument(
+        "--auto-enrich-vendor",
+        default="auto",
+        choices=("auto", "jlcpcb", "digikey", "mouser", "tme"),
+        help="Vendor preference for --auto-enrich-board (default: auto).",
+    )
+    p_compile.add_argument(
+        "--auto-enrich-limit",
+        default=0,
+        type=int,
+        help="Max enrichment attempts for --auto-enrich-board (0 = no limit).",
+    )
     p_compile.set_defaults(func=cmd_compile)
 
     p_sim = subparsers.add_parser("simulate", help="Generate SPICE netlist")
@@ -913,6 +1120,31 @@ def main():
 
     p_seed = subparsers.add_parser("seed", help="Seed database with sample components")
     p_seed.set_defaults(func=cmd_seed)
+
+    p_db = subparsers.add_parser("database", help="Database utilities")
+    db_sub = p_db.add_subparsers(dest="db_command", required=True)
+    p_enrich = db_sub.add_parser("enrich", help="Enrich missing part metadata via vendor APIs")
+    p_enrich.add_argument(
+        "--skus-file",
+        required=True,
+        metavar="PATH",
+        help="JSON list of parts to enrich (dicts with generic_name/mpn/supplier_sku, or simple names).",
+    )
+    p_enrich.add_argument(
+        "--vendor",
+        default="auto",
+        choices=("auto", "jlcpcb", "digikey", "mouser", "tme"),
+        help="Preferred vendor API (default: auto).",
+    )
+    p_enrich.add_argument(
+        "--limit",
+        default=0,
+        type=int,
+        help="Optional limit on number of enrichment attempts (0 = no limit).",
+    )
+    p_enrich.add_argument("--no-network", action="store_true", help="Disable online lookups for this run.")
+    p_enrich.add_argument("-q", "--quiet", action="store_true", help="Reduce per-part output.")
+    p_enrich.set_defaults(func=cmd_database_enrich)
 
     p_export = subparsers.add_parser("export", help="Export fabrication outputs (requires kicad-cli)")
     export_sub = p_export.add_subparsers(dest="export_target", required=True)

@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timezone
 
 from openhac.database.db_manager import DatabaseManager
+from openhac.database.vendor_apis import PartInfo
 
 
 def test_list_part_offers_empty(tmp_db):
@@ -64,3 +66,28 @@ def test_migrate_v4_creates_table_on_old_db(tmp_path):
         }
     )
     assert len(dm.list_part_offers("G")) == 1
+
+
+def test_migrate_v8_allows_vendor_update_stock_package(tmp_db, sample_component_data):
+    """``update_component_from_vendor`` writes ``stock`` / ``package`` after v8 migration."""
+    _, dm = tmp_db
+    dm.insert_component(sample_component_data)
+    part = PartInfo(
+        mpn=sample_component_data["mpn"],
+        manufacturer=sample_component_data["manufacturer"],
+        supplier_sku=sample_component_data["supplier_sku"],
+        description=sample_component_data["description"],
+        stock=42,
+        price_breaks=[],
+        datasheet_url=None,
+        product_url=None,
+        category="resistor",
+        package="0805",
+        rohs=True,
+        lead_time_days=None,
+        last_updated=datetime.now(timezone.utc),
+    )
+    assert dm.update_component_from_vendor(sample_component_data["generic_name"], part) is True
+    row = dm.get_component(sample_component_data["generic_name"])
+    assert row["stock"] == 42
+    assert row["package"] == "0805"

@@ -48,7 +48,37 @@ def _netinfo_for_name(pcb, net_name: str):
     try:
         return nets[str(net_name)]
     except Exception:
-        return None
+        # Best-effort: create the net on the PCB so zones can attach even
+        # before a full netlist import has populated nets.
+        try:
+            cls = getattr(type(pcb), "NETINFO_ITEM", None) or getattr(__import__("pcbnew"), "NETINFO_ITEM", None)
+        except Exception:
+            cls = None
+        try:
+            if cls is None:
+                import pcbnew as _pcbnew  # type: ignore
+
+                cls = getattr(_pcbnew, "NETINFO_ITEM", None)
+        except Exception:
+            cls = None
+        if cls is None:
+            return None
+        try:
+            ni = cls(pcb, str(net_name))
+        except Exception:
+            try:
+                ni = cls(str(net_name))
+            except Exception:
+                return None
+        try:
+            pcb.Add(ni)
+        except Exception:
+            pass
+        try:
+            nets = pcb.GetNetsByName()
+            return nets[str(net_name)]
+        except Exception:
+            return ni
 
 
 def apply_copper_pour_intents(pcb, board, pcbnew_mod) -> int:
@@ -178,6 +208,16 @@ def apply_mounting_hole_intents(pcb, board, pcbnew_mod) -> int:
         return 0
 
     added = 0
+    # Use board outline bbox for clamping/insetting (avoid courtyard pushing outside edges).
+    edges_bb = None
+    try:
+        edges_bb = pcb.GetBoardEdgesBoundingBox()
+    except Exception:
+        edges_bb = None
+    try:
+        margin_iu = int(pcbnew_mod.FromMM(0.25))
+    except Exception:
+        margin_iu = 0
     for i, rec in enumerate(intents, start=1):
         try:
             x_mm = float(rec.get("x_mm"))
@@ -212,11 +252,294 @@ def apply_mounting_hole_intents(pcb, board, pcbnew_mod) -> int:
             fp.SetPosition(_to_vec(pcbnew_mod, x_mm, y_mm))
         except Exception:
             pass
+
+        # Clamp the footprint bbox inside Edge.Cuts bbox (best-effort).
+        if edges_bb is not None:
+            try:
+                fbb = fp.GetBoundingBox()
+                left = int(getattr(fbb, "GetLeft")())
+                top = int(getattr(fbb, "GetTop")())
+                right = int(getattr(fbb, "GetRight")())
+                bottom = int(getattr(fbb, "GetBottom")())
+
+                eleft = int(getattr(edges_bb, "GetLeft")()) + margin_iu
+                etop = int(getattr(edges_bb, "GetTop")()) + margin_iu
+                eright = int(getattr(edges_bb, "GetRight")()) - margin_iu
+                ebottom = int(getattr(edges_bb, "GetBottom")()) - margin_iu
+
+                dx = 0
+                dy = 0
+                if left < eleft:
+                    dx = eleft - left
+                elif right > eright:
+                    dx = eright - right
+                if top < etop:
+                    dy = etop - top
+                elif bottom > ebottom:
+                    dy = ebottom - bottom
+                if dx or dy:
+                    try:
+                        pos = fp.GetPosition()
+                        fp.SetPosition(pcbnew_mod.VECTOR2I(int(pos.x) + int(dx), int(pos.y) + int(dy)))
+                    except Exception:
+                        try:
+                            pos = fp.GetPosition()
+                            fp.SetPosition(pcbnew_mod.wxPoint(int(pos.x) + int(dx), int(pos.y) + int(dy)))
+                        except Exception:
+                            pass
+            except Exception:
+                pass
         added += 1
 
     if added:
         logger.info("Added %s mounting hole footprint(s) from intents.", added)
     return added
+
+
+def clamp_footprints_inside_edge_cuts(pcb, pcbnew_mod, *, margin_mm: float = 0.25) -> int:
+    """Clamp all footprints' bounding boxes inside the Edge.Cuts bounding box (best-effort).
+
+    This prevents "out of bounds" placements when solver coordinates or footprint bboxes
+    drift outside the board outline. Intended for handoff/dev; fabrication should still
+    be reviewed in KiCad.
+    """
+    try:
+        edges_bb = pcb.GetBoardEdgesBoundingBox()
+    except Exception:
+        return 0
+    if edges_bb is None:
+        return 0
+    try:
+        margin_iu = int(pcbnew_mod.FromMM(float(margin_mm)))
+    except Exception:
+        margin_iu = 0
+
+    try:
+        e_left = int(edges_bb.GetLeft()) + margin_iu
+        e_right = int(edges_bb.GetRight()) - margin_iu
+        e_top = int(edges_bb.GetTop()) + margin_iu
+        e_bottom = int(edges_bb.GetBottom()) - margin_iu
+    except Exception:
+        return 0
+
+    moved = 0
+    try:
+        fps = list(pcb.GetFootprints())
+    except Exception:
+        try:
+            fps = list(pcb.Footprints())
+        except Exception:
+            return 0
+
+    for fp in fps:
+        try:
+            fbb = fp.GetBoundingBox()
+            left = int(fbb.GetLeft())
+            right = int(fbb.GetRight())
+            top = int(fbb.GetTop())
+            bottom = int(fbb.GetBottom())
+        except Exception:
+            continue
+
+        dx = 0
+        dy = 0
+        if left < e_left:
+            dx = e_left - left
+        elif right > e_right:
+            dx = e_right - right
+        if top < e_top:
+            dy = e_top - top
+        elif bottom > e_bottom:
+            dy = e_bottom - bottom
+        if not dx and not dy:
+            continue
+        try:
+            pos = fp.GetPosition()
+            fp.SetPosition(type(pos)(int(pos.x + dx), int(pos.y + dy)))
+            moved += 1
+        except Exception:
+            # Older pcbnew types may not support constructor on VECTOR2I; fall back to Move().
+            try:
+                fp.Move(type(fp.GetPosition())(dx, dy))
+                moved += 1
+            except Exception:
+                continue
+    if moved:
+        logger.info("Clamped %s footprint(s) inside Edge.Cuts bbox.", moved)
+    return moved
+
+
+def spread_footprints_no_overlap(
+    pcb,
+    pcbnew_mod,
+    *,
+    max_iters: int = 200,
+    step_mm: float = 0.5,
+    margin_mm: float = 0.25,
+) -> int:
+    """Best-effort de-overlap pass using footprint bounding boxes.
+
+    Iteratively pushes overlapping footprints apart by a small step while keeping them
+    inside Edge.Cuts. This is intended for handoff/dev visualization, not final placement.
+    """
+    try:
+        edges_bb = pcb.GetBoardEdgesBoundingBox()
+    except Exception:
+        return 0
+    if edges_bb is None:
+        return 0
+    try:
+        margin_iu = int(pcbnew_mod.FromMM(float(margin_mm)))
+        step_iu = int(pcbnew_mod.FromMM(float(step_mm)))
+    except Exception:
+        return 0
+
+    try:
+        e_left = int(edges_bb.GetLeft()) + margin_iu
+        e_right = int(edges_bb.GetRight()) - margin_iu
+        e_top = int(edges_bb.GetTop()) + margin_iu
+        e_bottom = int(edges_bb.GetBottom()) - margin_iu
+    except Exception:
+        return 0
+
+    try:
+        fps = list(pcb.GetFootprints())
+    except Exception:
+        try:
+            fps = list(pcb.Footprints())
+        except Exception:
+            return 0
+
+    # Stable order (reference) for determinism.
+    def _ref(fp) -> str:
+        try:
+            return str(fp.GetReference() or "")
+        except Exception:
+            return ""
+
+    fps = sorted(fps, key=_ref)
+
+    def _is_locked(fp) -> bool:
+        try:
+            return bool(fp.IsLocked())
+        except Exception:
+            return False
+
+    def _bb(fp):
+        b = fp.GetBoundingBox()
+        # Inflate bbox by margin to enforce a minimum separation.
+        # This is deliberately approximate (bbox, not courtyard) but is stable and fast.
+        return (
+            int(b.GetLeft()) - margin_iu,
+            int(b.GetTop()) - margin_iu,
+            int(b.GetRight()) + margin_iu,
+            int(b.GetBottom()) + margin_iu,
+        )
+
+    def _overlap(a, b) -> bool:
+        al, at, ar, ab = a
+        bl, bt, br, bb = b
+        return not (ar <= bl or br <= al or ab <= bt or bb <= at)
+
+    moved_fps: set[str] = set()
+    it = 0
+    while it < int(max_iters):
+        it += 1
+        any_moved = False
+        # Compute bboxes each pass (pcbnew bboxes change with moves).
+        bbs = []
+        for fp in fps:
+            try:
+                bbs.append(_bb(fp))
+            except Exception:
+                bbs.append(None)
+
+        for i, fp in enumerate(fps):
+            if _is_locked(fp):
+                continue
+            bb_i = bbs[i]
+            if bb_i is None:
+                continue
+            # Find first overlap to resolve (greedy).
+            hit_j = None
+            bb_j = None
+            for j in range(i + 1, len(fps)):
+                if _is_locked(fps[j]):
+                    continue
+                b = bbs[j]
+                if b is None:
+                    continue
+                if _overlap(bb_i, b):
+                    hit_j = j
+                    bb_j = b
+                    break
+            if hit_j is None or bb_j is None:
+                continue
+
+            # Push fp away from the other footprint’s bbox center.
+            il, itop, ir, ibot = bb_i
+            jl, jtop, jr, jbot = bb_j
+            icx = (il + ir) // 2
+            icy = (itop + ibot) // 2
+            jcx = (jl + jr) // 2
+            jcy = (jtop + jbot) // 2
+            dx = step_iu if icx >= jcx else -step_iu
+            dy = step_iu if icy >= jcy else -step_iu
+
+            # Bias to the axis of greater overlap.
+            overlap_x = min(ir, jr) - max(il, jl)
+            overlap_y = min(ibot, jbot) - max(itop, jtop)
+            if overlap_x > overlap_y:
+                dy = 0
+            else:
+                dx = 0
+
+            # Apply move.
+            try:
+                pos = fp.GetPosition()
+                newx = int(pos.x + dx)
+                newy = int(pos.y + dy)
+                fp.SetPosition(type(pos)(newx, newy))
+            except Exception:
+                try:
+                    fp.Move(type(fp.GetPosition())(dx, dy))
+                except Exception:
+                    continue
+
+            # Clamp inside edges immediately.
+            try:
+                l2, t2, r2, b2 = _bb(fp)
+            except Exception:
+                continue
+            cdx = 0
+            cdy = 0
+            if l2 < e_left:
+                cdx = e_left - l2
+            elif r2 > e_right:
+                cdx = e_right - r2
+            if t2 < e_top:
+                cdy = e_top - t2
+            elif b2 > e_bottom:
+                cdy = e_bottom - b2
+            if cdx or cdy:
+                try:
+                    pos = fp.GetPosition()
+                    fp.SetPosition(type(pos)(int(pos.x + cdx), int(pos.y + cdy)))
+                except Exception:
+                    try:
+                        fp.Move(type(fp.GetPosition())(cdx, cdy))
+                    except Exception:
+                        pass
+
+            moved_fps.add(_ref(fp))
+            any_moved = True
+
+        if not any_moved:
+            break
+
+    if moved_fps:
+        logger.info("De-overlap moved %s footprint(s) (iters=%s).", len(moved_fps), it)
+    return len(moved_fps)
 
 
 def apply_keepout_rect_intents(pcb, board, pcbnew_mod) -> int:

@@ -35,6 +35,7 @@ class CompileState:
     source_script_path: str | os.PathLike[str] | None
     output_dir: str | os.PathLike[str] | None
     release_zip_path: str | os.PathLike[str] | None
+    bbox_padding_mm: float = 0.5
     skip_layout: bool = field(init=False)
     net_path: str = field(init=False)
     bom_path: str | None = field(init=False)
@@ -43,6 +44,7 @@ class CompileState:
     pro_path: str | None = field(init=False)
     erc_report_name: str | None = field(default=None, init=False)
     pcb_metrics: dict = field(default_factory=dict, init=False)
+    enrich_metrics: dict = field(default_factory=dict, init=False)
 
     def __post_init__(self) -> None:
         self.skip_layout = os.environ.get("OPENHAC_SKIP_LAYOUT", "").lower() in ("1", "true", "yes")
@@ -50,12 +52,85 @@ class CompileState:
         self.compile_goal = self.board.effective_compile_goal()
         self.board_class = str(getattr(self.board, "board_class", "generic") or "generic")
         self.quality_gates = dict(getattr(self.board, "quality_gates", None) or {})
+        try:
+            self.bbox_padding_mm = float(getattr(self, "bbox_padding_mm", 0.5) or 0.0)
+        except Exception:
+            self.bbox_padding_mm = 0.5
 
         self.net_path = _artifact_path(self.project_name, ".net", self.output_dir)
         self.bom_path = (
             _artifact_path(self.project_name, ".csv", self.output_dir) if self.generate_bom else None
         )
         self.pcb_path = _artifact_path(self.project_name, ".kicad_pcb", self.output_dir)
+
+
+def phase_enrich_parts(state: CompileState) -> None:
+    """Online enrichment phase to fill missing pinout/symbol metadata before pin access.
+
+    This is best-effort in handoff mode, and required in fabrication mode (because implicit
+    pins and pad mismatches make outputs non-fabricable).
+    """
+    attempted = 0
+    updated = 0
+    skipped = 0
+    failed = 0
+    try:
+        from openhac.database.enrich import enrich_component_in_db, network_allowed
+    except Exception:
+        return
+
+    allow_net = network_allowed()
+    if not allow_net and state.compile_goal == "fabrication":
+        # Still allow the existing pinout gate to fail with a clearer list later.
+        state.enrich_metrics = {"attempted": 0, "updated": 0, "skipped": 0, "failed": 0, "network": False}
+        return
+
+    try:
+        modules = state.board._get_all_modules()
+    except Exception:
+        modules = getattr(state.board, "modules", []) or []
+
+    seen: set[str] = set()
+    for mod in modules:
+        for comp in getattr(mod, "components", []) or []:
+            gn = str(getattr(comp, "generic_name", "") or "").strip()
+            if not gn or gn in seen:
+                continue
+            seen.add(gn)
+            try:
+                cd = getattr(comp, "_comp_data", {}) or {}
+                if cd.get("pinout_json") or cd.get("symbol_data"):
+                    skipped += 1
+                    continue
+            except Exception:
+                pass
+            try:
+                res = enrich_component_in_db(db=comp.db, generic_name=gn)  # type: ignore[attr-defined]
+                if res.attempted:
+                    attempted += 1
+                if res.updated:
+                    updated += 1
+                elif res.attempted and not res.updated and (res.reason or "").startswith("lookup_failed"):
+                    failed += 1
+            except Exception:
+                failed += 1
+
+    state.enrich_metrics = {
+        "attempted": attempted,
+        "updated": updated,
+        "skipped": skipped,
+        "failed": failed,
+        "network": bool(allow_net),
+    }
+    if attempted or updated or failed:
+        logger.info(
+            "Enrichment: attempted=%s updated=%s skipped=%s failed=%s network=%s",
+            attempted,
+            updated,
+            skipped,
+            failed,
+            bool(allow_net),
+        )
 
 
 def phase_post_layout_checks(state: CompileState) -> None:
@@ -71,20 +146,28 @@ def phase_post_layout_checks(state: CompileState) -> None:
     from openhac.compiler.pcb_fit import pcb_fit_violations_for_pcb_path
     from openhac.compiler.rule_check import DRCViolationError
 
-    # Use the same geometry min-edge default as DRC baseline unless overridden later.
-    margin_mm = 0.0
-    try:
-        from openhac.compiler.rule_check import _effective_drc_defaults
+    margin_mm = float(getattr(state, "bbox_padding_mm", 0.5) or 0.0)
 
-        margin_mm = float(_effective_drc_defaults(state.board).get("min_edge_clearance_mm", 0.0))
+    env_ov = os.environ.get("OPENHAC_PCB_CHECK_FP_OVERLAP", "").strip().lower()
+    if env_ov in ("0", "false", "no", "off"):
+        check_fp_overlap = False
+    elif env_ov in ("1", "true", "yes", "on"):
+        check_fp_overlap = True
+    else:
+        check_fp_overlap = state.compile_goal == "fabrication"
+    try:
+        clr_env = os.environ.get("OPENHAC_FP_OVERLAP_CLEARANCE_MM", "").strip()
+        fp_clr = float(clr_env) if clr_env else margin_mm
     except Exception:
-        margin_mm = 0.0
+        fp_clr = margin_mm
 
     viols = pcb_fit_violations_for_pcb_path(
         state.pcb_path,
         state.board,
         margin_mm=margin_mm,
         check_keepouts=True,
+        check_fp_overlap=check_fp_overlap,
+        fp_overlap_clearance_mm=fp_clr,
     )
     if not viols:
         return
@@ -130,6 +213,58 @@ def phase_erc_drc(state: CompileState) -> None:
 
     run_erc(state.board)
     run_drc(state.board)
+
+
+def phase_pinout_coverage(state: CompileState) -> None:
+    """Fail early when named-pin access will break due to missing pinout_json.
+
+    In fabrication mode we treat missing explicit pinout as build-stopping: designs
+    using named pins (e.g. `part['VIN']`) cannot be trusted when pin names are
+    synthesized from footprint heuristics.
+    """
+    # Allow opting out explicitly.
+    gate = state.quality_gates.get("require_explicit_pinout_json", None)
+    if gate is False:
+        return
+    if state.compile_goal != "fabrication" and gate is not True:
+        return
+
+    missing: list[str] = []
+    try:
+        for mod in state.board._get_all_modules():
+            for comp in getattr(mod, "components", []) or []:
+                try:
+                    cd = getattr(comp, "_comp_data", {})  # if cached
+                    pinout_json = (cd or {}).get("pinout_json")
+                    symbol_data = (cd or {}).get("symbol_data")
+                except Exception:
+                    pinout_json = None
+                    symbol_data = None
+                if pinout_json:
+                    continue
+                if symbol_data:
+                    continue
+                # Component stores DB row in ctor local; fall back to DB lookup.
+                try:
+                    row = comp.db.get_component(getattr(comp, "generic_name", ""))  # type: ignore[attr-defined]
+                except Exception:
+                    row = None
+                if not row or not (row.get("pinout_json") or row.get("symbol_data")):
+                    gn = getattr(comp, "generic_name", "?")
+                    missing.append(str(gn))
+    except Exception:
+        # If inspection fails, do not block by accident.
+        return
+
+    if not missing:
+        return
+    msg = (
+        "Pinout coverage gate failed: components missing explicit pinout_json in DB:\n"
+        + "\n".join(f"  - {m}" for m in sorted(set(missing)))
+        + "\n\nFix: run `python3 -m openhac.database.sync_jlc --skus-file PATH.json` to enrich pinouts "
+        "for these parts, or seed them via `--seed-file`."
+    )
+    raise RuntimeError(msg)
 
 
 def phase_interface_validation(state: CompileState) -> None:
@@ -252,17 +387,29 @@ def phase_schematic(state: CompileState) -> None:
     from openhac.compiler.project_gen import generate_project_file
     from openhac.compiler.schematic_gen import generate_schematic, write_generated_symbol_library
     from openhac.core.board import _artifact_path
-    from openhac.circuit import get_default_circuit
 
     state.sch_path = _artifact_path(state.project_name, ".kicad_sch", state.output_dir)
     state.pro_path = _artifact_path(state.project_name, ".kicad_pro", state.output_dir)
     pinpos_report = _artifact_path(state.project_name, ".openhac-sch-pinpos-report.json", state.output_dir)
 
-    # Generate project-local symbol library for SKiDL-native parts so KiCad renders them.
+    # Generate project-local symbol library for board parts so KiCad renders them.
     gen_sym_path = _artifact_path(state.project_name, ".openhac-generated.kicad_sym", state.output_dir)
     sym_path = None
     try:
-        sym_path = write_generated_symbol_library(gen_sym_path, get_default_circuit(), nickname="OpenHaC")
+        # Use board-derived parts, not SKiDL default_circuit.
+        parts: list[object] = []
+        seen: set[int] = set()
+        for mod in getattr(state.board, "modules", []) or []:
+            for child in getattr(mod, "components", []) or []:
+                p = getattr(child, "part", None)
+                if p is None:
+                    continue
+                pid = id(p)
+                if pid in seen:
+                    continue
+                seen.add(pid)
+                parts.append(p)
+        sym_path = write_generated_symbol_library(gen_sym_path, parts, nickname="OpenHaC")
     except Exception:
         sym_path = None
 
@@ -272,7 +419,37 @@ def phase_schematic(state: CompileState) -> None:
         pinpos_report_path=pinpos_report,
         generated_symbol_lib_path=sym_path,
     )
-    generate_project_file(state.pro_path, sym_lib_path=sym_path, sym_lib_nick="OpenHaC")
+
+    # Derive footprint library names from placed parts so KiCad can resolve Footprint fields.
+    footprint_libs: set[str] = set()
+    try:
+        parts: list[object] = []
+        seen: set[int] = set()
+        for mod in getattr(state.board, "modules", []) or []:
+            for child in getattr(mod, "components", []) or []:
+                p = getattr(child, "part", None)
+                if p is None:
+                    continue
+                pid = id(p)
+                if pid in seen:
+                    continue
+                seen.add(pid)
+                parts.append(p)
+        for part in parts:
+            fp = str(getattr(part, "footprint", "") or "").strip()
+            if ":" in fp:
+                lib = fp.split(":", 1)[0].strip()
+                if lib:
+                    footprint_libs.add(lib)
+    except Exception:
+        footprint_libs = set()
+
+    generate_project_file(
+        state.pro_path,
+        sym_lib_path=sym_path,
+        sym_lib_nick="OpenHaC",
+        footprint_libs=sorted(footprint_libs),
+    )
 
     if not state.kicad_sch_erc:
         return
@@ -296,10 +473,17 @@ def phase_schematic(state: CompileState) -> None:
 def phase_manifest(state: CompileState) -> None:
     from openhac.compiler.compile_manifest import write_compile_manifest
     from openhac.core.board import _artifact_path
+    from openhac.compiler.post_report import write_compile_post_report
 
     sidecar = bool(getattr(state.board, "write_manifest_sha256_sidecar", False))
     if os.environ.get("OPENHAC_MANIFEST_SHA256_SIDECAR", "").lower() in ("1", "true", "yes"):
         sidecar = True
+
+    # Compile post-report: best-effort diagnostics summary for review/follow-up.
+    try:
+        write_compile_post_report(state)
+    except Exception as e:
+        logger.debug("Post-report generation failed (continuing): %s", e)
 
     write_compile_manifest(
         state.project_name,
@@ -343,6 +527,8 @@ def phase_release_zip(state: CompileState) -> None:
 DEFAULT_COMPILE_PHASES: tuple[Callable[[CompileState], None], ...] = (
     phase_warn_multilayer_stackup,
     phase_erc_drc,
+    phase_enrich_parts,
+    phase_pinout_coverage,
     phase_interface_validation,
     phase_netlist_bom,
     phase_layout,

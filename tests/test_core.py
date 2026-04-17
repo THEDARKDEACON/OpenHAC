@@ -4,7 +4,7 @@ import warnings
 from unittest.mock import patch, MagicMock
 
 import pytest
-from skidl import Net, Part
+from openhac.core.net import Net
 
 from openhac.core.base import (
     Component,
@@ -21,7 +21,7 @@ from openhac.core.base import (
 
 
 class TestComponent:
-    """Component resolution and SKiDL Part creation."""
+    """Component resolution and native Part creation."""
 
     def _make_component(self, tmp_db):
         """Create a Component backed by the temp database."""
@@ -56,15 +56,14 @@ class TestComponent:
 
     def test_component_getattr_delegates_to_part(self, tmp_db):
         comp = self._make_component(tmp_db)
-        # Part has a .ref attribute
-        assert hasattr(comp, "ref")
+        # Native Part has a .refdes attribute
+        assert hasattr(comp, "refdes")
 
     def test_component_pin_connect(self, tmp_db):
         comp = self._make_component(tmp_db)
         n = Net("test_net")
-        # SKiDL uses += for pin connection, not assignment
         comp["1"] += n
-        assert len(n.get_pins()) >= 1
+        assert len(n.pins) >= 1
 
 
 # ---------------------------------------------------------------------------
@@ -87,7 +86,7 @@ class TestInterface:
         iface_a = Interface("out", n1, n2)
         iface_b = Interface("in", n3, n4)
         iface_a.connect(iface_b)
-        # After connection, the nets are merged via SKiDL += operator.
+        # After connection, the nets are merged via += operator.
         # The original Net objects now share the same underlying net.
         # We verify by checking the net names merged or pins are shared.
         assert n1.name is not None
@@ -126,7 +125,15 @@ class TestModule:
         assert comp._owning_module is mod
         assert comp.part.fields.get("OpenHaC_Module") == "test"
 
-        raw = Part("Device", "R", value="1k", ref="R99")
+        # Module can also accept a raw native Part.
+        from openhac.core.part import Part as NativePart, Pin
+        raw = NativePart(
+            refdes="R99",
+            footprint="Resistor_SMD:R_0805_2012Metric",
+            fields={},
+            pins=[Pin("1", "1", "passive"), Pin("2", "2", "passive")],
+            value="1k",
+        )
         mod.add(raw)
         assert raw.fields.get("OpenHaC_Module") == "test"
 

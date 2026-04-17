@@ -8,13 +8,42 @@ mirrors the official JLCPCB component catalog.
 
 import json
 import logging
+import os
+import sys
+import urllib.parse
 import urllib.request
+from pathlib import Path
+from typing import Iterable
+
+from openhac.core.dotenv_load import load_repo_dotenv
+
+load_repo_dotenv(quiet=True)
 
 from openhac.version_info import user_agent
 
 from .db_manager import DatabaseManager
 
 logger = logging.getLogger("openhac.sync")
+
+# Make CLI runs observable by default (without requiring app-level logging config).
+if __name__ == "__main__":
+    try:
+        logging.basicConfig(
+            level=logging.INFO,
+            format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
+            datefmt="%H:%M:%S",
+        )
+    except Exception:
+        pass
+
+# Debug: Show which API keys are configured
+if __name__ == "__main__":
+    print("\nAPI Keys configured:")
+    print(f"  DIGIKEY_CLIENT_ID: {bool(os.environ.get('DIGIKEY_CLIENT_ID'))}")
+    print(f"  MOUSER_API_KEY: {bool(os.environ.get('MOUSER_API_KEY'))}")
+    print(f"  TME_API_TOKEN: {bool(os.environ.get('TME_API_TOKEN'))}")
+    print(f"  JLCPCB_API_KEY: {bool(os.environ.get('JLCPCB_API_KEY'))}")
+    print()
 
 API_BASE = "https://jlcsearch.tscircuit.com"
 HEADERS = {"User-Agent": user_agent(), "Accept": "application/json"}
@@ -447,11 +476,11 @@ def search_and_add_components(queries: list[str], verbose: bool = True) -> int:
 
             # Determine category from item data
             category = item.get("category", "unknown")
-            generic_name = item.get("generic_name") or _derive_generic_name(item, category) or lcsc
+            generic_name = item.get("generic_name") or _derive_generic_name(category, item) or lcsc
 
             kicad_footprint = item.get("kicad_footprint", "")
             if not kicad_footprint:
-                kicad_footprint = _infer_footprint_from_pkg(item.get("package", ""))
+                kicad_footprint = _package_to_footprint(category, item.get("package", ""))
 
             component = {
                 "generic_name": generic_name,
@@ -484,205 +513,324 @@ def search_and_add_components(queries: list[str], verbose: bool = True) -> int:
     return total_inserted
 
 
-def seed_essential_components(verbose: bool = True) -> int:
-    """Seed the database with essential real JLCPCB parts for offline use.
+def _read_json_file(path: str) -> object:
+    p = Path(path)
+    return json.loads(p.read_text(encoding="utf-8"))
 
-    These are actual parts with real LCSC SKUs that can be used in designs
-    without requiring network access.
-    """
+
+def _normalize_jlc_sku(s: str) -> str:
+    raw = (s or "").strip()
+    if not raw:
+        return ""
+    up = raw.upper()
+    if up.startswith("C") and up[1:].isdigit():
+        return f"C{up[1:]}"
+    if up.isdigit():
+        return f"C{up}"
+    return raw
+
+
+def _verify_and_resolve_kicad_footprint(fp: str) -> tuple[str, int, str, str]:
+    """Return (chosen_fp, verified, resolved_fp, notes) for KiCad footprint IDs."""
+    import os
+    from functools import lru_cache
+
+    from openhac.compiler.pcb_placement import (
+        footprint_search_roots,
+        parse_footprint_id,
+        resolve_pretty_directory,
+    )
+
+    raw = (fp or "").strip()
+    if not raw:
+        return ("", 0, "", "empty footprint")
+
+    fpid = parse_footprint_id(raw)
+    if fpid is None:
+        return (raw, 0, "", "footprint is not in 'Library:Name' form")
+    lib, name = fpid
+
+    def _normalize_name_variants(n: str) -> list[str]:
+        """Common KiCad naming variations: hyphen/underscore, mm tokens, pitch casing."""
+        base = (n or "").strip()
+        if not base:
+            return []
+        outs = {base}
+        outs.add(base.replace("-", "_"))
+        outs.add(base.replace("_", "-"))
+        outs.add(base.replace("mm", "").replace("MM", ""))
+        outs.add(base.replace("_P", "_p").replace("-P", "-p"))
+        outs.add(base.replace("P0.", "p0.").replace("P1.", "p1."))
+        # Some libs use "x" vs "X" or omit separators.
+        outs.add(base.replace("x", "X"))
+        outs.add(base.replace("X", "x"))
+        return [s for s in dict.fromkeys(outs) if s]
+
+    def _best_fuzzy_match_in_lib(lib_name: str, *, must_contain: list[str]) -> str | None:
+        """Return a footprint name in lib that contains all substrings (case-insensitive)."""
+        pretty = resolve_pretty_directory(lib_name)
+        if not pretty:
+            return None
+        try:
+            files = os.listdir(pretty)
+        except Exception:
+            return None
+        needles = [s.lower() for s in must_contain if s]
+        for fn in files:
+            if not fn.endswith(".kicad_mod"):
+                continue
+            base = fn[: -len(".kicad_mod")]
+            low = base.lower()
+            if all(n in low for n in needles):
+                return base
+        return None
+
+    def _dim_tokens(n: str) -> list[str]:
+        """Extract useful dimension tokens like '3x2.5' and 'p0.4' from a footprint name."""
+        low = (n or "").lower()
+        out: list[str] = []
+        # pitch
+        for tok in ("p0.4", "p0.5", "p1.27", "p0.8", "p0.65", "p0.35"):
+            if tok in low or tok.replace(".", "_") in low:
+                out.append(tok)
+        # common 'AxB' dimensions with either x or _x_
+        import re
+        m = re.search(r"(\d+(?:\.\d+)?)\s*[x_]\s*(\d+(?:\.\d+)?)", low)
+        if m:
+            a, b = m.group(1), m.group(2)
+            out.append(f"{a}x{b}")
+            # alternate formatting often used in KiCad libs
+            out.append(f"{a}.0x{b}" if "." not in a else f"{a}x{b}")
+            out.append(f"{a}x{b}.0" if "." not in b else f"{a}x{b}")
+        return [t for t in out if t]
+
+    def _exists_in(lib_name: str) -> bool:
+        pretty = resolve_pretty_directory(lib_name)
+        if not pretty:
+            return False
+        for cand in _normalize_name_variants(name):
+            if os.path.isfile(os.path.join(pretty, f"{cand}.kicad_mod")):
+                return True
+        return False
+
+    if _exists_in(lib):
+        # Prefer exact spelling when possible.
+        pretty = resolve_pretty_directory(lib)
+        if pretty and os.path.isfile(os.path.join(pretty, f"{name}.kicad_mod")):
+            return (raw, 1, raw, "")
+        for cand in _normalize_name_variants(name):
+            if pretty and os.path.isfile(os.path.join(pretty, f"{cand}.kicad_mod")):
+                resolved = f"{lib}:{cand}"
+                return (resolved, 1, resolved, f"normalized from {raw} -> {resolved}")
+        return (raw, 1, raw, "")
+
+    # Curated heuristic: VSON/SON footprints often live under Package_SON in KiCad.
+    if "vson" in name.lower() and lib != "Package_SON":
+        if _exists_in("Package_SON"):
+            pretty = resolve_pretty_directory("Package_SON")
+            if pretty:
+                for cand in [name] + _normalize_name_variants(name):
+                    if os.path.isfile(os.path.join(pretty, f"{cand}.kicad_mod")):
+                        resolved = f"Package_SON:{cand}"
+                        return (resolved, 1, resolved, f"moved library from {lib} -> Package_SON")
+        # If not exact, try fuzzy in Package_SON.
+        hit = _best_fuzzy_match_in_lib("Package_SON", must_contain=["vson", "10", "p0.5"])
+        if hit:
+            resolved = f"Package_SON:{hit}"
+            return (resolved, 1, resolved, f"fuzzy resolved {raw} -> {resolved}")
+
+    # Curated heuristic: inductors sometimes differ by metric code vs dimensions.
+    if lib == "Inductor_SMD" and any(x in name for x in ("2.5x2.0", "2.5X2.0", "2_5x2_0")):
+        hit = _best_fuzzy_match_in_lib("Inductor_SMD", must_contain=["2520"])
+        if hit:
+            resolved = f"Inductor_SMD:{hit}"
+            return (resolved, 1, resolved, f"fuzzy resolved {raw} -> {resolved}")
+
+    # Generic fuzzy fallback within the same library (often dimension string mismatches).
+    prefix = name.split("_", 1)[0].strip()
+    if prefix and len(prefix) >= 4:
+        # Add pitch token if present.
+        must = [prefix]
+        low = name.lower()
+        if "p0.4" in low or "p0_4" in low:
+            must.append("p0.4")
+        if "p0.5" in low or "p0_5" in low:
+            must.append("p0.5")
+        if "p1.27" in low or "p1_27" in low:
+            must.append("p1.27")
+        hit = _best_fuzzy_match_in_lib(lib, must_contain=must)
+        if hit:
+            resolved = f"{lib}:{hit}"
+            return (resolved, 1, resolved, f"fuzzy resolved {raw} -> {resolved}")
+
+    # Package_LGA special-case: footprints often encode dims/pitch slightly differently.
+    if lib == "Package_LGA":
+        must = []
+        # e.g. "LGA-14"
+        if prefix:
+            must.append(prefix)
+        must.extend(_dim_tokens(name))
+        # If we have at least 2 tokens, try a targeted fuzzy search.
+        if len(must) >= 2:
+            hit = _best_fuzzy_match_in_lib("Package_LGA", must_contain=must[:4])
+            if hit:
+                resolved = f"Package_LGA:{hit}"
+                return (resolved, 1, resolved, f"fuzzy resolved {raw} -> {resolved}")
+        # If pitch is missing from local KiCad, fall back to the closest common pitch variant.
+        # Example: some parts specify P0.4 but KiCad library only has P0.5.
+        if "p0.4" in name.lower():
+            hit = _best_fuzzy_match_in_lib("Package_LGA", must_contain=[prefix or "lga-14", "3x2.5", "p0.5"])
+            if hit:
+                resolved = f"Package_LGA:{hit}"
+                return (resolved, 1, resolved, f"pitch fallback resolved {raw} -> {resolved}")
+
+    @lru_cache(maxsize=64)
+    def _libs_containing(name0: str) -> list[str]:
+        libs: list[str] = []
+        for root in footprint_search_roots():
+            try:
+                kids = os.listdir(root)
+            except Exception:
+                continue
+            for d in kids:
+                if not d.endswith(".pretty"):
+                    continue
+                lib_name = d[: -len(".pretty")]
+                for cand in _normalize_name_variants(name0):
+                    if os.path.isfile(os.path.join(root, d, f"{cand}.kicad_mod")):
+                        libs.append(lib_name)
+                        break
+        return libs
+
+    # Try exact + normalized variants across all libs.
+    libs = _libs_containing(name)
+    if len(libs) == 1:
+        # Choose the first matching candidate spelling we can find in that lib.
+        chosen_lib = libs[0]
+        pretty = resolve_pretty_directory(chosen_lib)
+        if pretty:
+            for cand in [name] + _normalize_name_variants(name):
+                if os.path.isfile(os.path.join(pretty, f"{cand}.kicad_mod")):
+                    resolved = f"{chosen_lib}:{cand}"
+                    return (resolved, 1, resolved, f"resolved from {raw} -> {resolved}")
+        resolved = f"{chosen_lib}:{name}"
+        return (resolved, 1, resolved, f"resolved from {raw} -> {resolved}")
+    if len(libs) > 1:
+        return (
+            raw,
+            0,
+            f"{libs[0]}:{name}",
+            f"ambiguous footprint name {name!r} found in multiple libs: {', '.join(sorted(libs))}",
+        )
+    return (raw, 0, "", f"footprint not found locally: {raw}")
+
+
+def verify_footprints_in_db(*, apply_fixes: bool = True, limit: int = 0, verbose: bool = True) -> dict:
+    """Scan DB components and verify/resolve kicad_footprint entries."""
+    import sqlite3
+
     db = DatabaseManager()
+    rows: list[dict] = []
+    with sqlite3.connect(db.db_path) as conn:
+        conn.row_factory = sqlite3.Row
+        cur = conn.cursor()
+        q = "SELECT generic_name, kicad_footprint FROM components WHERE kicad_footprint IS NOT NULL AND TRIM(kicad_footprint) != ''"
+        if limit and limit > 0:
+            q += " LIMIT ?"
+            cur.execute(q, (int(limit),))
+        else:
+            cur.execute(q)
+        rows = [dict(r) for r in cur.fetchall()]
 
-    # Real JLCPCB parts with verified SKUs
-    essential_parts = [
-        # STM32 MCUs
-        {"generic_name": "MCU_STM32F405RGT6", "kicad_symbol": "MCU_ST_STM32F4:STM32F405RGT6",
-         "kicad_footprint": "Package_QFP:LQFP-64_10x10mm_P0.5mm", "manufacturer": "ST",
-         "mpn": "STM32F405RGT6", "supplier_sku": "C7862", "category": "microcontrollers",
-         "description": "ARM Cortex-M4 168MHz 1MB Flash"},
+    verified = 0
+    resolved = 0
+    missing = 0
+    ambiguous = 0
+    updated = 0
 
-        {"generic_name": "MCU_STM32F407VET6", "kicad_symbol": "MCU_ST_STM32F4:STM32F407VET6",
-         "kicad_footprint": "Package_QFP:LQFP-100_14x14mm_P0.5mm", "manufacturer": "ST",
-         "mpn": "STM32F407VET6", "supplier_sku": "C7846", "category": "microcontrollers",
-         "description": "ARM Cortex-M4 168MHz 512KB Flash"},
-
-        # Power - Buck/Boost
-        {"generic_name": "BUCK_TPS63001DRCR", "kicad_symbol": "Regulator_Switching:TPS63001",
-         "kicad_footprint": "Package_DFN_QFN:VSON-10_3x3mm_P0.5mm", "manufacturer": "TI",
-         "mpn": "TPS63001DRCR", "supplier_sku": "C132150", "category": "voltage_regulators",
-         "description": "Buck-Boost 1.5A 1.8-5.5V"},
-
-        {"generic_name": "LDO_LDL1117S33R", "kicad_symbol": "Regulator_Linear:LDL1117S33R",
-         "kicad_footprint": "Package_TO_SOT_SMD:SOT-223-3_TabPin2", "manufacturer": "ST",
-         "mpn": "LDL1117S33R", "supplier_sku": "C130026", "category": "voltage_regulators",
-         "description": "LDO 3.3V 800mA"},
-
-        # Sensors
-        {"generic_name": "IMU_ICM42688P", "kicad_symbol": "Sensor_Motion:ICM-42688-P",
-         "kicad_footprint": "Package_LGA:LGA-14_3x2.5mm_P0.4mm", "manufacturer": "TDK",
-         "mpn": "ICM-42688-P", "supplier_sku": "C2191168", "category": "accelerometers",
-         "description": "6-Axis IMU SPI/I2C"},
-
-        {"generic_name": "BARO_BMP388", "kicad_symbol": "Sensor_Pressure:BMP388",
-         "kicad_footprint": "Package_LGA:LGA-10_2x2mm_P0.5mm", "manufacturer": "Bosch",
-         "mpn": "BMP388", "supplier_sku": "C83294", "category": "accelerometers",
-         "description": "Pressure Sensor I2C/SPI"},
-
-        {"generic_name": "MAG_QMC5883L", "kicad_symbol": "Sensor_Magnetic:QMC5883L",
-         "kicad_footprint": "Package_LGA:LGA-16_3x3mm_P0.5mm", "manufacturer": "QST",
-         "mpn": "QMC5883L", "supplier_sku": "C976032", "category": "accelerometers",
-         "description": "3-Axis Magnetometer I2C"},
-
-        # Memory
-        {"generic_name": "FLASH_W25Q128JV", "kicad_symbol": "Memory_Flash:W25Q128JV",
-         "kicad_footprint": "Package_SO:SOIC-8_5.23x5.23mm_P1.27mm", "manufacturer": "Winbond",
-         "mpn": "W25Q128JVSIQ", "supplier_sku": "C97521", "category": "microcontrollers",
-         "description": "128Mbit SPI Flash"},
-
-        # Interface
-        {"generic_name": "CAN_TJA1051", "kicad_symbol": "Interface_CAN_LIN:TJA1051T",
-         "kicad_footprint": "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm", "manufacturer": "NXP",
-         "mpn": "TJA1051T/3", "supplier_sku": "C132146", "category": "microcontrollers",
-         "description": "CAN Transceiver 3.3V"},
-
-        {"generic_name": "ESD_USBLC6_2SC6", "kicad_symbol": "Power_Protection:USBLC6-2SC6",
-         "kicad_footprint": "Package_TO_SOT_SMD:SOT-23-6", "manufacturer": "ST",
-         "mpn": "USBLC6-2SC6", "supplier_sku": "C7518", "category": "diodes",
-         "description": "USB ESD Protection"},
-
-        # Crystals (use closest category)
-        {"generic_name": "XTAL_8MHZ_3225", "kicad_symbol": "Device:Crystal",
-         "kicad_footprint": "Crystal:Crystal_SMD_3225-4Pin_3.2x2.5mm", "manufacturer": "Yangxing",
-         "mpn": "X32258MSB4SI", "supplier_sku": "C15629", "category": "switches",
-         "description": "8MHz 20pF Crystal"},
-
-        {"generic_name": "XTAL_32K768_3215", "kicad_symbol": "Device:Crystal",
-         "kicad_footprint": "Crystal:Crystal_SMD_3215-2Pin_3.2x1.5mm", "manufacturer": "Seiko",
-         "mpn": "FC-135", "supplier_sku": "C70501", "category": "switches",
-         "description": "32.768kHz RTC Crystal"},
-
-        # Passives - Resistors (0603)
-        {"generic_name": "R_1K_0603", "kicad_symbol": "Device:R",
-         "kicad_footprint": "Resistor_SMD:R_0603_1608Metric", "manufacturer": "Yageo",
-         "mpn": "RC0603FR-071KL", "supplier_sku": "C21190", "category": "resistors",
-         "description": "1k 1% 0603"},
-
-        {"generic_name": "R_10K_0402", "kicad_symbol": "Device:R",
-         "kicad_footprint": "Resistor_SMD:R_0402_1005Metric", "manufacturer": "Yageo",
-         "mpn": "RC0402FR-0710KL", "supplier_sku": "C60491", "category": "resistors",
-         "description": "10k 1% 0402"},
-
-        {"generic_name": "R_100K_0402", "kicad_symbol": "Device:R",
-         "kicad_footprint": "Resistor_SMD:R_0402_1005Metric", "manufacturer": "Yageo",
-         "mpn": "RC0402FR-07100KL", "supplier_sku": "C60491", "category": "resistors",
-         "description": "100k 1% 0402"},
-
-        {"generic_name": "R_5K1_0402", "kicad_symbol": "Device:R",
-         "kicad_footprint": "Resistor_SMD:R_0402_1005Metric", "manufacturer": "Yageo",
-         "mpn": "RC0402FR-075K1L", "supplier_sku": "C25905", "category": "resistors",
-         "description": "5.1k 1% 0402"},
-
-        {"generic_name": "R_27R_0402", "kicad_symbol": "Device:R",
-         "kicad_footprint": "Resistor_SMD:R_0402_1005Metric", "manufacturer": "Yageo",
-         "mpn": "RC0402FR-0727RL", "supplier_sku": "C60458", "category": "resistors",
-         "description": "27R 1% 0402"},
-
-        {"generic_name": "R_1K_0603", "kicad_symbol": "Device:R",
-         "kicad_footprint": "Resistor_SMD:R_0603_1608Metric", "manufacturer": "Yageo",
-         "mpn": "RC0603FR-071KL", "supplier_sku": "C21190", "category": "resistors",
-         "description": "1k 1% 0603"},
-
-        {"generic_name": "R_100K_0603", "kicad_symbol": "Device:R",
-         "kicad_footprint": "Resistor_SMD:R_0603_1608Metric", "manufacturer": "Yageo",
-         "mpn": "RC0603FR-07100KL", "supplier_sku": "C25804", "category": "resistors",
-         "description": "100k 1% 0603"},
-
-        {"generic_name": "R_32K4_0603", "kicad_symbol": "Device:R",
-         "kicad_footprint": "Resistor_SMD:R_0603_1608Metric", "manufacturer": "Yageo",
-         "mpn": "RC0603FR-0732K4L", "supplier_sku": "C25818", "category": "resistors",
-         "description": "32.4k 1% 0603"},
-
-        # Passives - Capacitors
-        {"generic_name": "C_100NF_0603", "kicad_symbol": "Device:C",
-         "kicad_footprint": "Capacitor_SMD:C_0603_1608Metric", "manufacturer": "Yageo",
-         "mpn": "CC0603KRX7R9BB104", "supplier_sku": "C14663", "category": "capacitors",
-         "description": "100nF 50V X7R 0603"},
-
-        {"generic_name": "C_100NF_0402", "kicad_symbol": "Device:C",
-         "kicad_footprint": "Capacitor_SMD:C_0402_1005Metric", "manufacturer": "Murata",
-         "mpn": "GRM155R71C104KA88D", "supplier_sku": "C1525", "category": "capacitors",
-         "description": "100nF 16V X7R 0402"},
-
-        {"generic_name": "C_10UF_0805", "kicad_symbol": "Device:C",
-         "kicad_footprint": "Capacitor_SMD:C_0805_2012Metric", "manufacturer": "Murata",
-         "mpn": "GRM21BR61C106KE15L", "supplier_sku": "C440198", "category": "capacitors",
-         "description": "10uF 16V X5R 0805"},
-
-        {"generic_name": "C_22UF_0805", "kicad_symbol": "Device:C",
-         "kicad_footprint": "Capacitor_SMD:C_0805_2012Metric", "manufacturer": "Murata",
-         "mpn": "GRM21BR61C226ME44L", "supplier_sku": "C59461", "category": "capacitors",
-         "description": "22uF 16V X5R 0805"},
-
-        {"generic_name": "C_4U7_0603", "kicad_symbol": "Device:C",
-         "kicad_footprint": "Capacitor_SMD:C_0603_1608Metric", "manufacturer": "Murata",
-         "mpn": "GRM188R61E475KE21D", "supplier_sku": "C84718", "category": "capacitors",
-         "description": "4.7uF 25V X5R 0603"},
-
-        {"generic_name": "C_18PF_0402", "kicad_symbol": "Device:C",
-         "kicad_footprint": "Capacitor_SMD:C_0402_1005Metric", "manufacturer": "Murata",
-         "mpn": "GRM1555C1H180JZ01D", "supplier_sku": "C107274", "category": "capacitors",
-         "description": "18pF 50V C0G 0402"},
-
-        {"generic_name": "C_12PF_0402", "kicad_symbol": "Device:C",
-         "kicad_footprint": "Capacitor_SMD:C_0402_1005Metric", "manufacturer": "Murata",
-         "mpn": "GRM1555C1H120JZ01D", "supplier_sku": "C107270", "category": "capacitors",
-         "description": "12pF 50V C0G 0402"},
-
-        # LEDs
-        {"generic_name": "LED_GREEN_0603", "kicad_symbol": "Device:LED",
-         "kicad_footprint": "LED_SMD:LED_0603_1608Metric", "manufacturer": "Lite-On",
-         "mpn": "LTST-C193TGKT-5A", "supplier_sku": "C125093", "category": "leds",
-         "description": "Green LED 0603"},
-
-        {"generic_name": "LED_BLUE_0603", "kicad_symbol": "Device:LED",
-         "kicad_footprint": "LED_SMD:LED_0603_1608Metric", "manufacturer": "Lite-On",
-         "mpn": "LTST-C193TBKT-5A", "supplier_sku": "C125088", "category": "leds",
-         "description": "Blue LED 0603"},
-
-        # Switches/Buttons
-        {"generic_name": "SW_TACT_3X6MM", "kicad_symbol": "Switch:SW_Push",
-         "kicad_footprint": "Button_Switch_SMD:SW_SPST_TL3342", "manufacturer": "E-Switch",
-         "mpn": "TL3342F160QG", "supplier_sku": "C2884834", "category": "switches",
-         "description": "Tactile Switch 3x6mm"},
-
-        # Inductors
-        {"generic_name": "INDUCTOR_2R2_2520", "kicad_symbol": "Device:L",
-         "kicad_footprint": "Inductor_SMD:L_2.5x2.0mm", "manufacturer": "TDK",
-         "mpn": "VLS252010ET-2R2M", "supplier_sku": "C167240", "category": "resistors",
-         "description": "2.2uH 1.4A Inductor"},
-
-        # Connectors (use closest category)
-        {"generic_name": "USB_C_16PIN", "kicad_symbol": "Connector:USB_C_Receptacle_USB2.0",
-         "kicad_footprint": "Connector_USB:USB_C_Receptacle_HRO_TYPE-C-31-M-12",
-         "manufacturer": "HRO", "mpn": "TYPE-C-31-M-12", "supplier_sku": "C165948",
-         "category": "connectors", "description": "USB-C 16P 5A"},
-
-        {"generic_name": "CONN_SWD_2X5_127MM", "kicad_symbol": "Connector:Conn_02x05_Odd_Even",
-         "kicad_footprint": "Connector_PinHeader_1.27mm:PinHeader_2x05_P1.27mm_Vertical_SMD",
-         "manufacturer": "CJT", "mpn": "A2005WR-2x5P", "supplier_sku": "C249742",
-         "category": "connectors", "description": "SWD Header 2x5 1.27mm"},
-    ]
-
-    inserted = 0
-    for part in essential_parts:
-        part["jlc_class"] = "Basic" if part["category"] in ("resistors", "capacitors", "leds") else "Extended"
-        part["attributes_json"] = json.dumps({"voltage_rating": "50V" if part["category"] == "resistors" else "",
-                                               "tolerance": "1%" if part["category"] == "resistors" else "±10%"})
-        row_id = db.insert_component(part, ignore_duplicate=True)
-        if row_id:
-            inserted += 1
+    for r in rows:
+        gn = str(r.get("generic_name") or "").strip()
+        fp = str(r.get("kicad_footprint") or "").strip()
+        chosen, ok, res, notes = _verify_and_resolve_kicad_footprint(fp)
+        if ok:
+            verified += 1
+        else:
+            if "ambiguous" in (notes or ""):
+                ambiguous += 1
+            else:
+                missing += 1
+        if res and res != fp:
+            resolved += 1
+        if apply_fixes:
+            updates = {
+                "kicad_footprint": chosen or fp,
+                "footprint_verified": int(ok),
+                "footprint_resolved": str(res or ""),
+                "footprint_notes": str(notes or ""),
+            }
+            try:
+                if db.update_component_fields(gn, updates):
+                    updated += 1
+            except Exception:
+                pass
 
     if verbose:
-        logger.info(f"Seeded {inserted} essential JLCPCB components")
+        logger.info(
+            "Footprint verification: scanned=%s verified=%s missing=%s ambiguous=%s resolved=%s updated=%s",
+            len(rows),
+            verified,
+            missing,
+            ambiguous,
+            resolved,
+            updated,
+        )
+    return {
+        "scanned": len(rows),
+        "verified": verified,
+        "missing": missing,
+        "ambiguous": ambiguous,
+        "resolved": resolved,
+        "updated": updated,
+    }
+
+
+def seed_from_file(seed_file: str, verbose: bool = True) -> int:
+    """Seed/insert components from a user-provided JSON file (no hardcoded parts shipped)."""
+    db = DatabaseManager()
+    data = _read_json_file(seed_file)
+    if not isinstance(data, list):
+        raise ValueError("seed file must be a JSON list of component dicts")
+    inserted = 0
+    for row in data:
+        if not isinstance(row, dict):
+            continue
+        row = dict(row)
+        if "supplier_sku" in row:
+            row["supplier_sku"] = _normalize_jlc_sku(str(row["supplier_sku"]))
+        # Allow user files to provide richer pin metadata without requiring schema changes.
+        # - `pinout`: list of {num,name,type} → stored into pinout_json
+        # - `symbol_data`: dict or JSON → stored as JSON string
+        if "pinout" in row and "pinout_json" not in row:
+            try:
+                row["pinout_json"] = json.dumps(row.pop("pinout"))
+            except Exception:
+                pass
+        if "symbol_data" in row and not isinstance(row["symbol_data"], str):
+            try:
+                row["symbol_data"] = json.dumps(row["symbol_data"])
+            except Exception:
+                pass
+        if "kicad_footprint" in row:
+            chosen, verified, resolved, notes = _verify_and_resolve_kicad_footprint(str(row.get("kicad_footprint") or ""))
+            row["kicad_footprint"] = chosen
+            row["footprint_verified"] = int(verified)
+            row["footprint_resolved"] = str(resolved or "")
+            row["footprint_notes"] = str(notes or "")
+        row_id = db.insert_component(row, ignore_duplicate=True)
+        if row_id:
+            inserted += 1
+    if verbose:
+        logger.info("Seed complete. %s component(s) inserted.", inserted)
     return inserted
 
 
@@ -767,15 +915,186 @@ def sync_all_jlcpcb(max_per_category: int = 10000, verbose: bool = True) -> int:
     return total_inserted
 
 
+def sync_by_sku(skus: list[tuple[str, str]], verbose: bool = True) -> int:
+    """Sync specific components by JLCPCB SKU with hybrid API enrichment.
+    
+    Args:
+        skus: List of (generic_name, jlcpcb_sku) tuples
+        verbose: Print progress
+        
+    Returns:
+        Number of components successfully synced
+    """
+    from openhac.database.vendor_apis import lookup_part_live
+    
+    db = DatabaseManager()
+    success_count = 0
+    
+    for generic_name, jlcpcb_sku in skus:
+        if verbose:
+            logger.info(f"Syncing {generic_name} (SKU: {jlcpcb_sku})...")
+        
+        # Check if already has pinout
+        existing = db.get_component(generic_name)
+        if existing and existing.get("pinout_json"):
+            if verbose:
+                logger.info(f"  {generic_name} already has pinout, skipping")
+            success_count += 1
+            continue
+        
+        # Use hybrid API lookup
+        try:
+            # Extract MPN from SKU if needed
+            mpn = jlcpcb_sku  # Will be resolved by lookup_part_live
+            
+            part_info = lookup_part_live(
+                mpn, 
+                preferred_vendor="auto",
+                jlcpcb_sku=jlcpcb_sku
+            )
+            
+            if not part_info:
+                logger.warning(f"  {generic_name}: Not found in vendor APIs")
+                continue
+            
+            if verbose:
+                logger.info(f"  Found: {part_info.mpn} by {part_info.manufacturer}")
+                logger.info(f"  Pinout: {part_info.pinout and len(part_info.pinout)} pins")
+                logger.info(f"  Dimensions: {part_info.package_dimensions}")
+
+            # Pinout quality check: JLC-only pinCount-derived pinouts are not named.
+            try:
+                if part_info.pinout and all((p.get("name") or "") == (p.get("num") or "") for p in part_info.pinout if isinstance(p, dict)):
+                    if verbose:
+                        logger.warning(
+                            "  %s: pinout appears numeric-only (no named pins). "
+                            "For named-pin designs, prefer a vendor source with real pin names "
+                            "(or provide a seed-file with pinout_json).",
+                            generic_name,
+                        )
+            except Exception:
+                pass
+            
+            # Update or insert component
+            if existing:
+                db.update_component_from_vendor(generic_name, part_info)
+            else:
+                # Create new component from vendor data
+                cat = (part_info.category or "").strip()
+                kicad_symbol = "Device:Q"
+                if cat:
+                    kicad_symbol = KICAD_SYMBOL_MAP.get(cat, KICAD_SYMBOL_MAP.get(cat.lower(), kicad_symbol))
+                component = {
+                    "generic_name": generic_name,
+                    "kicad_symbol": kicad_symbol,
+                    "kicad_footprint": part_info.package or "",
+                    "manufacturer": part_info.manufacturer,
+                    "mpn": part_info.mpn,
+                    "supplier_sku": _normalize_jlc_sku(part_info.supplier_sku),
+                    "description": part_info.description,
+                    "category": cat,
+                    "pinout_json": json.dumps(part_info.pinout) if part_info.pinout else None,
+                    "thermal_json": json.dumps(part_info.thermal_data) if part_info.thermal_data else None,
+                    "package_length_mm": part_info.package_dimensions.get("length") if part_info.package_dimensions else None,
+                    "package_width_mm": part_info.package_dimensions.get("width") if part_info.package_dimensions else None,
+                    "package_height_mm": part_info.package_dimensions.get("height") if part_info.package_dimensions else None,
+                    "lifecycle_status": part_info.lifecycle_status,
+                    "compliance_flags": ",".join(part_info.compliance_flags) if part_info.compliance_flags else None,
+                    "lead_time_days": part_info.lead_time_days,
+                    "attributes_json": json.dumps({
+                        "datasheet_url": part_info.datasheet_url,
+                        "product_url": part_info.product_url,
+                        "rohs": part_info.rohs,
+                    }),
+                }
+                try:
+                    chosen, verified, resolved, notes = _verify_and_resolve_kicad_footprint(str(component.get("kicad_footprint") or ""))
+                    component["kicad_footprint"] = chosen
+                    component["footprint_verified"] = int(verified)
+                    component["footprint_resolved"] = str(resolved or "")
+                    component["footprint_notes"] = str(notes or "")
+                except Exception:
+                    pass
+                db.insert_component(component)
+            
+            if verbose:
+                logger.info(f"  Synced {generic_name}")
+            success_count += 1
+            
+        except Exception as e:
+            logger.error(f"  Error syncing {generic_name}: {e}")
+    
+    if verbose:
+        logger.info(f"\nSync complete: {success_count}/{len(skus)} components")
+    
+    return success_count
+
+
+def _load_skus_file(path: str) -> list[tuple[str, str]]:
+    data = _read_json_file(path)
+    if not isinstance(data, list):
+        raise ValueError("skus file must be a JSON list (either [ [generic, sku], ... ] or objects)")
+    out: list[tuple[str, str]] = []
+    for item in data:
+        if isinstance(item, (list, tuple)) and len(item) == 2:
+            out.append((str(item[0]).strip(), _normalize_jlc_sku(str(item[1]))))
+        elif isinstance(item, dict):
+            gn = str(item.get("generic_name") or item.get("name") or "").strip()
+            sku = _normalize_jlc_sku(str(item.get("sku") or item.get("supplier_sku") or item.get("lcsc") or ""))
+            if gn and sku:
+                out.append((gn, sku))
+    return out
+
+
+def _build_arg_parser():
+    import argparse
+
+    p = argparse.ArgumentParser(prog="python -m openhac.database.sync_jlc")
+    p.add_argument("--full", action="store_true", help="Full sync: fetch many parts from working endpoints.")
+    p.add_argument("--seed", action="store_true", help="Deprecated. Use --seed-file PATH.")
+    p.add_argument("--seed-file", type=str, default="", help="Seed from user JSON file (list of component dicts).")
+    p.add_argument("--skus", action="store_true", help="Deprecated. Use --skus-file PATH.")
+    p.add_argument("--skus-file", type=str, default="", help="Sync/enrich by SKU from user JSON file.")
+    p.add_argument("--verify-footprints", action="store_true", help="Verify/resolve all DB footprints against local KiCad libs.")
+    p.add_argument("--verify-footprints-limit", type=int, default=0, help="Optional LIMIT for --verify-footprints.")
+    p.add_argument("--verbose", action="store_true", help="Enable verbose progress logging.")
+    p.add_argument("--quiet", action="store_true", help="Reduce output (warnings/errors only).")
+    p.add_argument("--max-per-category", type=int, default=10000, help="Full sync max per category.")
+    return p
+
+
 if __name__ == "__main__":
-    import sys
-    if len(sys.argv) > 1 and sys.argv[1] == "--full":
-        # Full sync - fetch thousands of parts
-        sync_all_jlcpcb(max_per_category=10000)
-    elif len(sys.argv) > 1 and sys.argv[1] == "--seed":
-        # Keep seed for backwards compatibility, but recommend --full
-        logger.info("Using --seed (seeded data). For real JLCPCB data, use --full instead.")
-        seed_essential_components()
-    else:
-        # Default: standard catalog sync with higher limits
-        sync_catalog()
+    args = _build_arg_parser().parse_args()
+    if getattr(args, "quiet", False):
+        logging.getLogger().setLevel(logging.WARNING)
+    elif getattr(args, "verbose", False):
+        logging.getLogger().setLevel(logging.INFO)
+
+    if args.full:
+        logger.info("Starting full sync (max_per_category=%s).", int(args.max_per_category))
+        sync_all_jlcpcb(max_per_category=int(args.max_per_category), verbose=not getattr(args, "quiet", False))
+        raise SystemExit(0)
+
+    if args.seed:
+        raise SystemExit("`--seed` is deprecated. Provide `--seed-file PATH` (no hardcoded parts).")
+    if args.skus:
+        raise SystemExit("`--skus` is deprecated. Provide `--skus-file PATH` (no hardcoded parts).")
+
+    if getattr(args, "verify_footprints", False):
+        logger.info("Verifying DB footprints against local KiCad libs...")
+        verify_footprints_in_db(apply_fixes=True, limit=int(getattr(args, "verify_footprints_limit", 0) or 0))
+        raise SystemExit(0)
+
+    if args.seed_file:
+        logger.info("Seeding from file: %s", args.seed_file)
+        seed_from_file(args.seed_file, verbose=not getattr(args, "quiet", False))
+        raise SystemExit(0)
+
+    if args.skus_file:
+        logger.info("Syncing/enriching by SKU file: %s", args.skus_file)
+        sync_by_sku(_load_skus_file(args.skus_file), verbose=not getattr(args, "quiet", False))
+        raise SystemExit(0)
+
+    logger.info("Starting catalog sync (default categories).")
+    n = sync_catalog(verbose=not getattr(args, "quiet", False))
+    logger.info("Catalog sync done. inserted=%s", n)

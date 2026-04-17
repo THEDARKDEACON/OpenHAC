@@ -25,12 +25,18 @@ API Keys Required:
     Mouser: https://www.mouser.com/api-hub/ (free, requires registration)
 """
 
+import base64
+import hashlib
+import hmac
 import json
 import logging
 import os
 import time
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 logger = logging.getLogger("openhac.vendor_apis")
@@ -250,6 +256,46 @@ class RateLimiter:
         self.calls.append(time.time())
 
 
+def _mouser_search_results_parts(data: Optional[dict]) -> list:
+    """Normalize Mouser JSON: ``SearchResults`` may be null on errors or invalid keys."""
+    if not isinstance(data, dict):
+        return []
+    sr = data.get("SearchResults")
+    if not isinstance(sr, dict):
+        return []
+    parts = sr.get("Parts")
+    return parts if isinstance(parts, list) else []
+
+
+def _tme_calculate_signature(method: str, request_url: str, form_pairs: list[tuple[str, str]], secret: str) -> str:
+    """TME ``ApiSignature`` per official reference client (``tme-dev/api-client-go``).
+
+    ``signatureBase = method + "&" + urlQueryEscape(url) + "&" + urlQueryEscape(form.Encode())``
+    where ``form`` includes all POST fields *except* ``ApiSignature``. Result is **base64**(HMAC-SHA1).
+    """
+    form_sorted = sorted(form_pairs, key=lambda kv: (kv[0], kv[1]))
+    encoded_form = urllib.parse.urlencode(form_sorted, doseq=True)
+    signature_base = "&".join(
+        [
+            method,
+            urllib.parse.quote(request_url, safe=""),
+            urllib.parse.quote(encoded_form, safe=""),
+        ]
+    )
+    digest = hmac.new(secret.encode("utf-8"), signature_base.encode("utf-8"), hashlib.sha1).digest()
+    return base64.b64encode(digest).decode("ascii")
+
+
+def _tme_response_product_list(data: Optional[dict]) -> list:
+    if not isinstance(data, dict):
+        return []
+    block = data.get("Data")
+    if not isinstance(block, dict):
+        return []
+    pl = block.get("ProductList")
+    return pl if isinstance(pl, list) else []
+
+
 class DigiKeyAPI:
     """Digi-Key API V4 Integration.
 
@@ -264,6 +310,13 @@ class DigiKeyAPI:
         self.client_secret = client_secret or os.environ.get("DIGIKEY_CLIENT_SECRET")
         self._access_token: Optional[str] = None
         self._token_expires: Optional[datetime] = None
+        base = (os.environ.get("DIGIKEY_API_BASE") or "").strip().rstrip("/")
+        if base:
+            self.api_base = base
+        elif (os.environ.get("DIGIKEY_USE_SANDBOX") or "").strip().lower() in ("1", "true", "yes", "on"):
+            self.api_base = "https://sandbox-api.digikey.com"
+        else:
+            self.api_base = self.API_BASE
 
     def _get_token(self) -> str:
         """Get or refresh OAuth2 access token."""
@@ -276,7 +329,7 @@ class DigiKeyAPI:
         if not self.client_id or not self.client_secret:
             raise ValueError("Digi-Key API credentials not configured. Set DIGIKEY_CLIENT_ID and DIGIKEY_CLIENT_SECRET")
 
-        url = f"{self.API_BASE}/v1/oauth2/token"
+        url = f"{self.api_base}/v1/oauth2/token"
         data = urllib.parse.urlencode({
             "client_id": self.client_id,
             "client_secret": self.client_secret,
@@ -318,7 +371,7 @@ class DigiKeyAPI:
                 return [self._parse_product(p) for p in products]
 
         token = self._get_token()
-        url = f"{self.API_BASE}/products/v4/search/keyword"
+        url = f"{self.api_base}/products/v4/search/keyword"
 
         payload = json.dumps({
             "keywords": keyword,
@@ -361,7 +414,7 @@ class DigiKeyAPI:
                 return self._parse_product(cached)
 
         token = self._get_token()
-        url = f"{self.API_BASE}/products/v4/search/digikeypartnumber/{digikey_part_number}"
+        url = f"{self.api_base}/products/v4/search/digikeypartnumber/{digikey_part_number}"
 
         req = urllib.request.Request(url, headers={
             "Authorization": f"Bearer {token}",
@@ -437,7 +490,7 @@ class DigiKeyAPI:
             product_url=product.get("product_url"),
             category=product.get("category", {}).get("name", ""),
             package=product.get("package_type", {}).get("name", ""),
-            rohs=product.get("ro_hs_status") == "RoHS Compliant",
+            rohs=product.get("rohs_status") == "RoHS Compliant",
             lead_time_days=product.get("factory_stock_lead_days"),
             last_updated=datetime.now(),
             # V7 fields
@@ -480,7 +533,7 @@ class MouserAPI:
             cache = get_api_cache()
             cached = cache.get("mouser", keyword)
             if cached:
-                parts = cached.get("SearchResults", {}).get("Parts", [])
+                parts = _mouser_search_results_parts(cached)
                 logger.info(f"Using cached Mouser data for {keyword}")
                 return [self._parse_part(p) for p in parts[:limit]]
 
@@ -504,7 +557,7 @@ class MouserAPI:
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read().decode())
-                parts = data.get("SearchResults", {}).get("Parts", [])
+                parts = _mouser_search_results_parts(data)
 
                 # Cache the response
                 if use_cache and parts:
@@ -532,7 +585,7 @@ class MouserAPI:
             cache = get_api_cache()
             cached = cache.get("mouser_keyword", keyword)
             if cached:
-                parts = cached.get("SearchResults", {}).get("Parts", [])
+                parts = _mouser_search_results_parts(cached)
                 logger.info(f"Using cached Mouser keyword data for {keyword}")
                 return [self._parse_part(p) for p in parts]
 
@@ -557,7 +610,7 @@ class MouserAPI:
         try:
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read().decode())
-                parts = data.get("SearchResults", {}).get("Parts", [])
+                parts = _mouser_search_results_parts(data)
 
                 # Cache the response
                 if use_cache and parts:
@@ -582,7 +635,7 @@ class MouserAPI:
             cache = get_api_cache()
             cached = cache.get("mouser", mouser_part_number)
             if cached:
-                parts = cached.get("SearchResults", {}).get("Parts", [])
+                parts = _mouser_search_results_parts(cached)
                 if parts:
                     logger.info(f"Using cached Mouser data for {mouser_part_number}")
                     return self._parse_part(parts[0])
@@ -636,209 +689,566 @@ class MouserAPI:
         )
 
 
-class TMEAPI:
-    """TME (Transfer Multisort Elektronik) API Integration.
-    
-    Rate limit: 2 req/s for pricing, 10 req/s for products (very generous free tier)
-    Auth: HMAC-SHA1 signature with API token + secret
-    
-    TME has the most generous free tier for high-volume database population.
+class JLCPCBAPI:
+    """Resolve LCSC / JLC assembly SKUs (Cxxxxx).
+
+    **Primary (no API key):** JLC's own PCBA parts search endpoint — the same JSON API their
+    assembly UI uses::
+
+        POST https://jlcpcb.com/api/overseas-pcb-order/v1/shoppingCart/smtGood/selectSmtComponentList/v2
+
+    **Partner program:** ``https://api.jlcpcb.com/`` is the *developer portal* for approved
+    apps (App ID + Access Key). REST paths are documented **after login** there; OpenHaC does
+    not call that OAuth/partner stack yet.
+
+    **Legacy:** ``GET .../api/component/search?sku=&key=`` (``JLCPCB_API_KEY``) — often **404**.
+
+    **Fallback:** public **jlcsearch** mirror (``sync_jlc``): ``https://jlcsearch.tscircuit.com``.
+
+    Env:
+        ``JLCPCB_SMT_SEARCH_URL`` — override POST URL for the SMT component list (default above).
+        ``JLCPCB_DISABLE_SMT`` — if ``1``, skip the SMT POST (try legacy + jlcsearch only).
+        ``JLCPCB_API_KEY`` / ``JLCPCB_API_BASE`` — legacy GET search only.
+        ``JLCPCB_DISABLE_JLCSEARCH`` — if ``1``, do not use jlcsearch.
     """
-    
-    API_BASE = "https://api.tme.eu"
-    RATE_LIMIT_PRODUCTS = 10  # per second
-    RATE_LIMIT_PRICING = 2    # per second
-    
-    def __init__(self, api_token: Optional[str] = None, api_secret: Optional[str] = None):
-        self.api_token = api_token or os.environ.get("TME_API_TOKEN")
-        self.api_secret = api_secret or os.environ.get("TME_API_SECRET")
-        self._product_limiter = RateLimiter(max_calls=10, period_seconds=1)
-        self._pricing_limiter = RateLimiter(max_calls=2, period_seconds=1)
-    
-    def _generate_signature(self, params: dict) -> str:
-        """Generate HMAC-SHA1 signature for TME API authentication."""
-        import hmac
-        import hashlib
-        
-        # Sort params alphabetically and create base string
-        sorted_params = sorted(params.items())
-        base_string = "&".join(f"{k}={v}" for k, v in sorted_params)
-        
-        # Generate HMAC-SHA1
-        signature = hmac.new(
-            self.api_secret.encode(),
-            base_string.encode(),
-            hashlib.sha1
-        ).hexdigest()
-        return signature
-    
-    def search(self, keyword: str, limit: int = 10, use_cache: bool = True) -> list[PartInfo]:
-        """Search for parts by keyword.
-        
-        Args:
-            keyword: MPN or search term
-            limit: Max results
-            use_cache: Check local cache first (default True)
-        """
-        import urllib.request
-        import urllib.parse
-        
-        # Check cache first
+
+    API_BASE = "https://jlcpcb.com/api"
+    JLCSEARCH_BASE = "https://jlcsearch.tscircuit.com"
+    # Public JSON API used by jlcpcb.com PCBA component picker (see also @jlcpcb/core).
+    DEFAULT_SMT_SEARCH_URL = (
+        "https://jlcpcb.com/api/overseas-pcb-order/v1/shoppingCart/smtGood/selectSmtComponentList/v2"
+    )
+    RATE_LIMIT = 1  # 1 request per second
+
+    def __init__(self, api_key: Optional[str] = None):
+        self.api_key = api_key or os.environ.get("JLCPCB_API_KEY")
+        self._limiter = RateLimiter(max_calls=1, period_seconds=1)
+
+    def _legacy_api_base(self) -> str:
+        raw = (os.environ.get("JLCPCB_API_BASE") or self.API_BASE).strip()
+        return raw.rstrip("/")
+
+    def _smt_search_url(self) -> str:
+        return (os.environ.get("JLCPCB_SMT_SEARCH_URL") or self.DEFAULT_SMT_SEARCH_URL).strip()
+
+    def search_by_sku(self, sku: str, use_cache: bool = True) -> Optional[PartInfo]:
+        """Search by JLCPCB / LCSC SKU (C132150 format)."""
+        from openhac.version_info import user_agent
+
+        if not sku.startswith("C") or not sku[1:].isdigit():
+            logger.debug(f"Invalid JLCPCB SKU format: {sku}")
+            return None
+
         if use_cache:
             cache = get_api_cache()
-            cached = cache.get("tme", keyword)
+            cached = cache.get("jlcpcb", sku)
             if cached:
-                products = cached.get("data", {}).get("products", [])
-                logger.info(f"Using cached TME data for {keyword}")
-                return [self._parse_product(p) for p in products[:limit]]
-        
-        if not self.api_token or not self.api_secret:
-            raise ValueError("TME API credentials not configured. Set TME_API_TOKEN and TME_API_SECRET")
-        
-        self._product_limiter.acquire()
-        
-        # Build API request
-        params = {
-            "token": self.api_token,
-            "searchPlain": keyword,
-            "searchCategory": "",
-            "searchParams": json.dumps({"page": 1, "limit": limit}),
-        }
-        params["signature"] = self._generate_signature(params)
-        
-        url = f"{self.API_BASE}/products/search"
-        data = urllib.parse.urlencode(params).encode()
-        
-        req = urllib.request.Request(url, data=data, headers={
-            "Content-Type": "application/x-www-form-urlencoded"
-        })
-        
+                logger.info(f"Using cached JLCPCB data for {sku}")
+                blob = cached.get("data", {})
+                src = cached.get("source") or "jlcpcb"
+                if src == "jlcsearch":
+                    return self._parse_jlcsearch_item(blob)
+                if src == "smt":
+                    return self._parse_smt_list_item(blob)
+                return self._parse_product(blob)
+
+        disable_jlcsearch = (os.environ.get("JLCPCB_DISABLE_JLCSEARCH") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+        disable_smt = (os.environ.get("JLCPCB_DISABLE_SMT") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+        )
+
+        part: Optional[PartInfo] = None
+        if not disable_smt:
+            part = self._search_smt_component_list(sku, use_cache, user_agent())
+        if part is None and self.api_key:
+            part = self._search_legacy_http(sku, use_cache)
+        if part is None and not disable_jlcsearch:
+            part = self._search_jlcsearch(sku, use_cache, user_agent())
+
+        return part
+
+    def _search_smt_component_list(self, sku: str, use_cache: bool, ua: str) -> Optional[PartInfo]:
+        """POST search used by JLC PCBA parts UI; typically works without an API key."""
+        self._limiter.acquire()
+        url = self._smt_search_url()
+        body = json.dumps(
+            {
+                "currentPage": 1,
+                "pageSize": 20,
+                "keyword": sku,
+                "searchType": 2,
+            }
+        ).encode("utf-8")
         try:
+            req = urllib.request.Request(
+                url,
+                data=body,
+                method="POST",
+                headers={
+                    "Content-Type": "application/json",
+                    "Accept": "application/json",
+                    "User-Agent": ua,
+                },
+            )
+            with urllib.request.urlopen(req, timeout=45) as resp:
+                data = json.loads(resp.read().decode())
+        except Exception as e:
+            logger.debug("JLCPCB SMT list API failed for %s: %s", sku, e)
+            return None
+
+        if data.get("code") != 200:
+            logger.debug("JLCPCB SMT list API code=%s for %s", data.get("code"), sku)
+            return None
+
+        rows = (data.get("data") or {}).get("componentPageInfo") or {}
+        lst = rows.get("list") or []
+        want = sku.strip().upper()
+        hit: Optional[dict] = None
+        for row in lst:
+            code = str(row.get("componentCode") or "").strip().upper()
+            if code == want:
+                hit = row
+                break
+        if hit is None and lst:
+            # Keyword search can return unrelated rows; do not accept wrong LCSC code.
+            logger.debug("JLCPCB SMT list: no row with componentCode=%s", want)
+            return None
+
+        if hit is None:
+            return None
+
+        if use_cache:
+            cache = get_api_cache()
+            cache.set("jlcpcb", sku, {"source": "smt", "data": hit})
+            logger.debug("Cached JLCPCB SMT response for %s", sku)
+
+        logger.info("JLCPCB resolved %s via SMT component list API", sku)
+        return self._parse_smt_list_item(hit)
+
+    def _parse_smt_list_item(self, row: dict) -> PartInfo:
+        """Map ``selectSmtComponentList`` row to :class:`PartInfo`."""
+        sku = str(row.get("componentCode") or "").strip()
+        mpn = str(row.get("componentModelEn") or "").strip()
+        mfr = str(row.get("componentBrandEn") or "").strip()
+        desc_bits = [
+            str(row.get("componentTypeEn") or "").strip(),
+            str(row.get("erpComponentName") or "").strip(),
+        ]
+        description = " — ".join(b for b in desc_bits if b) or mpn or sku
+        package = str(row.get("componentSpecificationEn") or "").strip()
+        try:
+            stock = int(row.get("stockCount") or 0)
+        except (TypeError, ValueError):
+            stock = 0
+
+        price_breaks: list[dict] = []
+        for pr in row.get("componentPrices") or []:
+            try:
+                q = int(pr.get("startNumber") or 0)
+                p = float(pr.get("productPrice"))
+                if q > 0:
+                    price_breaks.append({"quantity": q, "price": p})
+            except (TypeError, ValueError):
+                continue
+
+        ds = (row.get("dataManualUrl") or row.get("lcscGoodsUrl") or "").strip() or None
+        purl = (row.get("lcscGoodsUrl") or "").strip()
+        if not purl and sku:
+            purl = f"https://jlcpcb.com/partdetail/{sku}"
+
+        return PartInfo(
+            mpn=mpn or sku,
+            manufacturer=mfr,
+            supplier_sku=sku,
+            description=description,
+            stock=stock,
+            price_breaks=price_breaks,
+            datasheet_url=ds,
+            product_url=purl,
+            category=str(row.get("componentTypeEn") or "").strip(),
+            package=package,
+            rohs=True,
+            lead_time_days=None,
+            last_updated=datetime.now(timezone.utc),
+            thermal_data=None,
+            package_dimensions=None,
+            lifecycle_status=None,
+            compliance_flags=["RoHS"],
+            pinout=None,
+            alternative_mpns=None,
+            manufacturer_info=None,
+        )
+
+    def _search_legacy_http(self, sku: str, use_cache: bool) -> Optional[PartInfo]:
+        """Old jlcpcb.com JSON API (often 404 now)."""
+        if not self.api_key:
+            return None
+        self._limiter.acquire()
+        base = self._legacy_api_base()
+        url = f"{base}/component/search?sku={urllib.parse.quote(sku)}&key={urllib.parse.quote(self.api_key)}"
+        try:
+            req = urllib.request.Request(
+                url,
+                headers={"Accept": "application/json"},
+            )
             with urllib.request.urlopen(req, timeout=30) as resp:
                 data = json.loads(resp.read().decode())
-                products = data.get("data", {}).get("products", [])
-                
-                # Cache the response
-                if use_cache and products:
-                    cache = get_api_cache()
-                    cache.set("tme", keyword, {"data": data})
-                    logger.debug(f"Cached TME response for {keyword}")
-                
-                return [self._parse_product(p) for p in products[:limit]]
+            if data.get("code") != 200:
+                logger.warning(f"JLCPCB API error: {data.get('message')}")
+                return None
+            product = data.get("data", {}) or {}
+            if not product:
+                return None
+            if use_cache:
+                cache = get_api_cache()
+                cache.set("jlcpcb", sku, {"source": "jlcpcb", "data": product})
+                logger.debug(f"Cached JLCPCB legacy response for {sku}")
+            return self._parse_product(product)
+        except urllib.error.HTTPError as e:
+            if e.code in (404, 410):
+                logger.debug("JLCPCB legacy endpoint HTTP %s for %s", e.code, sku)
+            else:
+                logger.warning(f"JLCPCB lookup failed: {e}")
+            return None
         except Exception as e:
-            logger.warning(f"TME search failed: {e}")
-            return []
+            logger.warning(f"JLCPCB lookup failed: {e}")
+            return None
+
+    def _search_jlcsearch(self, sku: str, use_cache: bool, ua: str) -> Optional[PartInfo]:
+        """Match LCSC id via jlcsearch (no API key)."""
+        try:
+            lcsc_id = int(sku[1:])
+        except ValueError:
+            return None
+
+        self._limiter.acquire()
+        q = urllib.parse.quote(str(lcsc_id))
+        url = f"{self.JLCSEARCH_BASE}/components/list.json?search={q}&limit=80&full=true"
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": ua, "Accept": "application/json"})
+            with urllib.request.urlopen(req, timeout=60) as resp:
+                data = json.loads(resp.read().decode())
+        except Exception as e:
+            logger.warning(f"jlcsearch lookup failed for {sku}: {e}")
+            return None
+
+        items = data.get("components") or []
+        hit = None
+        for it in items:
+            if it.get("lcsc") == lcsc_id:
+                hit = it
+                break
+        if hit is None:
+            logger.debug("jlcsearch: no exact LCSC match for %s", sku)
+            return None
+
+        if use_cache:
+            cache = get_api_cache()
+            cache.set("jlcpcb", sku, {"source": "jlcsearch", "data": hit})
+            logger.debug(f"Cached jlcsearch response for {sku}")
+
+        logger.info("JLCPCB resolved %s via jlcsearch fallback", sku)
+        return self._parse_jlcsearch_item(hit)
+
+    def _parse_jlcsearch_item(self, item: dict) -> PartInfo:
+        """Map jlcsearch component row to PartInfo."""
+        lcsc = item.get("lcsc")
+        sku = f"C{lcsc}" if lcsc is not None else ""
+        mpn = str(item.get("mfr") or "").strip()
+        description = str(item.get("description") or "").strip()
+        package = str(item.get("package") or "").strip()
+        try:
+            stock = int(item.get("stock") or 0)
+        except (TypeError, ValueError):
+            stock = 0
+        cat = (item.get("category") or item.get("subcategory") or "") or ""
+        cat = str(cat).strip()
+
+        price_breaks: list[dict] = []
+        pr = item.get("price")
+        try:
+            if isinstance(pr, str) and pr.strip().startswith("["):
+                for row in json.loads(pr):
+                    q = row.get("qFrom")
+                    p = row.get("price")
+                    if q is not None and p is not None:
+                        price_breaks.append({"quantity": int(q), "price": float(p)})
+        except Exception:
+            pass
+
+        product_url = f"https://jlcpcb.com/partdetail/{sku}" if sku else ""
+        return PartInfo(
+            mpn=mpn or sku,
+            manufacturer="",
+            supplier_sku=sku,
+            description=description,
+            stock=stock,
+            price_breaks=price_breaks,
+            datasheet_url=None,
+            product_url=product_url,
+            category=cat,
+            package=package,
+            rohs=False,
+            lead_time_days=None,
+            last_updated=datetime.now(timezone.utc),
+            thermal_data=None,
+            package_dimensions=None,
+            lifecycle_status=None,
+            compliance_flags=None,
+            pinout=None,
+            alternative_mpns=None,
+            manufacturer_info=None,
+        )
     
     def _parse_product(self, product: dict) -> PartInfo:
-        """Parse TME product response into PartInfo."""
-        # TME provides rich data including dimensions and parameters
-        params = product.get("parameters", [])
+        """Parse JLCPCB product response into PartInfo."""
+        # JLCPCB provides: SKU, MPN, manufacturer, stock, price, specs
+        specs = product.get("componentSpecification", {})
         
-        # Extract dimensions if available
-        pkg_dims = None
-        for p in params:
-            if p.get("name") in ["Dimensions", "Package"]:
-                try:
-                    val = p.get("value", "")
-                    # Parse formats like "5.0mm x 5.0mm x 1.0mm"
-                    parts = val.lower().replace("mm", "").replace("x", " ").split()
-                    if len(parts) >= 2:
-                        pkg_dims = {
-                            "length": float(parts[0]) if len(parts) > 0 else None,
-                            "width": float(parts[1]) if len(parts) > 1 else None,
-                            "height": float(parts[2]) if len(parts) > 2 else None,
-                        }
-                except (ValueError, IndexError):
-                    pass
-        
-        # Extract thermal data if available
-        thermal = None
-        for p in params:
-            if p.get("name") in ["Thermal Resistance", "Power Dissipation"]:
-                thermal = thermal or {}
-                if "r_theta" in p.get("name", "").lower():
-                    try:
-                        thermal["r_theta_ja"] = float(p.get("value", "").replace("K/W", "").strip())
-                    except ValueError:
-                        pass
-                if "power" in p.get("name", "").lower():
-                    try:
-                        thermal["max_power"] = float(p.get("value", "").replace("W", "").strip())
-                    except ValueError:
-                        pass
+        # Extract pinout from specs if available
+        pinout = None
+        if "pinCount" in specs:
+            pin_count = int(specs["pinCount"])
+            pinout = [{"num": str(i), "name": str(i), "type": "bidirectional"} for i in range(1, pin_count + 1)]
         
         # Build compliance flags
         compliance = []
-        if product.get("rohs"):
+        if product.get("isRoHS"):
             compliance.append("RoHS")
         
         return PartInfo(
-            mpn=product.get("symbol", ""),
-            manufacturer=product.get("producer", ""),
-            supplier_sku=product.get("id", ""),
-            description=product.get("description", ""),
-            stock=product.get("amount", 0),
-            price_breaks=[],  # TME pricing requires separate API call
-            datasheet_url=product.get("files", {}).get("datasheet"),
-            product_url=f"https://www.tme.eu/{product.get('id', '')}",
-            category=product.get("category", ""),
+            mpn=product.get("componentCode", ""),  # e.g., "TPS63001DRCR"
+            manufacturer=product.get("brandName", ""),
+            supplier_sku=product.get("componentId", ""),  # e.g., "C132150"
+            description=product.get("componentName", ""),
+            stock=product.get("stockCount", 0),
+            price_breaks=[],  # JLCPCB pricing requires separate endpoint
+            datasheet_url=product.get("dataSheet"),
+            product_url=f"https://jlcpcb.com/partdetail/{product.get('componentId', '')}",
+            category=product.get("componentTypeEn", ""),
             package=product.get("package", ""),
-            rohs=product.get("rohs", False),
-            lead_time_days=product.get("lead_time"),
+            rohs=product.get("isRoHS", False),
+            lead_time_days=None,  # Not directly provided
             last_updated=datetime.now(),
-            # V7 fields - TME provides good data
-            thermal_data=thermal,
-            package_dimensions=pkg_dims,
-            lifecycle_status=product.get("status"),
+            # V7 fields
+            thermal_data=None,  # Not directly provided
+            package_dimensions=None,  # Would need to parse from specs
+            lifecycle_status=product.get("componentStatus"),
             compliance_flags=compliance if compliance else None,
-            pinout=None,  # TME doesn't provide pinout directly
-            alternative_mpns=product.get("substitutes"),
-            manufacturer_info={"certs": product.get("standards")} if product.get("standards") else None,
+            pinout=pinout,
+            alternative_mpns=None,
+            manufacturer_info=None,
         )
 
 
-def lookup_part_live(mpn: str, preferred_vendor: str = "auto") -> Optional[PartInfo]:
-    """Live lookup of part info from vendor APIs.
+def vendor_apis_configured() -> bool:
+    """Return True if at least one vendor integration has credentials in the environment."""
+    if (os.environ.get("DIGIKEY_CLIENT_ID") or "").strip() and (os.environ.get("DIGIKEY_CLIENT_SECRET") or "").strip():
+        return True
+    if (os.environ.get("MOUSER_API_KEY") or "").strip():
+        return True
+    if (os.environ.get("TME_API_TOKEN") or "").strip() and (os.environ.get("TME_API_SECRET") or "").strip():
+        return True
+    if (os.environ.get("JLCPCB_API_KEY") or "").strip():
+        return True
+    return False
 
-    Tries vendors in order: Digi-Key first (better data), then Mouser, then TME.
 
+def lookup_part_live(mpn: str, preferred_vendor: str = "auto", 
+                     jlcpcb_sku: Optional[str] = None) -> Optional[PartInfo]:
+    """Hybrid live lookup from multiple vendor APIs.
+    
+    Queries multiple APIs in order and merges data for the most complete PartInfo.
+    Uses 1 req/sec rate limiting to prevent IP bans.
+    
     Args:
         mpn: Manufacturer part number to search
-        preferred_vendor: "digikey", "mouser", "tme", or "auto" (default)
-
+        preferred_vendor: "digikey", "mouser", "tme", "jlcpcb", or "auto" (default)
+        jlcpcb_sku: Optional JLCPCB SKU (Cxxxxx) for assembly sourcing
+        
     Returns:
-        PartInfo if found, None otherwise
+        PartInfo with merged data from all available APIs, or None if not found
     """
+    results: dict[str, PartInfo] = {}
+    
+    # Strategy: Query all available APIs and merge
+    # Order matters for which data takes precedence
+    
+    # 1. JLCPCB (if SKU provided) - for assembly/sourcing data
+    if jlcpcb_sku or preferred_vendor == "jlcpcb":
+        try:
+            jlcpcb = JLCPCBAPI()
+            sku = jlcpcb_sku or mpn  # Try mpn as SKU if no SKU provided
+            result = jlcpcb.search_by_sku(sku)
+            if result:
+                results["jlcpcb"] = result
+                logger.debug(f"JLCPCB found: {result.mpn}")
+        except Exception as e:
+            logger.debug(f"JLCPCB lookup failed: {e}")
+    
+    # 2. Digi-Key - for technical specs and pinout
     if preferred_vendor in ("auto", "digikey"):
         try:
             dk = DigiKeyAPI()
-            results = dk.search(mpn, limit=1)
-            if results:
-                return results[0]
+            dk_result = dk.search(mpn, limit=1)
+            if dk_result:
+                results["digikey"] = dk_result[0]
+                logger.debug(f"Digi-Key found: {dk_result[0].mpn}")
         except Exception as e:
             logger.debug(f"Digi-Key lookup failed: {e}")
-
+    
+    # 3. Mouser - for stock levels and pricing
     if preferred_vendor in ("auto", "mouser"):
         try:
             mouser = MouserAPI()
-            results = mouser.search(mpn, limit=1)
-            if results:
-                return results[0]
+            mouser_result = mouser.search(mpn, limit=1)
+            if mouser_result:
+                results["mouser"] = mouser_result[0]
+                logger.debug(f"Mouser found: {mouser_result[0].mpn}")
         except Exception as e:
             logger.debug(f"Mouser lookup failed: {e}")
     
+    # 4. TME - for dimensions and thermal data
     if preferred_vendor in ("auto", "tme"):
         try:
             tme = TMEAPI()
-            results = tme.search(mpn, limit=1)
-            if results:
-                return results[0]
+            tme_result = tme.search(mpn, limit=1)
+            if tme_result:
+                results["tme"] = tme_result[0]
+                logger.debug(f"TME found: {tme_result[0].mpn}")
         except Exception as e:
             logger.debug(f"TME lookup failed: {e}")
-        except Exception as e:
-            logger.debug(f"Mouser lookup failed: {e}")
+    
+    # Merge results into single PartInfo
+    merged = _merge_part_info(results, mpn)
 
-    return None
+    # Optional: persist enrichment back into local DB for future offline builds.
+    try:
+        if merged and (os.environ.get("OPENHAC_ENRICH_DB_ON_LOOKUP") or "").strip().lower() in ("1", "true", "yes", "on"):
+            from .db_manager import DatabaseManager
+
+            db = DatabaseManager()
+            # Best-effort: update by exact generic_name match if present, else by MPN.
+            row = db.get_component(mpn)
+            if row is None:
+                # try to find by mpn field
+                try:
+                    import sqlite3
+
+                    with sqlite3.connect(db.db_path) as conn:
+                        conn.row_factory = sqlite3.Row
+                        cur = conn.execute("SELECT generic_name FROM components WHERE mpn = ? LIMIT 1", (merged.mpn,))
+                        hit = cur.fetchone()
+                        if hit:
+                            row = {"generic_name": hit["generic_name"]}
+                except Exception:
+                    row = None
+            if row and row.get("generic_name"):
+                db.update_component_from_vendor(str(row["generic_name"]), merged)
+    except Exception:
+        pass
+
+    return merged
+
+
+def _merge_part_info(results: dict[str, PartInfo], mpn: str) -> Optional[PartInfo]:
+    """Merge PartInfo from multiple vendors into one complete record.
+    
+    Priority order for data sources:
+    - Pinout: Digi-Key > JLCPCB > None
+    - Dimensions: TME > Digi-Key > None  
+    - Thermal: TME > Digi-Key > None
+    - Pricing: Mouser > Digi-Key > JLCPCB
+    - Stock: JLCPCB > Mouser > Digi-Key > TME
+    - Compliance: Digi-Key > TME > JLCPCB
+    - Lifecycle: Digi-Key > TME > None
+    """
+    if not results:
+        return None
+    
+    # Use first result as base
+    base = list(results.values())[0]
+    
+    # Initialize with base data
+    merged = PartInfo(
+        mpn=mpn,
+        manufacturer=base.manufacturer,
+        supplier_sku=base.supplier_sku,
+        description=base.description,
+        stock=base.stock,
+        price_breaks=base.price_breaks or [],
+        datasheet_url=base.datasheet_url,
+        product_url=base.product_url,
+        category=base.category,
+        package=base.package,
+        rohs=base.rohs,
+        lead_time_days=base.lead_time_days,
+        last_updated=datetime.now(),
+    )
+    
+    # Merge V7 fields with priority
+    # Pinout: Digi-Key priority
+    if "digikey" in results and results["digikey"].pinout:
+        merged.pinout = results["digikey"].pinout
+        try:
+            merged.source_vendor = "digikey"  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    elif "jlcpcb" in results and results["jlcpcb"].pinout:
+        merged.pinout = results["jlcpcb"].pinout
+        try:
+            merged.source_vendor = "jlcpcb"  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    else:
+        try:
+            merged.source_vendor = "auto"  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    
+    # Dimensions: TME priority
+    if "tme" in results and results["tme"].package_dimensions:
+        merged.package_dimensions = results["tme"].package_dimensions
+    elif "digikey" in results and results["digikey"].package_dimensions:
+        merged.package_dimensions = results["digikey"].package_dimensions
+    
+    # Thermal: TME priority
+    if "tme" in results and results["tme"].thermal_data:
+        merged.thermal_data = results["tme"].thermal_data
+    elif "digikey" in results and results["digikey"].thermal_data:
+        merged.thermal_data = results["digikey"].thermal_data
+    
+    # Lifecycle: Digi-Key priority
+    if "digikey" in results and results["digikey"].lifecycle_status:
+        merged.lifecycle_status = results["digikey"].lifecycle_status
+    elif "tme" in results and results["tme"].lifecycle_status:
+        merged.lifecycle_status = results["tme"].lifecycle_status
+    
+    # Compliance: merge all available
+    compliance_set = set()
+    for r in results.values():
+        if r.compliance_flags:
+            compliance_set.update(r.compliance_flags)
+    if compliance_set:
+        merged.compliance_flags = list(compliance_set)
+    
+    # Stock: sum from all sources (conservative)
+    total_stock = sum(r.stock for r in results.values() if r.stock > 0)
+    if total_stock > 0:
+        merged.stock = total_stock
+    
+    # Alternative MPNs: Digi-Key priority
+    if "digikey" in results and results["digikey"].alternative_mpns:
+        merged.alternative_mpns = results["digikey"].alternative_mpns
+    
+    logger.info(f"Merged data from {len(results)} vendors for {mpn}")
+    return merged
 
 
 def check_stock(supplier_sku: str, sku_type: str = "auto") -> int:
@@ -864,7 +1274,7 @@ def check_stock(supplier_sku: str, sku_type: str = "auto") -> int:
     if sku_type == "lcsc":
         from .db_manager import DatabaseManager
         db = DatabaseManager()
-        comp = db.get_component_by_sku(supplier_sku)
+        comp = db.get_component_by_supplier_sku(supplier_sku)
         if comp and comp.get("mpn"):
             info = lookup_part_live(comp["mpn"])
             return info.stock if info else 0
@@ -899,7 +1309,11 @@ class TMEAPI:
     - Product Data: 10 requests/second (864,000/day potential)
     - NO hard daily cap - only per-second rate limiting
 
-    Auth: API token (register at https://developers.tme.eu/)
+    Auth: API token + application secret (register at https://developers.tme.eu/).
+
+    Environment: ``TME_API_TOKEN`` = portal **Token**; ``TME_API_SECRET`` = **Application secret**
+    used for signing (not the customer number). Keys scoped only to “order” APIs may not allow
+    product search — create an app with product/catalog access if searches still fail.
 
     Note: TME catalog leans toward European stock and industrial components.
     Best used for: Passives, connectors, electromechanical parts.
@@ -915,22 +1329,23 @@ class TMEAPI:
         self._rate_limiter_products = RateLimiter(max_calls=10, period_seconds=1)
         self._rate_limiter_pricing = RateLimiter(max_calls=2, period_seconds=1)
 
-    def _make_signature(self, params: dict) -> str:
-        """Create HMAC-SHA1 signature for TME API request."""
-        import hashlib
-        import hmac
-
-        # Sort params alphabetically
-        sorted_params = sorted(params.items())
-        # Create signature base string
-        base_string = "&".join(f"{k}={urllib.parse.quote(str(v), safe='')}" for k, v in sorted_params)
-        # HMAC-SHA1 with api_secret
-        signature = hmac.new(
-            self.api_secret.encode(),
-            base_string.encode(),
-            hashlib.sha1
-        ).hexdigest()
-        return signature
+    def _post_form(self, path: str, pairs: list[tuple[str, str]]) -> dict:
+        """POST ``application/x-www-form-urlencoded`` (*path* must start with ``/``)."""
+        endpoint = f"{self.API_BASE}{path}"
+        sig = _tme_calculate_signature("POST", endpoint, pairs, self.api_secret)
+        body_pairs = sorted(pairs + [("ApiSignature", sig)], key=lambda kv: (kv[0], kv[1]))
+        body = urllib.parse.urlencode(body_pairs, doseq=True).encode("utf-8")
+        req = urllib.request.Request(
+            endpoint,
+            data=body,
+            method="POST",
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept": "application/json",
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            return json.loads(resp.read().decode())
 
     def search(self, keyword: str, limit: int = 50, use_cache: bool = True) -> list[PartInfo]:
         """Search for products by keyword.
@@ -945,9 +1360,6 @@ class TMEAPI:
         Returns:
             List of PartInfo objects
         """
-        import urllib.request
-        import urllib.parse
-
         if not self.api_token or not self.api_secret:
             raise ValueError("TME API credentials not configured. Set TME_API_TOKEN and TME_API_SECRET")
 
@@ -956,39 +1368,29 @@ class TMEAPI:
             cache = get_api_cache()
             cached = cache.get("tme_search", keyword)
             if cached:
-                products = cached.get("Data", {}).get("ProductList", [])
+                products = _tme_response_product_list(cached)
                 logger.info(f"Using cached TME data for {keyword}")
                 return [self._parse_product(p) for p in products[:limit]]
 
         self._rate_limiter_products.acquire()
 
-        params = {
-            "Token": self.api_token,
-            "ApiSignature": "",  # Will be calculated
-            "SearchPlain": keyword,
-            "SearchWithStock": "true",
-            "SearchInStock": "false",
-            "PageSize": str(min(limit, 1000)),
-        }
-        params["ApiSignature"] = self._make_signature(params)
-
-        url = f"{self.API_BASE}/Products/Search.json?" + urllib.parse.urlencode(params)
-        req = urllib.request.Request(url, headers={
-            "Accept": "application/json",
-        })
-
+        pairs = [
+            ("Token", self.api_token),
+            ("SearchPlain", keyword),
+            ("SearchWithStock", "true"),
+            ("SearchInStock", "false"),
+            ("PageSize", str(min(limit, 1000))),
+        ]
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode())
-                products = data.get("Data", {}).get("ProductList", [])
+            data = self._post_form("/Products/Search.json", pairs)
+            products = _tme_response_product_list(data)
 
-                # Cache response
-                if use_cache and products:
-                    cache = get_api_cache()
-                    cache.set("tme_search", keyword, data, ttl_seconds=3600)
-                    logger.debug(f"Cached TME search for {keyword} ({len(products)} products)")
+            if use_cache and products:
+                cache = get_api_cache()
+                cache.set("tme_search", keyword, data, ttl_seconds=3600)
+                logger.debug(f"Cached TME search for {keyword} ({len(products)} products)")
 
-                return [self._parse_product(p) for p in products]
+            return [self._parse_product(p) for p in products]
         except Exception as e:
             logger.warning(f"TME search failed: {e}")
             return []
@@ -1005,9 +1407,6 @@ class TMEAPI:
         Returns:
             PartInfo if found, None otherwise
         """
-        import urllib.request
-        import urllib.parse
-
         if not self.api_token or not self.api_secret:
             raise ValueError("TME API credentials not configured")
 
@@ -1016,35 +1415,28 @@ class TMEAPI:
             cache = get_api_cache()
             cached = cache.get("tme_product", tme_symbol)
             if cached:
-                products = cached.get("Data", {}).get("ProductList", [])
+                products = _tme_response_product_list(cached)
                 if products:
                     logger.info(f"Using cached TME product data for {tme_symbol}")
                     return self._parse_product(products[0])
 
         self._rate_limiter_products.acquire()
 
-        params = {
-            "Token": self.api_token,
-            "ApiSignature": "",
-            "Country": "US",
-            "Language": "EN",
-            "SymbolList[0]": tme_symbol,
-        }
-        params["ApiSignature"] = self._make_signature(params)
-
-        url = f"{self.API_BASE}/Products/GetProducts.json?" + urllib.parse.urlencode(params)
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
-
+        pairs = [
+            ("Token", self.api_token),
+            ("Country", "US"),
+            ("Language", "EN"),
+            ("SymbolList[0]", tme_symbol),
+        ]
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode())
-                products = data.get("Data", {}).get("ProductList", [])
+            data = self._post_form("/Products/GetProducts.json", pairs)
+            products = _tme_response_product_list(data)
 
-                if use_cache and products:
-                    cache = get_api_cache()
-                    cache.set("tme_product", tme_symbol, data)
+            if use_cache and products:
+                cache = get_api_cache()
+                cache.set("tme_product", tme_symbol, data)
 
-                return self._parse_product(products[0]) if products else None
+            return self._parse_product(products[0]) if products else None
         except Exception as e:
             logger.warning(f"TME product lookup failed: {e}")
             return None
@@ -1061,9 +1453,6 @@ class TMEAPI:
         Returns:
             Dict mapping symbol -> {stock, price, currency}
         """
-        import urllib.request
-        import urllib.parse
-
         if not self.api_token or not self.api_secret:
             raise ValueError("TME API credentials not configured")
 
@@ -1072,35 +1461,28 @@ class TMEAPI:
 
         self._rate_limiter_pricing.acquire()
 
-        params = {
-            "Token": self.api_token,
-            "ApiSignature": "",
-            "Country": "US",
-            "Currency": "USD",
-        }
+        pairs: list[tuple[str, str]] = [
+            ("Token", self.api_token),
+            ("Country", "US"),
+            ("Currency", "USD"),
+        ]
         for i, sym in enumerate(symbols):
-            params[f"SymbolList[{i}]"] = sym
-
-        params["ApiSignature"] = self._make_signature(params)
-
-        url = f"{self.API_BASE}/Products/GetPricesAndStocks.json?" + urllib.parse.urlencode(params)
-        req = urllib.request.Request(url, headers={"Accept": "application/json"})
+            pairs.append((f"SymbolList[{i}]", sym))
 
         try:
-            with urllib.request.urlopen(req, timeout=30) as resp:
-                data = json.loads(resp.read().decode())
-                stocks = data.get("Data", {}).get("ProductList", [])
+            data = self._post_form("/Products/GetPricesAndStocks.json", pairs)
+            stocks = _tme_response_product_list(data)
 
-                result = {}
-                for s in stocks:
-                    symbol = s.get("Symbol", "")
-                    result[symbol] = {
-                        "stock": s.get("Amount", 0),
-                        "price": s.get("Price", {}).get("Amount", 0),
-                        "currency": s.get("Price", {}).get("Currency", "USD"),
-                        "multiples": s.get("Multiples", 1),
-                    }
-                return result
+            result = {}
+            for s in stocks:
+                symbol = s.get("Symbol", "")
+                result[symbol] = {
+                    "stock": s.get("Amount", 0),
+                    "price": s.get("Price", {}).get("Amount", 0),
+                    "currency": s.get("Price", {}).get("Currency", "USD"),
+                    "multiples": s.get("Multiples", 1),
+                }
+            return result
         except Exception as e:
             logger.warning(f"TME pricing lookup failed: {e}")
             return {}
@@ -1122,6 +1504,10 @@ class TMEAPI:
         # Stock from Amount field
         stock = product.get("Amount", 0)
 
+        pkg = product.get("Package", "")
+        if isinstance(pkg, list):
+            pkg = ",".join(str(x) for x in pkg if x is not None)
+
         return PartInfo(
             mpn=product.get("OriginalSymbol", ""),
             manufacturer=product.get("Manufacturer", ""),
@@ -1132,7 +1518,7 @@ class TMEAPI:
             datasheet_url=product.get("DatasheetUrl"),
             product_url=product.get("ProductInformationPage"),
             category=product.get("Category", ""),
-            package=product.get("Package", []),  # TME returns list
+            package=str(pkg or ""),
             rohs=product.get("RoHS", "false").lower() == "true",
             lead_time_days=None,
             last_updated=datetime.now(),

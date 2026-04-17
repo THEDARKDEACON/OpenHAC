@@ -12,6 +12,9 @@ from openhac.core.compile_context import get_compile_context
 
 logger = logging.getLogger("openhac.core")
 
+# Best-effort compile post-report capture (dev/handoff diagnostics).
+_IMPLICIT_PIN_EVENTS: list[dict] = []
+
 
 class OpenHaCError(Exception):
     """Base exception for all OpenHaC errors."""
@@ -174,9 +177,20 @@ class Component:
             )
 
         comp_data = strip_openhac_internal_fields(comp_data)
+        # Keep a copy for later (e.g. pinout coverage / implicit pin policy).
+        self._comp_data = dict(comp_data)
 
-        # Get pinout from database or fetch from vendor APIs
+        # Get pinout from database (best-effort auto-enrich if missing and network allowed).
         pins = self._get_pins_from_data(comp_data)
+        # Refresh cached comp_data in case enrichment updated DB fields (pinout/symbol/footprint).
+        try:
+            fresh = self.db.get_component(generic_name)
+            if fresh:
+                fresh = strip_openhac_internal_fields(fresh)
+                self._comp_data = dict(fresh)
+                comp_data = fresh
+        except Exception:
+            pass
         
         # Get or generate reference designator
         ref_prefix = self._get_refdes_prefix(comp_data['category'])
@@ -261,6 +275,7 @@ class Component:
         caches it in the local database and returns the component dict.
         Returns None if no match found or network unavailable.
         """
+        import urllib.parse
         import urllib.request
         import json
         import warnings
@@ -326,8 +341,13 @@ class Component:
             stacklevel=4,
         )
         try:
-            cls.db.insert_component(comp_data, ignore_duplicate=True)
+            cls.db.safe_insert_component(
+                comp_data,
+                ignore_duplicate=True,
+                warn_prefix=f"Could not store JIT-resolved component {generic_name!r} in the local database",
+            )
         except Exception as e:
+            # strict mode
             logger.exception("Failed to cache live lookup for %r", generic_name)
             raise PartDatabaseWriteError(
                 f"Could not store JIT-resolved component {generic_name!r} in the local database."
@@ -340,6 +360,7 @@ class Component:
 
     def __getitem__(self, key):
         import inspect
+        import os
         import warnings
         owning_module = object.__getattribute__(self, '_owning_module')
         if owning_module is not None:
@@ -359,7 +380,6 @@ class Component:
             finally:
                 del frame
 
-        # Dynamic pin creation for synthetic parts (Demo mode / Headless CI)
         from openhac.core.part import Pin
         
         # Handle multi-pin requests (tuples or lists)
@@ -373,56 +393,156 @@ class Component:
                     pins.append(p)
             return pins
 
-        res = self.part[key]
-        if res is None or (isinstance(res, list) and not res):
-             if getattr(self, '_is_synthetic', False):
-                 # Duck-type: if key is a string like 'VDD', it's a name. 
-                 # If it's a number, it's a pin number.
-                 pin_num = key if str(key).isdigit() else str(len(self.part.pins) + 1)
-                 new_pin = Pin(num=pin_num, name=str(key), part=self.part)
-                 self.part.add_pins(new_pin)
-                 return self.part[key]
-        return res
+        try:
+            return self.part[key]
+        except KeyError:
+            # Best-effort: if pinout is missing, try to enrich and refresh pins once before
+            # falling back to implicit pins (handoff/dev only).
+            try:
+                if not getattr(self, "_enrich_on_getitem_attempted", False):
+                    setattr(self, "_enrich_on_getitem_attempted", True)
+                    from openhac.database.enrich import enrich_component_in_db
+
+                    res = enrich_component_in_db(db=self.db, generic_name=str(getattr(self, "generic_name", "") or ""))
+                    if res.attempted and res.updated:
+                        fresh = self.db.get_component(str(getattr(self, "generic_name", "") or ""))
+                        if fresh:
+                            try:
+                                new_pins = self._get_pins_from_data(dict(fresh))
+                                # Replace pins mapping with enriched pins (best-effort).
+                                try:
+                                    self.part.pins.clear()
+                                except Exception:
+                                    self.part.pins = {}
+                                for p in new_pins:
+                                    try:
+                                        self.part.add_pin(p)
+                                    except Exception:
+                                        pass
+                                return self.part[key]
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+
+            # Optional implicit pin creation for designs that use named pins but
+            # do not yet have explicit pinout_json coverage in the DB.
+            raw_allow = (os.environ.get("OPENHAC_ALLOW_IMPLICIT_PINS") or "").strip().lower()
+            raw_goal = (os.environ.get("OPENHAC_COMPILE_GOAL") or "").strip().lower()
+            # Defaults:
+            # - fabrication: implicit pins are OFF unless explicitly enabled
+            # - handoff/unspecified: implicit pins are ON unless explicitly disabled
+            allow_explicit = raw_allow in ("1", "true", "yes", "on")
+            deny_explicit = raw_allow in ("0", "false", "no", "off")
+            in_fabrication = raw_goal == "fabrication"
+            allow_implicit = allow_explicit or (not deny_explicit and not in_fabrication)
+            pinout_json = None
+            symbol_data = None
+            try:
+                cd = getattr(self, "_comp_data", None) or {}
+                pinout_json = cd.get("pinout_json")
+                symbol_data = cd.get("symbol_data")
+            except Exception:
+                pinout_json = None
+                symbol_data = None
+            if not allow_implicit or pinout_json or symbol_data:
+                raise
+
+            warnings.warn(
+                f"Implicit pin {key!r} created on component {getattr(self, 'generic_name', '?')!r} "
+                "(no pinout_json/symbol_data in DB). This is allowed only for dev/handoff; "
+                "fix by enriching pinouts via `python3 -m openhac.database.sync_jlc --seed-file ...` "
+                "(or vendor lookup enrichment).",
+                UserWarning,
+                stacklevel=2,
+            )
+
+            try:
+                _IMPLICIT_PIN_EVENTS.append(
+                    {
+                        "generic_name": str(getattr(self, "generic_name", "") or ""),
+                        "refdes": str(getattr(self.part, "refdes", "") or ""),
+                        "pin_name": str(key),
+                    }
+                )
+            except Exception:
+                pass
+
+            # Allocate a new numeric pin ID and bind this name to it.
+            used_nums = {k for k in self.part.pins.keys() if str(k).isdigit()}
+            n = 1
+            while str(n) in used_nums:
+                n += 1
+            new_pin = Pin(str(n), str(key), "bidirectional")
+            self.part.add_pin(new_pin)
+            return self.part[key]
 
     def __setitem__(self, key, value):
         self.part[key] = value
 
     def _get_pins_from_data(self, comp_data: dict) -> list[Pin]:
-        """Get pinout from database or fetch from vendor APIs.
+        """Get pinout from database.
         
-        First checks the database pinout_json field. If not available,
-        attempts to fetch from Digi-Key/Mouser/TME APIs.
-        Falls back to generic pin generation based on footprint.
+        Database is the single source of truth for component data.
+        If pinout not in DB, falls back to generic generation based on footprint.
         """
         import json
+
+        # Best-effort: auto-enrich missing pinout before generating fallback pins.
+        try:
+            pinout_json = comp_data.get("pinout_json")
+            symbol_data = comp_data.get("symbol_data")
+        except Exception:
+            pinout_json = None
+            symbol_data = None
+
+        if not pinout_json and not symbol_data:
+            try:
+                # Avoid repeated network calls for the same instance.
+                if not getattr(self, "_enrich_attempted", False):
+                    setattr(self, "_enrich_attempted", True)
+                    from openhac.database.enrich import enrich_component_in_db
+
+                    res = enrich_component_in_db(db=self.db, generic_name=str(getattr(self, "generic_name", "") or ""))
+                    if res.attempted and res.updated:
+                        fresh = self.db.get_component(str(getattr(self, "generic_name", "") or ""))
+                        if fresh:
+                            comp_data = dict(fresh)
+                            pinout_json = comp_data.get("pinout_json")
+                            symbol_data = comp_data.get("symbol_data")
+            except Exception:
+                pass
         
         # Try database pinout first
-        pinout_json = comp_data.get("pinout_json")
         if pinout_json:
             try:
                 pinout = json.loads(pinout_json)
                 return [Pin(p["num"], p["name"], p.get("type", "bidirectional")) for p in pinout]
             except (json.JSONDecodeError, KeyError):
-                pass  # Fall through to vendor lookup
-        
-        # Try to fetch from vendor APIs using MPN
-        mpn = comp_data.get("mpn")
-        if mpn:
-            pins = self._fetch_pinout_from_vendors(mpn)
-            if pins:
-                return pins
+                pass  # Fall through to footprint-based generation
+
+        # Optional: extract pinout from symbol_data if present (V6 column).
+        symbol_data = comp_data.get("symbol_data")
+        if symbol_data:
+            try:
+                sd = json.loads(symbol_data) if isinstance(symbol_data, str) else symbol_data
+                pins = sd.get("pins") if isinstance(sd, dict) else None
+                if isinstance(pins, list) and pins:
+                    out = []
+                    for p in pins:
+                        if not isinstance(p, dict):
+                            continue
+                        num = str(p.get("num") or p.get("number") or "").strip()
+                        name = str(p.get("name") or "").strip() or num
+                        if num:
+                            out.append(Pin(num, name, str(p.get("type") or "bidirectional")))
+                    if out:
+                        return out
+            except Exception:
+                pass
         
         # Fallback: generate based on footprint
         return self._generate_fallback_pins(comp_data)
-    
-    def _fetch_pinout_from_vendors(self, mpn: str) -> list[Pin]:
-        """Fetch pinout from vendor APIs (Digi-Key, Mouser, TME).
-        
-        Returns list of Pins if successful, empty list otherwise.
-        """
-        # TODO: Implement vendor API pinout fetching
-        # This requires extending vendor_apis.py to get pinout data
-        return []
     
     def _generate_fallback_pins(self, comp_data: dict) -> list[Pin]:
         """Generate generic pins based on footprint as last resort."""
@@ -450,7 +570,7 @@ class Component:
         # Default: 8 pins
         return [Pin(str(i), str(i), "bidirectional") for i in range(1, 9)]
 
-    def _get_refdes_prefix(self, category: str) -> str:
+    def _get_refdes_prefix(self, category: str | None) -> str:
         """Get reference designator prefix based on component category."""
         category_map = {
             "resistor": "R",
@@ -473,6 +593,8 @@ class Component:
             "transformer": "T",
         }
         
+        if not category:
+            return "U"  # Default to IC prefix
         cat_lower = category.lower()
         for key, prefix in category_map.items():
             if key in cat_lower:
@@ -486,13 +608,19 @@ class Interface:
 
     def connect(self, other_interface):
         for sig1, sig2 in zip(self.signals, other_interface.signals):
+            # Merge both ways so either side's Net object remains usable.
             sig1 += sig2
+            try:
+                sig2 += sig1
+            except Exception:
+                pass
 
 class Module:
     def __init__(self, name=None):
         self.name = name or self.__class__.__name__
         self.components = []
         self.required_interfaces: dict[str, "Interface"] = {}
+        self.optional_interfaces: dict[str, "Interface"] = {}
         self.width = 10.0
         self.height = 10.0
         self.placed_x = None
@@ -544,10 +672,17 @@ class Module:
             pass
         return c
 
-    def declare_interface(self, name: str, *nets) -> "Interface":
-        """Register a named Interface as a required connection point."""
+    def declare_interface(self, name: str, *nets, required: bool = True) -> "Interface":
+        """Register a named Interface.
+
+        By default interfaces are **required** and must have >=2 pins connected per net.
+        Use ``required=False`` for debug/test breakouts that may remain unconnected.
+        """
         iface = Interface(name, *nets)
-        self.required_interfaces[name] = iface
+        if required:
+            self.required_interfaces[name] = iface
+        else:
+            self.optional_interfaces[name] = iface
         return iface
 
     def recalculate_bbox_from_components(self) -> None:
@@ -651,9 +786,12 @@ class Module:
         try:
             return self.required_interfaces[name]
         except KeyError:
-            raise InterfaceNotFoundError(
-                f"Interface '{name}' is not registered on module '{self.name}'."
-            )
+            try:
+                return self.optional_interfaces[name]
+            except KeyError:
+                raise InterfaceNotFoundError(
+                    f"Interface '{name}' is not registered on module '{self.name}'."
+                )
 
     def __getitem__(self, key):
         """Allow subscripting the module to access pins of its internal components.

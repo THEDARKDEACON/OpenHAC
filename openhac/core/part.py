@@ -25,6 +25,11 @@ class Pin:
         self.pin_type = pin_type  # input, output, bidirectional, power, passive
         self.net: Optional[Net] = None
         self.part: Optional[Part] = None
+
+    @property
+    def num(self) -> str:
+        """Compatibility alias for SKiDL-like APIs."""
+        return self.number
         
     def __add__(self, other) -> Pin:
         """Connect this pin to a net or another pin using + operator."""
@@ -100,6 +105,18 @@ class Part:
             # Also index by name if different from number
             if pin.name != pin.number:
                 self.pins[pin.name] = pin
+
+    @property
+    def ref(self) -> str:
+        """Compatibility alias for SKiDL-like APIs."""
+        return self.refdes
+
+    def add_pin(self, pin: Pin) -> None:
+        """Add one pin at runtime (used for implicit pins in handoff/dev mode)."""
+        pin.part = self
+        self.pins[pin.number] = pin
+        if pin.name != pin.number:
+            self.pins[pin.name] = pin
     
     def __getitem__(self, pin_id: str) -> Pin:
         """Get a pin by number or name.

@@ -26,6 +26,9 @@ def test_openhac_doctor_runs_json():
     assert "pcbnew_import_ok" in data
     assert "java_present" in data
     assert "freerouting_jar_exists" in data
+    assert "vendor_apis_configured" in data
+    assert "vendor_api_env_present" in data
+    assert isinstance(data["vendor_api_env_present"], dict)
     assert "fp_lib_table_present" in data
     assert "sym_lib_table_present" in data
     assert "openhac_allow_risky_parts" in data

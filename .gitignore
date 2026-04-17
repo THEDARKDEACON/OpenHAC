@@ -32,6 +32,8 @@ secrets.json
 *.kicad_pcb
 *.kicad_sch
 *.kicad_pro
+# OpenHaC-generated symbol libraries (compile output; keep curated libs tracked separately)
+*.openhac-generated.kicad_sym
 *.openhac-manifest.json
 *.openhac-manifest.json.sha256
 # OpenHaC secondary handoff artifacts (JSON/MD) and reports
@@ -222,3 +224,8 @@ components.txt
 # - Ignore: everything above under tests/ that is cache, Hypothesis, tmp, or coverage.
 # - Do NOT add a blanket "tests/*.py" rule — that would break CI and code review.
 # =============================================================================
+# Local editor / tooling (repo checkout)
+# =============================================================================
+.cursor/
+.windsurf/
+kicad-symbols*

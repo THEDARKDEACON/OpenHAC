@@ -153,9 +153,9 @@ def solve_placement_with_relaxation(board, max_relaxations: int = 2) -> bool:
     Retries with progressively relaxed distance constraints (20% reduction per attempt)
     to handle overly aggressive user constraints.
     """
-    # Store original constraints for restoration
-    import copy
-    original_constraints = copy.deepcopy(board.constraints)
+    # Store original constraints for restoration.
+    # NOTE: board.constraints contains Module objects; deepcopy can recurse via Component.__getattr__.
+    original_constraints = [dict(r) for r in (board.constraints or [])]
 
     for attempt in range(max_relaxations + 1):
         if attempt > 0:
@@ -251,14 +251,34 @@ def generate_layout(netlist_path: str, output_pcb_path: str, board):
             from openhac.compiler.pcb_postprocess import (
                 apply_copper_pour_intents,
                 apply_keepout_rect_intents,
+                clamp_footprints_inside_edge_cuts,
                 apply_mounting_hole_intents,
                 apply_net_tie_intents,
+                spread_footprints_no_overlap,
             )
 
             apply_keepout_rect_intents(pcb, board, pcbnew)
             apply_net_tie_intents(pcb, board, pcbnew)
             apply_mounting_hole_intents(pcb, board, pcbnew)
             apply_copper_pour_intents(pcb, board, pcbnew)
+            margin_mm = float(getattr(board, "bbox_padding_mm", 0.5) or 0.0)
+            max_iters = int(getattr(board, "deoverlap_max_iters", 200) or 200)
+            step_mm = float(getattr(board, "deoverlap_step_mm", 0.75) or 0.75)
+            clamp_footprints_inside_edge_cuts(pcb, pcbnew, margin_mm=margin_mm)
+            # Best-effort de-overlap for handoff/dev readability.
+            spread_footprints_no_overlap(pcb, pcbnew, max_iters=max_iters, step_mm=step_mm, margin_mm=margin_mm)
+            try:
+                from openhac.compiler.pcb_fit import count_footprint_bbox_overlap_pairs
+
+                n_ovl = count_footprint_bbox_overlap_pairs(pcb, pcbnew, clearance_mm=margin_mm)
+                if n_ovl > 0:
+                    logger.warning(
+                        "After de-overlap: %s approximate footprint bbox overlap pair(s) remain "
+                        "(bbox-based; increase --deoverlap-iters / --deoverlap-step-mm or fix placement).",
+                        n_ovl,
+                    )
+            except Exception:
+                pass
         except Exception as e:
             logger.warning("PCB post-process helpers failed (continuing): %s", e)
 

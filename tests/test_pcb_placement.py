@@ -4,6 +4,7 @@ import pytest
 
 from openhac.compiler.pcb_placement import (
     collect_skidl_part_positions,
+    find_pad_for_pin,
     footprint_search_roots,
     kicad_mod_pad_numbers,
     parse_footprint_id,
@@ -83,11 +84,23 @@ def test_place_circuit_applies_rotation_field(monkeypatch, tmp_path):
         "openhac.compiler.pcb_placement.resolve_pretty_directory",
         lambda _lib: str(tmp_path),
     )
+    monkeypatch.setattr(
+        "openhac.compiler.pcb_placement.collect_skidl_part_positions",
+        lambda _b: {p: (5.0, 5.0)},
+    )
 
     from openhac.compiler.pcb_placement import place_circuit_on_board
 
     pcb = _Pcb()
+
+    class _Child:
+        part = p
+
+    class _Mod:
+        components = [_Child()]
+
     board = Board(size_mm=(10, 10))
+    board.modules = [_Mod()]
     place_circuit_on_board(pcb, board, _PcbNew)
     fps = [x for x in pcb.items if isinstance(x, _Fp)]
     assert fps and fps[0].rot_deg == 45.0
@@ -159,6 +172,24 @@ class TestKicadModPadNumbers:
             "(pad 2 smd rect (at 1 0) (size 1 1) (layers F.Cu)))"
         )
         assert kicad_mod_pad_numbers(body) == {"1", "2"}
+
+
+def test_find_pad_for_pin_name_and_led_alias():
+    import os
+
+    pytest.importorskip("pcbnew")
+    import pcbnew
+
+    p = "/usr/share/kicad/footprints/Resistor_SMD.pretty/R_0603_1608Metric.kicad_mod"
+    if not os.path.isfile(p):
+        pytest.skip("KiCad stock footprints not at expected path")
+    plug = pcbnew.PCB_IO_MGR.PluginFind(pcbnew.PCB_IO_MGR.KICAD_SEXP)
+    fp = plug.FootprintLoad(os.path.dirname(p), "R_0603_1608Metric")
+    assert find_pad_for_pin(fp, "1", None) is not None
+    assert find_pad_for_pin(fp, "3", "1") is not None  # wrong num, name matches pad 1
+    # LED-style A/K → 1/2 when only numeric pads exist
+    assert find_pad_for_pin(fp, "9", "A") is not None
+    assert find_pad_for_pin(fp, "9", "K") is not None
 
 
 class TestPinPadCoverageWarnings:

@@ -281,25 +281,16 @@ def _get_graphic_for_type(sym_type: str, name: str, pin_count: int) -> str:
     return graphics.get(sym_type, _ic_graphic(name, pin_count))
 
 
-def write_generated_symbol_library(output_path: str, circuit, *, nickname: str = "OpenHaC") -> str | None:
-    """Write a KiCad ``.kicad_sym`` for SKiDL-native parts with component-appropriate symbols.
+def write_generated_symbol_library(output_path: str, circuit_or_parts, *, nickname: str = "OpenHaC") -> str | None:
+    """Write a KiCad ``.kicad_sym`` for parts with component-appropriate symbols.
 
     This prevents KiCad showing '?' placeholders when symbols are not available in system libraries.
     Generates type-appropriate symbols: resistors as zig-zags, capacitors as plates, etc.
     Returns the written path, or None if nothing was generated.
     """
-    parts = list(getattr(circuit, "parts", []) or [])
-    skidl_parts = []
-    try:
-        import skidl
-
-        for p in parts:
-            if getattr(p, "tool", None) == getattr(skidl, "SKIDL", None):
-                skidl_parts.append(p)
-    except Exception:
-        return None
-
-    if not skidl_parts:
+    # Accept either a circuit-like object with .parts or an iterable of parts.
+    parts = list(getattr(circuit_or_parts, "parts", None) or circuit_or_parts or [])
+    if not parts:
         return None
 
     out = Path(output_path)
@@ -360,13 +351,13 @@ def write_generated_symbol_library(output_path: str, circuit, *, nickname: str =
             return ref
         return "PART"
 
-    names = sorted({_pname(p) for p in skidl_parts})
+    names = sorted({_pname(p) for p in parts})
     if not names:
         return None
 
     # Map symbol name -> representative part (for pin list).
     by_name = {}
-    for p in skidl_parts:
+    for p in parts:
         n = _pname(p)
         if n and n not in by_name:
             by_name[n] = p
@@ -375,7 +366,8 @@ def write_generated_symbol_library(output_path: str, circuit, *, nickname: str =
     lines.append('(kicad_symbol_lib (version 20231120) (generator openhac)\n')
     for name in names:
         part = by_name[name]
-        pins = list(getattr(part, "pins", []) or [])
+        pins_raw = getattr(part, "pins", []) or []
+        pins = list(pins_raw.values()) if isinstance(pins_raw, dict) else list(pins_raw)
         ref_prefix = _get_ref_prefix(part)
         sym_type = _detect_symbol_type(part)
 
@@ -426,9 +418,12 @@ def write_generated_symbol_library(output_path: str, circuit, *, nickname: str =
 
 def _emit_symbol_instance(f, part, x, y, uuid_str: str) -> None:
     """Write a (symbol ...) S-expression block for a single part."""
-    lib = part_library_name(part)
-    name = (getattr(part, "name", None) or "").strip()
-    lib_id = f"{lib}:{name}" if lib else name
+    # Use the generated project-local library when present to avoid KiCad '?' placeholders.
+    # Symbol name should match the generator's `_pname()` selection (part.name/ref fallback).
+    sym_name = (getattr(part, "name", None) or "").strip()
+    if not sym_name or sym_name == "?":
+        sym_name = str(getattr(part, "ref", None) or getattr(part, "refdes", None) or "PART").strip() or "PART"
+    lib_id = f"OpenHaC:{sym_name}"
     rot = 0.0
     try:
         fields = getattr(part, "fields", None)
@@ -436,12 +431,27 @@ def _emit_symbol_instance(f, part, x, y, uuid_str: str) -> None:
             rot = float(fields.get("OpenHaC_Rotation_Deg"))
     except Exception:
         rot = 0.0
-    f.write(
-        f'  (symbol (lib_id "{lib_id}") (at {_fmt_mm(x)} {_fmt_mm(y)} {_fmt_mm(rot)}) (unit 1)\n'
-    )
-    f.write(f'    (in_bom yes) (on_board yes)\n')
+    ref = str(getattr(part, "ref", None) or getattr(part, "refdes", None) or "").strip() or "U?"
+    val = str(getattr(part, "value", None) or getattr(part, "name", None) or "").strip() or ref
+    fp = str(getattr(part, "footprint", None) or "").strip()
+
+    f.write(f'  (symbol (lib_id "{lib_id}") (at {_fmt_mm(x)} {_fmt_mm(y)} {_fmt_mm(rot)}) (unit 1)\n')
+    f.write('    (in_bom yes) (on_board yes) (fields_autoplaced yes)\n')
     f.write(f'    (uuid "{uuid_str}")\n')
-    f.write(f'  )\n')
+    # Minimal properties so KiCad actually renders/annotates the symbol.
+    f.write(f'    (property "Reference" "{ref}" (at {_fmt_mm(x)} {_fmt_mm(y - 2.54)} 0)\n')
+    f.write('      (effects (font (size 1.27 1.27) (thickness 0.15)))\n')
+    f.write('    )\n')
+    f.write(f'    (property "Value" "{val}" (at {_fmt_mm(x)} {_fmt_mm(y + 2.54)} 0)\n')
+    f.write('      (effects (font (size 1.27 1.27) (thickness 0.15)))\n')
+    f.write('    )\n')
+    f.write(f'    (property "Footprint" "{fp}" (at {_fmt_mm(x)} {_fmt_mm(y + 5.08)} 0)\n')
+    f.write('      (effects (font (size 1.27 1.27) (thickness 0.15)) (hide yes))\n')
+    f.write('    )\n')
+    f.write(f'    (property "Datasheet" "" (at {_fmt_mm(x)} {_fmt_mm(y + 7.62)} 0)\n')
+    f.write('      (effects (font (size 1.27 1.27) (thickness 0.15)) (hide yes))\n')
+    f.write('    )\n')
+    f.write('  )\n')
 
 
 def _emit_wire(f, x1, y1, x2, y2) -> None:
@@ -684,7 +694,17 @@ def _safe_sheet_filename(stem: str) -> str:
     return s or "sheet"
 
 
-def _emit_sheet_symbol(f, *, sheet_name: str, sheet_file: str, x: float, y: float, w: float, h: float) -> None:
+def _emit_sheet_symbol(
+    f,
+    *,
+    sheet_name: str,
+    sheet_file: str,
+    x: float,
+    y: float,
+    w: float,
+    h: float,
+    pin_names: list[str] | None = None,
+) -> None:
     """Emit a KiCad sheet symbol referencing a subsheet file.
 
     Uses global labels for cross-sheet connectivity (no sheet pins), so the hierarchy exists for readability
@@ -716,6 +736,14 @@ def _emit_sheet_symbol(f, *, sheet_name: str, sheet_file: str, x: float, y: floa
         + _fmt_mm(y + 3.0)
         + " 0) (effects (font (size 1.27 1.27))))\n"
     )
+
+    # Optional hierarchical pins (must be inside the (sheet ...) block for KiCad to parse).
+    if pin_names:
+        px = x
+        py = y + 5.0
+        for j, pname in enumerate(pin_names):
+            _emit_sheet_pin(f, name=pname, pin_type="passive", x=px, y=py + j * 2.54, rot=0.0)
+
     # Instances are optional for KiCad to open, but keep output minimal for determinism.
     f.write("  )\n")
 
@@ -807,16 +835,45 @@ def generate_schematic(
     pinpos_report_path: str | None = None,
     generated_symbol_lib_path: str | None = None,
 ) -> None:
-    """Generate a KiCad S-expression schematic file from the current default circuit (see ``openhac.circuit.get_default_circuit`` / ``get_circuit``)."""
+    """Generate a KiCad S-expression schematic file from the Board model.
+
+    Historically this function used SKiDL's ``default_circuit`` as the source of truth.
+    OpenHaC now supports a native Part/Net model; for schematic generation we derive
+    a minimal circuit-like view from ``board.modules`` so KiCad artifacts are emitted
+    even when SKiDL is not present or not used to store parts.
+    """
     logger.info(f"Synthesizing Logic Graph into 2D Schematic Array -> {output_path}")
 
-    try:
-        circuit = get_default_circuit()
-    except RuntimeError as e:
-        raise SchematicGenerationError(
-            "default_circuit is unavailable; cannot generate schematic. "
-            "Ensure SKiDL has been initialised before calling generate_schematic()."
-        ) from e
+    # Build a circuit-like view from Board modules/components.
+    class _BoardCircuitView:
+        def __init__(self, parts, nets):
+            self.parts = parts
+            self.nets = nets
+
+    parts: list[object] = []
+    seen_parts: set[int] = set()
+    for mod in getattr(board, "modules", []) or []:
+        for child in getattr(mod, "components", []) or []:
+            part = getattr(child, "part", None)
+            if part is None:
+                continue
+            pid = id(part)
+            if pid in seen_parts:
+                continue
+            seen_parts.add(pid)
+            parts.append(part)
+
+    nets: set[object] = set()
+    for part in parts:
+        for pin in getattr(part, "pins", {}).values() if isinstance(getattr(part, "pins", None), dict) else getattr(part, "pins", []) or []:
+            try:
+                n = getattr(pin, "net", None)
+            except Exception:
+                n = None
+            if n is not None:
+                nets.add(n)
+
+    circuit = _BoardCircuitView(tuple(parts), tuple(sorted(nets, key=_net_stable_key)))
 
     # If we generated a project-local .kicad_sym, prepend its directory so SCH-001 pinpos
     # resolver can find it (and wire endpoints land on real pin coordinates).
@@ -853,6 +910,12 @@ def generate_schematic(
         parts = sorted(list(circuit.parts), key=_part_stable_key)
 
         multi_sheet = bool(getattr(board, "schematic_multi_sheet", False)) or _truthy_env("OPENHAC_SCHEMATIC_MULTI_SHEET")
+        # Schematic style:
+        # - wires: emit explicit wires (can be messy for large designs)
+        # - labels: emit only net labels at pins (more readable, KiCad-native)
+        style = (os.environ.get("OPENHAC_SCHEMATIC_STYLE") or "").strip().lower()
+        if not style:
+            style = "labels" if len(parts) >= 25 else "wires"
 
         # Choose a resolver for label pin world coords in multi-sheet mode.
         if symbol_resolver is not None:
@@ -880,8 +943,34 @@ def generate_schematic(
                     part_uuid = _uuid_for(f"symbol:{ref}")
                     _emit_symbol_instance(f, part, x, y, part_uuid)
 
-                for x1, y1, x2, y2 in geom["wires"]:
-                    _emit_wire(f, x1, y1, x2, y2)
+                if style == "wires":
+                    for x1, y1, x2, y2 in geom["wires"]:
+                        _emit_wire(f, x1, y1, x2, y2)
+                else:
+                    # Label-driven schematic: place a label at each connected pin.
+                    # Do not depend on circuit.nets / net.pins (native + SKiDL variations);
+                    # instead scan pins off parts and group by pin.net.
+                    by_net: dict[object, list] = {}
+                    for part in parts:
+                        pins_raw = getattr(part, "pins", None)
+                        if isinstance(pins_raw, dict):
+                            pins_iter = list({id(p): p for p in pins_raw.values()}.values())
+                        else:
+                            pins_iter = list(pins_raw or [])
+                        for p in pins_iter:
+                            n = getattr(p, "net", None)
+                            if n is None:
+                                continue
+                            by_net.setdefault(n, []).append(p)
+                    for n in sorted(by_net.keys(), key=_net_stable_key):
+                        pins = [p for p in by_net.get(n, []) if getattr(p, "part", None) is not None]
+                        if len(pins) < 2:
+                            continue
+                        net_name = getattr(n, "name", None) or str(n)
+                        for p in sorted(pins, key=_pin_sort_key):
+                            px, py = part_placements.get(p.part, (0.0, 0.0))
+                            lxw, lyw = _pin_world_xy(p, p.part, (px, py), label_resolver)
+                            _emit_net_label(f, net_name, lxw + 2.54, lyw)
 
                 for net_name, lx, ly in geom["labels"]:
                     _emit_net_label(f, net_name, lx, ly)
@@ -925,29 +1014,15 @@ def generate_schematic(
                     fname = f"{stem}.{_safe_sheet_filename(mod_name)}.kicad_sch"
                     x0 = sx
                     y0 = sy + i * (sh + gap)
-                    _emit_sheet_symbol(f, sheet_name=mod_name, sheet_file=fname, x=x0, y=y0, w=sw, h=sh)
-
-                    # Add hierarchical pins for this module's declared interfaces (if we can find the module object).
-                    mod_obj = None
-                    for mm in getattr(board, "modules", None) or []:
-                        if str(getattr(mm, "name", "")) == mod_name:
-                            mod_obj = mm
-                            break
-                    if mod_obj is not None:
-                        nets = _interface_nets_for_module(mod_obj)
-                        # Stable unique names.
-                        seen: set[str] = set()
-                        pin_names: list[str] = []
-                        for net in nets:
-                            nn = str(getattr(net, "name", "") or "").strip()
-                            if nn and nn not in seen:
-                                seen.add(nn)
-                                pin_names.append(nn)
-                        # Pin placement: left side of sheet.
-                        px = x0
-                        py = y0 + 5.0
-                        for j, pname in enumerate(pin_names[:20]):  # cap to avoid insane sheet symbol
-                            _emit_sheet_pin(f, name=pname, pin_type="passive", x=px, y=py + j * 2.54, rot=0.0)
+                    _emit_sheet_symbol(
+                        f,
+                        sheet_name=mod_name,
+                        sheet_file=fname,
+                        x=x0,
+                        y=y0,
+                        w=sw,
+                        h=sh,
+                    )
 
                 f.write(")\n")
 

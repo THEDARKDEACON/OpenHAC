@@ -474,7 +474,12 @@ class Board:
             for iface_name, interface in module.required_interfaces.items():
                 for net in interface.signals:
                     try:
-                        pins = list(net.get_pins()) if hasattr(net, "get_pins") else [net]
+                        if hasattr(net, "get_pins"):
+                            pins = list(net.get_pins())
+                        elif hasattr(net, "pins"):
+                            pins = list(getattr(net, "pins") or [])
+                        else:
+                            pins = [net]
                     except Exception:
                         pins = []
                     if len(pins) < 2:
@@ -511,6 +516,9 @@ class Board:
         allow_risky_part_lookups: bool = False,
         kicad_sch_erc: bool = False,
         kicad_sch_erc_format: str = "report",
+        bbox_padding_mm: float = 0.5,
+        deoverlap_max_iters: int = 200,
+        deoverlap_step_mm: float = 0.75,
         source_script_path: str | os.PathLike[str] | None = None,
         output_dir: str | os.PathLike[str] | None = None,
         release_zip_path: str | os.PathLike[str] | None = None,
@@ -537,6 +545,18 @@ class Board:
         ctx = OpenHaCCompileContext(self, allow_risky_part_lookups=allow_risky_part_lookups)
         tok = compile_context_set(ctx)
         try:
+            try:
+                self.bbox_padding_mm = float(bbox_padding_mm or 0.0)
+            except Exception:
+                self.bbox_padding_mm = 0.5
+            try:
+                self.deoverlap_max_iters = int(deoverlap_max_iters or 0)
+            except Exception:
+                self.deoverlap_max_iters = 200
+            try:
+                self.deoverlap_step_mm = float(deoverlap_step_mm or 0.0)
+            except Exception:
+                self.deoverlap_step_mm = 0.75
             state = CompileState(
                 board=self,
                 project_name=project_name,
@@ -546,6 +566,7 @@ class Board:
                 allow_risky_part_lookups=allow_risky_part_lookups,
                 kicad_sch_erc=kicad_sch_erc,
                 kicad_sch_erc_format=kicad_sch_erc_format,
+                bbox_padding_mm=float(bbox_padding_mm or 0.0),
                 source_script_path=source_script_path,
                 output_dir=output_dir,
                 release_zip_path=release_zip_path,

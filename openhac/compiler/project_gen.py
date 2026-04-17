@@ -22,7 +22,38 @@ def write_sym_lib_table(*, output_dir: str | os.PathLike[str], sym_path: str, ni
     return str(p)
 
 
-def generate_project_file(output_path: str, *, sym_lib_path: str | None = None, sym_lib_nick: str = "OpenHaC"):
+def write_fp_lib_table(*, output_dir: str | os.PathLike[str], footprint_libs: list[str]) -> str:
+    """Write a project-local KiCad ``fp-lib-table`` for the used footprint libraries.
+
+    KiCad 8/9 uses fp-lib-table to resolve ``Library:Footprint`` strings to ``*.pretty`` dirs.
+    We generate entries only for libraries actually used by the design, pointing at the
+    local install footprint root via ${KICAD9_FOOTPRINT_DIR} (fallback to /usr/share/kicad/footprints).
+    """
+    out_dir = Path(output_dir)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    p = out_dir / "fp-lib-table"
+
+    root_var = "${KICAD9_FOOTPRINT_DIR}"
+    root_fallback = "/usr/share/kicad/footprints"
+    root = root_var if os.environ.get("KICAD9_FOOTPRINT_DIR") else root_fallback
+
+    libs = []
+    for lib in sorted({str(x).strip() for x in (footprint_libs or []) if str(x).strip()}):
+        libs.append(
+            f'  (lib (name "{lib}") (type "KiCad") (uri "{root}/{lib}.pretty") (options "") (descr ""))\n'
+        )
+    body = "(fp_lib_table\n" + "".join(libs) + ")\n"
+    p.write_text(body, encoding="utf-8")
+    return str(p)
+
+
+def generate_project_file(
+    output_path: str,
+    *,
+    sym_lib_path: str | None = None,
+    sym_lib_nick: str = "OpenHaC",
+    footprint_libs: list[str] | None = None,
+):
     logger.info(f"Synthesizing KiCad Project Directory Matrix -> {output_path}")
     
     # The modern .kicad_pro file is a strict JSON wrapper stitching the ecosystem together
@@ -55,3 +86,10 @@ def generate_project_file(output_path: str, *, sym_lib_path: str | None = None, 
             write_sym_lib_table(output_dir=out_dir, sym_path=sym_lib_path, nickname=sym_lib_nick)
         except Exception as e:
             logger.warning("Failed to write sym-lib-table (continuing): %s", e)
+
+    if footprint_libs:
+        try:
+            out_dir = str(Path(output_path).resolve().parent)
+            write_fp_lib_table(output_dir=out_dir, footprint_libs=list(footprint_libs))
+        except Exception as e:
+            logger.warning("Failed to write fp-lib-table (continuing): %s", e)

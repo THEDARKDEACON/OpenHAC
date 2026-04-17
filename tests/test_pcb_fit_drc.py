@@ -1,6 +1,9 @@
 from __future__ import annotations
 
-from openhac.compiler.pcb_fit import pcb_fit_violations_from_pcbnew_board
+from openhac.compiler.pcb_fit import (
+    count_footprint_bbox_overlap_pairs,
+    pcb_fit_violations_from_pcbnew_board,
+)
 
 
 class _FakeBBox:
@@ -71,6 +74,48 @@ def test_pcb_fit_flags_footprint_outside_outline_bbox() -> None:
     viols = pcb_fit_violations_from_pcbnew_board(pcb, board, pcbnew_mod=_FakePcbnew, margin_mm=0.0)
     assert any("U2" in v and "outside" in v.lower() for v in viols)
     assert not any("U1" in v and "outside" in v.lower() for v in viols)
+
+
+def test_count_footprint_bbox_overlap_pairs_detects_overlap() -> None:
+    pcb = _FakePcb(
+        edge_bbox=_FakeBBox(0, 0, 100_000, 100_000),
+        footprints=[
+            _FakeFootprint("U1", _FakeBBox(10_000, 10_000, 5_000, 5_000)),
+            _FakeFootprint("U2", _FakeBBox(12_000, 10_000, 5_000, 5_000)),
+        ],
+    )
+    assert count_footprint_bbox_overlap_pairs(pcb, _FakePcbnew, clearance_mm=0.0) == 1
+
+
+def test_count_footprint_bbox_overlap_pairs_clearance_separates() -> None:
+    pcb = _FakePcb(
+        edge_bbox=_FakeBBox(0, 0, 100_000, 100_000),
+        footprints=[
+            _FakeFootprint("U1", _FakeBBox(10_000, 10_000, 5_000, 5_000)),
+            _FakeFootprint("U2", _FakeBBox(16_000, 10_000, 5_000, 5_000)),
+        ],
+    )
+    assert count_footprint_bbox_overlap_pairs(pcb, _FakePcbnew, clearance_mm=0.0) == 0
+
+
+def test_pcb_fit_flags_fp_fp_bbox_overlap_when_enabled() -> None:
+    pcb = _FakePcb(
+        edge_bbox=_FakeBBox(0, 0, 100_000, 100_000),
+        footprints=[
+            _FakeFootprint("U1", _FakeBBox(10_000, 10_000, 5_000, 5_000)),
+            _FakeFootprint("U2", _FakeBBox(12_000, 10_000, 5_000, 5_000)),
+        ],
+    )
+    board = _FakeBoard()
+    viols = pcb_fit_violations_from_pcbnew_board(
+        pcb,
+        board,
+        pcbnew_mod=_FakePcbnew,
+        margin_mm=0.0,
+        check_fp_overlap=True,
+        fp_overlap_clearance_mm=0.0,
+    )
+    assert any("overlap" in v.lower() and "U1" in v for v in viols)
 
 
 def test_pcb_fit_flags_footprint_overlapping_keepout_rect() -> None:

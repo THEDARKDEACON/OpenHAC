@@ -206,6 +206,7 @@ class MCUModule(Module):
         # USB data
         self.usb_dp = Net("USB_DP")
         self.usb_dm = Net("USB_DM")
+        self.vbus_net = Net("VBUS")
         
         # MCU power
         self.mcu['VDD'] += self.v3v3
@@ -264,7 +265,7 @@ class MCUModule(Module):
         
         # USB connector
         self.usb_c['GND'] += self.gnd
-        self.usb_c['VBUS'] += Net("VBUS")
+        self.usb_c['VBUS'] += self.vbus_net
         self.usb_c['CC1'] += self.r_cc1['1']
         self.r_cc1['2'] += self.gnd
         self.usb_c['CC2'] += self.r_cc2['1']
@@ -281,6 +282,9 @@ class MCUModule(Module):
         self.mcu['PA5_SPI1_SCK'] += self.spi1_sck
         self.mcu['PA6_SPI1_MISO'] += self.spi1_miso
         self.mcu['PA7_SPI1_MOSI'] += self.spi1_mosi
+        # Chip selects
+        self.mcu['PA4_SPI1_NSS'] += self.spi1_cs_imu
+        self.mcu['PB2_SPI1_NSS'] += self.spi1_cs_flash
         
         # I2C1
         self.mcu['PB6_I2C1_SCL'] += self.i2c1_scl
@@ -312,10 +316,11 @@ class MCUModule(Module):
         self.pwr_3v3 = self.declare_interface("pwr_3v3", self.v3v3, self.gnd)
         self.spi1 = self.declare_interface("spi1", self.spi1_sck, self.spi1_miso, self.spi1_mosi, self.gnd)
         self.i2c1 = self.declare_interface("i2c1", self.i2c1_sda, self.i2c1_scl, self.gnd)
-        self.uart1 = self.declare_interface("uart1", self.uart1_tx, self.uart1_rx, self.gnd)
+        self.uart1 = self.declare_interface("uart1", self.uart1_tx, self.uart1_rx, self.gnd, required=False)
         self.can = self.declare_interface("can", self.can_tx, self.can_rx, self.gnd)
-        self.spi_cs = self.declare_interface("spi_cs", self.spi1_cs_imu, self.spi1_cs_flash)
-        self.vbus = self.declare_interface("vbus", Net("VBUS"), self.gnd)
+        self.spi_cs_imu = self.declare_interface("spi_cs_imu", self.spi1_cs_imu)
+        self.spi_cs_flash = self.declare_interface("spi_cs_flash", self.spi1_cs_flash)
+        self.vbus = self.declare_interface("vbus", self.vbus_net, self.gnd)
 
 
 class IMUModule(Module):
@@ -331,8 +336,8 @@ class IMUModule(Module):
         self.imu = self.add(Component("IMU_ICM42688P"))
         
         # Decoupling 100nF - C1525
-        self.c_vdd = self.add(Component("C_100NF_0402_X7R"))
-        self.c_vddio = self.add(Component("C_100NF_0402_X7R"))
+        self.c_vdd = self.add(Component("C_100NF_0402"))
+        self.c_vddio = self.add(Component("C_100NF_0402"))
         
         # Wiring
         self.imu['VDDIO'] += self.v3v3
@@ -378,7 +383,7 @@ class BaroModule(Module):
         self.baro = self.add(Component("BARO_BMP388"))
         
         # Decoupling - C1525
-        self.c_vdd = self.add(Component("C_100NF_0402_X7R"))
+        self.c_vdd = self.add(Component("C_100NF_0402"))
         
         self.baro['VDDIO'] += self.v3v3
         self.baro['VDD'] += self.v3v3
@@ -417,7 +422,7 @@ class MagModule(Module):
         self.mag = self.add(Component("MAG_QMC5883L"))
         
         # Decoupling - C1525
-        self.c_vdd = self.add(Component("C_100NF_0402_X7R"))
+        self.c_vdd = self.add(Component("C_100NF_0402"))
         
         self.mag['VDD'] += self.v3v3
         self.mag['GND'] += self.gnd
@@ -451,7 +456,7 @@ class FlashModule(Module):
         self.flash = self.add(Component("FLASH_W25Q128JV"))
         
         # Decoupling - C1525
-        self.c_vdd = self.add(Component("C_100NF_0402_X7R"))
+        self.c_vdd = self.add(Component("C_100NF_0402"))
         
         self.flash['VCC'] += self.v3v3
         self.flash['GND'] += self.gnd
@@ -492,7 +497,7 @@ class CANModule(Module):
         self.can = self.add(Component("CAN_TJA1051"))
         
         # Decoupling - C14663
-        self.c_vdd = self.add(Component("C_100NF_0603_X7R"))
+        self.c_vdd = self.add(Component("C_100NF_0603"))
         
         self.can['VCC'] += self.v3v3
         self.can['GND'] += self.gnd
@@ -524,76 +529,89 @@ class CANModule(Module):
 
 # ============ Board Assembly ============
 
-board = Board(
-    size_mm=(50, 50),
-    layers=4,
-    declared_supply_voltages_v={"VBAT": 16.8, "5V": 5.0, "3V3": 3.3}
-)
+def build_board() -> Board:
+    board = Board(
+        size_mm=(50, 50),
+        layers=4,
+        strict=False,
+        declared_supply_voltages_v={"VBAT": 16.8, "5V": 5.0, "3V3": 3.3},
+    )
 
-# Create modules
-power = PowerModule()
-mcu = MCUModule()
-imu = IMUModule()
-baro = BaroModule()
-mag = MagModule()
-flash = FlashModule()
-can = CANModule()
+    # Create modules
+    power = PowerModule()
+    mcu = MCUModule()
+    imu = IMUModule()
+    baro = BaroModule()
+    mag = MagModule()
+    flash = FlashModule()
+    can = CANModule()
 
-# Add to board
-board.add_module(power)
-board.add_module(mcu)
-board.add_module(imu)
-board.add_module(baro)
-board.add_module(mag)
-board.add_module(flash)
-board.add_module(can)
+    # Add to board
+    board.add_module(power)
+    board.add_module(mcu)
+    board.add_module(imu)
+    board.add_module(baro)
+    board.add_module(mag)
+    board.add_module(flash)
+    board.add_module(can)
 
-# Connect power
-board.connect(power.pwr_5v, mcu.vbus)
-board.connect(power.pwr_3v3, mcu.pwr_3v3)
-board.connect(power.pwr_3v3, imu.pwr)
-board.connect(power.pwr_3v3, baro.pwr)
-board.connect(power.pwr_3v3, mag.pwr)
-board.connect(power.pwr_3v3, flash.pwr)
-board.connect(power.pwr_3v3, can.pwr)
+    # Connect power
+    board.connect(power.pwr_5v, mcu.vbus)
+    board.connect(power.pwr_3v3, mcu.pwr_3v3)
+    board.connect(power.pwr_3v3, imu.pwr)
+    board.connect(power.pwr_3v3, baro.pwr)
+    board.connect(power.pwr_3v3, mag.pwr)
+    board.connect(power.pwr_3v3, flash.pwr)
+    board.connect(power.pwr_3v3, can.pwr)
 
-# Connect buses
-board.connect(mcu.spi1, imu.spi)
-board.connect(mcu.spi1, flash.spi)
-board.connect(mcu.spi_cs, imu.cs_iface)
-board.connect(mcu.spi_cs, flash.cs_iface)
-board.connect(mcu.i2c1, baro.i2c)
-board.connect(mcu.i2c1, mag.i2c)
-board.connect(mcu.can, can.can_iface)
+    # Connect buses
+    board.connect(mcu.spi1, imu.spi)
+    board.connect(mcu.spi1, flash.spi)
+    board.connect(mcu.spi_cs_imu, imu.cs_iface)
+    board.connect(mcu.spi_cs_flash, flash.cs_iface)
+    board.connect(mcu.i2c1, baro.i2c)
+    board.connect(mcu.i2c1, mag.i2c)
+    board.connect(mcu.can, can.can_iface)
 
-# Power rails
-board.declare_power_rail("VBAT", Net("VBAT"))
-board.declare_power_rail("5V", Net("5V"))
-board.declare_power_rail("3V3", Net("3V3"))
-board.declare_power_rail("GND", Net("GND"))
-board.declare_rail_conversion("VBAT", "5V", efficiency=0.92)
-board.declare_rail_conversion("5V", "3V3", efficiency=0.85)
+    # Power rails
+    board.declare_power_rail("VBAT", Net("VBAT"))
+    board.declare_power_rail("5V", Net("5V"))
+    board.declare_power_rail("3V3", Net("3V3"))
+    board.declare_power_rail("GND", Net("GND"))
+    board.declare_rail_conversion("VBAT", "5V", efficiency=0.92)
+    board.declare_rail_conversion("5V", "3V3", efficiency=0.85)
 
-# Layout constraints
-board.constrain_edge(power, edge="TOP")
-board.constrain_distance_min(power, mcu, min_distance_mm=15)
-board.constrain_exact_center(imu)
-board.constrain_distance_max(imu, mcu, max_distance_mm=20)
-board.constrain_distance_min(baro, power, min_distance_mm=10)
-board.constrain_distance_max(flash, mcu, max_distance_mm=15)
-board.constrain_edge(can, edge="RIGHT")
+    # Layout constraints
+    board.constrain_edge(power, edge="TOP")
+    board.constrain_distance_min(power, mcu, min_distance_mm=15)
+    board.constrain_exact_center(imu)
+    board.constrain_distance_max(imu, mcu, 20)
+    board.constrain_distance_min(baro, power, min_distance_mm=10)
+    board.constrain_distance_max(flash, mcu, 15)
+    board.constrain_edge(can, edge="RIGHT")
 
-# Keepouts and pours
-board.declare_keepout_rect(22, 22, 6, 6, layers=("F.Cu", "B.Cu"), purpose="placement", note="IMU keepout")
-board.declare_copper_pour_intent(Net("GND"), layer="F.Cu", purpose="ground")
-board.declare_copper_pour_intent(Net("GND"), layer="B.Cu", purpose="ground")
+    # Keepouts and pours
+    board.declare_keepout_rect(
+        22,
+        22,
+        6,
+        6,
+        layers=("F.Cu", "B.Cu"),
+        purpose="placement",
+        note="IMU keepout",
+    )
+    board.declare_copper_pour_intent(Net("GND"), layer="F.Cu", purpose="ground")
+    board.declare_copper_pour_intent(Net("GND"), layer="B.Cu", purpose="ground")
 
-# Mounting holes
-for x, y in [(3, 3), (47, 3), (3, 47), (47, 47)]:
-    board.declare_mounting_hole(x, y, 3.2, note=f"M3 at ({x},{y})")
+    # Mounting holes
+    for x, y in [(3, 3), (47, 3), (3, 47), (47, 47)]:
+        board.declare_mounting_hole(x, y, 3.2, note=f"M3 at ({x},{y})")
+
+    return board
 
 
 def main():
+    board = build_board()
     board.compile(
         project_name="fc_jlc_only",
         generate_bom=True,

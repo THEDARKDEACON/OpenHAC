@@ -55,6 +55,22 @@ _V7_COLUMNS = {
     "manufacturer_info_json": "TEXT",  # JSON: {"location": "CN", "certs": ["ISO9001"]}
     # Application info
     "typical_applications": "TEXT",  # Comma-separated reference design names
+    # Documentation links
+    "datasheet_url": "TEXT",
+    "product_url": "TEXT",
+    # Provenance / audit
+    "pinout_source": "TEXT",  # e.g. digikey|jlcpcb|seed_file|manual
+    "enriched_at_utc": "TEXT",  # ISO8601
+    # Footprint verification / resolution (KiCad install-specific)
+    "footprint_verified": "INTEGER",  # 1/0
+    "footprint_resolved": "TEXT",  # normalized Library:Name when auto-resolved
+    "footprint_notes": "TEXT",  # warnings / ambiguity notes
+}
+
+# Columns added in schema v8 (vendor enrich persistence)
+_V8_COLUMNS = {
+    "package": "TEXT",  # vendor package / case code (e.g. SOT-23, 0603)
+    "stock": "INTEGER",  # distributor stock level when APIs expose it
 }
 
 
@@ -75,6 +91,7 @@ class DatabaseManager:
             self._migrate_v5_part_alternates_group(conn)
             self._migrate_v6_pinout(conn)
             self._migrate_v7_complete_data(conn)
+            self._migrate_v8_vendor_enrich_fields(conn)
             conn.commit()
 
     @staticmethod
@@ -139,6 +156,15 @@ class DatabaseManager:
             if col_name not in existing:
                 conn.execute(f"ALTER TABLE components ADD COLUMN {col_name} {col_def}")
 
+    @staticmethod
+    def _migrate_v8_vendor_enrich_fields(conn):
+        """Add package/stock used by ``update_component_from_vendor`` (idempotent)."""
+        cursor = conn.execute("PRAGMA table_info(components)")
+        existing = {row[1] for row in cursor.fetchall()}
+        for col_name, col_def in _V8_COLUMNS.items():
+            if col_name not in existing:
+                conn.execute(f"ALTER TABLE components ADD COLUMN {col_name} {col_def}")
+
     def get_component(self, generic_name: str) -> dict:
         """Fetches a component by its generic name."""
         with sqlite3.connect(self.db_path) as conn:
@@ -149,6 +175,17 @@ class DatabaseManager:
             if row:
                 return dict(row)
             return None
+
+    def get_component_by_supplier_sku(self, supplier_sku: str) -> dict | None:
+        """Fetch a component by its supplier SKU (e.g. LCSC Cxxxxx)."""
+        if not supplier_sku:
+            return None
+        with sqlite3.connect(self.db_path) as conn:
+            conn.row_factory = sqlite3.Row
+            cur = conn.cursor()
+            cur.execute("SELECT * FROM components WHERE supplier_sku = ?", (supplier_sku,))
+            row = cur.fetchone()
+            return dict(row) if row else None
 
     def insert_component(self, component_data: dict, ignore_duplicate: bool = False):
         """Inserts a component into the database.
@@ -175,6 +212,63 @@ class DatabaseManager:
             )
             conn.commit()
             return cursor.lastrowid if cursor.rowcount > 0 else None
+
+    def update_component_fields(self, generic_name: str, updates: dict) -> bool:
+        """Update arbitrary component columns for an existing row (best-effort).
+
+        Returns True if an UPDATE was executed with at least one field.
+        """
+        if not generic_name:
+            return False
+        updates = dict(updates or {})
+        updates.pop("generic_name", None)
+        if not updates:
+            return False
+        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+        params = list(updates.values()) + [generic_name]
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(f"UPDATE components SET {set_clause} WHERE generic_name = ?", params)
+            conn.commit()
+        return True
+
+    @staticmethod
+    def _jit_db_write_is_strict() -> bool:
+        v = (os.environ.get("OPENHAC_COMPILE_GOAL") or "").strip().lower()
+        if v == "fabrication":
+            return True
+        strict = (os.environ.get("OPENHAC_STRICT_DB_WRITES") or "").strip().lower()
+        if strict in ("1", "true", "yes", "on"):
+            return True
+        return False
+
+    class DatabaseWriteError(RuntimeError):
+        pass
+
+    def safe_insert_component(
+        self,
+        component_data: dict,
+        *,
+        ignore_duplicate: bool = True,
+        strict: bool | None = None,
+        warn_prefix: str = "DB insert failed",
+    ) -> bool:
+        """Insert a component with unified strict vs warn semantics.
+
+        - strict=True: raise DatabaseWriteError on failure
+        - strict=False: emit UserWarning on failure and return False
+        - strict=None: choose based on env (fabrication => strict)
+        """
+        import warnings as _w
+
+        strict_eff = self._jit_db_write_is_strict() if strict is None else bool(strict)
+        try:
+            self.insert_component(component_data, ignore_duplicate=ignore_duplicate)
+            return True
+        except Exception as exc:
+            if strict_eff:
+                raise self.DatabaseWriteError(f"{warn_prefix}: {exc}") from exc
+            _w.warn(f"{warn_prefix}: {exc}", UserWarning, stacklevel=2)
+            return False
 
     def list_part_alternates(self, primary_generic: str) -> list[dict]:
         """Return ranked alternate offers for a primary ``generic_name`` (LIB-002)."""
@@ -258,6 +352,104 @@ class DatabaseManager:
                 params,
             )
             return [dict(row) for row in cursor.fetchall()]
+
+    def update_component_from_vendor(self, generic_name: str, part_info) -> bool:
+        """Update component with enriched data from vendor APIs.
+        
+        Args:
+            generic_name: The component's generic_name in the database
+            part_info: PartInfo object from vendor APIs containing V7 data
+            
+        Returns:
+            True if update successful, False otherwise
+        """
+        import json
+        
+        updates = {}
+
+        # Core docs / links
+        if getattr(part_info, "datasheet_url", None):
+            updates["datasheet_url"] = part_info.datasheet_url
+        if getattr(part_info, "product_url", None):
+            updates["product_url"] = part_info.product_url
+
+        # Refresh basic descriptive fields when present (helps docs + BOM quality).
+        if getattr(part_info, "manufacturer", None):
+            updates["manufacturer"] = part_info.manufacturer
+        if getattr(part_info, "mpn", None):
+            updates["mpn"] = part_info.mpn
+        if getattr(part_info, "supplier_sku", None):
+            updates["supplier_sku"] = part_info.supplier_sku
+        if getattr(part_info, "description", None):
+            updates["description"] = part_info.description
+        if getattr(part_info, "category", None):
+            updates["category"] = part_info.category
+        if getattr(part_info, "package", None):
+            updates["package"] = part_info.package
+        if getattr(part_info, "stock", None) is not None:
+            try:
+                updates["stock"] = int(part_info.stock)
+            except Exception:
+                pass
+        
+        # Pinout
+        if part_info.pinout:
+            updates["pinout_json"] = json.dumps(part_info.pinout)
+            updates["pinout_source"] = getattr(part_info, "source_vendor", None) or updates.get("pinout_source") or ""
+        try:
+            from datetime import timezone
+            updates["enriched_at_utc"] = part_info.last_updated.astimezone(timezone.utc).isoformat()
+        except Exception:
+            pass
+        
+        # Thermal data
+        if part_info.thermal_data:
+            updates["thermal_json"] = json.dumps(part_info.thermal_data)
+        
+        # Package dimensions
+        if part_info.package_dimensions:
+            pd = part_info.package_dimensions
+            if pd.get("length"):
+                updates["package_length_mm"] = pd["length"]
+            if pd.get("width"):
+                updates["package_width_mm"] = pd["width"]
+            if pd.get("height"):
+                updates["package_height_mm"] = pd["height"]
+        
+        # Lifecycle and compliance
+        if part_info.lifecycle_status:
+            updates["lifecycle_status"] = part_info.lifecycle_status
+        if part_info.compliance_flags:
+            updates["compliance_flags"] = ",".join(part_info.compliance_flags)
+        
+        # Supply chain
+        if part_info.lead_time_days:
+            updates["lead_time_days"] = part_info.lead_time_days
+        
+        # Alternative MPNs
+        if part_info.alternative_mpns:
+            updates["alternative_mpns"] = json.dumps(part_info.alternative_mpns)
+        
+        # Manufacturer info
+        if part_info.manufacturer_info:
+            updates["manufacturer_info_json"] = json.dumps(part_info.manufacturer_info)
+        
+        if not updates:
+            return False
+        
+        # Build UPDATE query
+        set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
+        params = list(updates.values()) + [generic_name]
+        
+        with sqlite3.connect(self.db_path) as conn:
+            conn.execute(
+                f"UPDATE components SET {set_clause} WHERE generic_name = ?",
+                params
+            )
+            conn.commit()
+            
+        logger.info(f"Updated {generic_name} with vendor data: {list(updates.keys())}")
+        return True
 
     # ------------------------------------------------------------------
     # Parametric Query Engine (Phase 2)
@@ -425,9 +617,15 @@ class DatabaseManager:
                 )
                 new_part = fetch_and_map_part(query_params)
                 if new_part:
-                    self.insert_component(new_part, ignore_duplicate=True)
+                    self.safe_insert_component(
+                        new_part,
+                        ignore_duplicate=True,
+                        warn_prefix="JIT DB insert failed",
+                    )
                     return new_part, True
             except Exception as exc:
+                if isinstance(exc, self.DatabaseWriteError):
+                    raise
                 # JIT failed — this is non-fatal, return None
                 import warnings as _w
                 _w.warn(

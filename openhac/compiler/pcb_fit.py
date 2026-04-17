@@ -41,6 +41,13 @@ class _BBox:
         return True
 
 
+def _expand_bbox(bb: _BBox, d: int) -> _BBox:
+    """Expand an axis-aligned bbox by *d* internal units on each side."""
+    if d <= 0:
+        return bb
+    return _BBox(left=bb.left - d, top=bb.top - d, right=bb.right + d, bottom=bb.bottom + d)
+
+
 def _bbox_from_any(bb) -> _BBox:
     """Extract bbox edges from KiCad-style BOX2I-ish objects or simple fakes."""
     # KiCad BOX2I often provides: GetX/GetY/GetWidth/GetHeight (top-left) or GetLeft/Right/Top/Bottom
@@ -67,6 +74,60 @@ def _bbox_from_any(bb) -> _BBox:
     raise TypeError(f"Unsupported bbox type: {type(bb)!r}")
 
 
+def _footprint_ref_bbox_pairs(pcb) -> list[tuple[str, _BBox]]:
+    """Collect (reference, bbox) for each footprint; skips entries with no bbox."""
+    fps = []
+    try:
+        fps = list(pcb.GetFootprints())
+    except Exception:
+        try:
+            fps = list(pcb.Footprints())
+        except Exception:
+            return []
+    out: list[tuple[str, _BBox]] = []
+    for fp in fps:
+        try:
+            ref = str(fp.GetReference())
+        except Exception:
+            ref = "?"
+        try:
+            fbb = _bbox_from_any(fp.GetBoundingBox())
+        except Exception:
+            continue
+        out.append((ref, fbb))
+    return out
+
+
+def count_footprint_bbox_overlap_pairs(
+    pcb,
+    pcbnew_mod,
+    *,
+    clearance_mm: float = 0.0,
+) -> int:
+    """Count unordered footprint pairs whose axis-aligned bboxes overlap.
+
+    When *clearance_mm* > 0, each bbox is expanded by half the clearance (in internal
+    units) before testing, approximating a minimum gap between outlines.
+    """
+    pairs = _footprint_ref_bbox_pairs(pcb)
+    n = len(pairs)
+    if n < 2:
+        return 0
+    try:
+        clr_iu = int(pcbnew_mod.FromMM(float(clearance_mm)))
+        half = int(clr_iu // 2)
+    except Exception:
+        half = 0
+    cnt = 0
+    for i in range(n):
+        ri, bi = pairs[i]
+        for j in range(i + 1, n):
+            rj, bj = pairs[j]
+            if _expand_bbox(bi, half).overlaps(_expand_bbox(bj, half)):
+                cnt += 1
+    return cnt
+
+
 def pcb_fit_violations_from_pcbnew_board(
     pcb,
     board,
@@ -74,6 +135,8 @@ def pcb_fit_violations_from_pcbnew_board(
     pcbnew_mod,
     margin_mm: float = 0.0,
     check_keepouts: bool = True,
+    check_fp_overlap: bool = False,
+    fp_overlap_clearance_mm: float = 0.0,
 ) -> list[str]:
     """Return PCB fit violations from a loaded pcbnew board.
 
@@ -154,6 +217,39 @@ def pcb_fit_violations_from_pcbnew_board(
             if fbb.overlaps(kb):
                 violations.append(f"PCB fit: footprint {ref} overlaps keepout_rect[{i}] (bbox approximation).")
 
+    if check_fp_overlap:
+        try:
+            clr_iu = int(pcbnew_mod.FromMM(float(fp_overlap_clearance_mm)))
+            half = int(clr_iu // 2)
+        except Exception:
+            half = 0
+        pair_boxes: list[tuple[str, _BBox]] = []
+        for fp in fps:
+            try:
+                ref = str(fp.GetReference())
+            except Exception:
+                ref = "?"
+            try:
+                fbb = _bbox_from_any(fp.GetBoundingBox())
+            except Exception:
+                continue
+            pair_boxes.append((ref, fbb))
+        reported = 0
+        max_msgs = 48
+        for i in range(len(pair_boxes)):
+            ri, bi = pair_boxes[i]
+            for j in range(i + 1, len(pair_boxes)):
+                rj, bj = pair_boxes[j]
+                if _expand_bbox(bi, half).overlaps(_expand_bbox(bj, half)):
+                    if reported < max_msgs:
+                        violations.append(
+                            f"PCB fit: footprint bboxes overlap (approx): {ri!r} vs {rj!r} "
+                            f"(clearance_mm={fp_overlap_clearance_mm})."
+                        )
+                    reported += 1
+        if reported > max_msgs:
+            violations.append(f"PCB fit: {reported - max_msgs} additional footprint bbox overlap(s) omitted.")
+
     return violations
 
 
@@ -163,6 +259,8 @@ def pcb_fit_violations_for_pcb_path(
     *,
     margin_mm: float = 0.0,
     check_keepouts: bool = True,
+    check_fp_overlap: bool = False,
+    fp_overlap_clearance_mm: float = 0.0,
 ) -> list[str]:
     """Load a `.kicad_pcb` and return fit violations; returns empty if pcbnew is unavailable."""
     try:
@@ -179,5 +277,7 @@ def pcb_fit_violations_for_pcb_path(
         pcbnew_mod=pcbnew,
         margin_mm=margin_mm,
         check_keepouts=check_keepouts,
+        check_fp_overlap=check_fp_overlap,
+        fp_overlap_clearance_mm=fp_overlap_clearance_mm,
     )
 
