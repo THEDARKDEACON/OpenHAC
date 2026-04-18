@@ -32,6 +32,31 @@ def test_discover_skips_when_pinout_present() -> None:
     assert discover_enrich_targets_from_board(board) == []
 
 
+def test_discover_includes_placeholder_pinout() -> None:
+    """Placeholder-only pinout (name == num) still needs enrichment."""
+    board = MagicMock()
+    mod = MagicMock()
+    comp = MagicMock()
+    comp.generic_name = "U_PLH"
+    comp._comp_data = {"pinout_json": '[{"num":"1","name":"1"}]'}
+    comp.db = _FakeDB(
+        {
+            "U_PLH": {
+                "generic_name": "U_PLH",
+                "mpn": "X",
+                "supplier_sku": "C999",
+                "pinout_json": '[{"num":"1","name":"1"}]',
+            }
+        }
+    )
+    mod.components = [comp]
+    board._get_all_modules.return_value = [mod]
+
+    assert discover_enrich_targets_from_board(board) == [
+        {"generic_name": "U_PLH", "mpn": "X", "supplier_sku": "C999"},
+    ]
+
+
 def test_discover_includes_mpn_when_row_missing_pinout() -> None:
     board = MagicMock()
     mod = MagicMock()

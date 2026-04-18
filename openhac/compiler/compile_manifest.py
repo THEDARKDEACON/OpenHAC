@@ -184,6 +184,7 @@ def _compile_env_flags() -> dict[str, bool]:
         "openhac_deterministic_uuids": _truthy_env("OPENHAC_DETERMINISTIC_UUIDS"),
         "openhac_deterministic_schematic": _truthy_env("OPENHAC_DETERMINISTIC_SCHEMATIC"),
         "openhac_deterministic_manifest": _truthy_env("OPENHAC_DETERMINISTIC_MANIFEST"),
+        "openhac_strict_footprint_pin_pad": _truthy_env("OPENHAC_STRICT_FOOTPRINT_PIN_PAD"),
     }
 
 

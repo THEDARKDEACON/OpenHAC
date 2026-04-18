@@ -24,6 +24,20 @@ def write_compile_post_report(state) -> str | None:
     base = Path(state.output_dir).resolve() if state.output_dir is not None else Path.cwd().resolve()
     out = base / f"{state.project_name}.openhac-compile-post-report.md"
     out_json = base / f"{state.project_name}.openhac-needs-enrichment.json"
+    out_pinpad = base / f"{state.project_name}.openhac-pin-pad-report.json"
+
+    pin_pad_records: list[dict] = []
+    try:
+        from openhac.compiler.pcb_placement import pin_pad_mismatch_records
+
+        if not getattr(state, "skip_layout", False):
+            pin_pad_records = pin_pad_mismatch_records(state.board)
+    except Exception:
+        pin_pad_records = []
+    try:
+        out_pinpad.write_text(json.dumps(pin_pad_records, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    except Exception:
+        pass
 
     try:
         from openhac.core import base as core_base
@@ -117,7 +131,11 @@ def write_compile_post_report(state) -> str | None:
         lines.append("- (none captured)")
     lines.append("")
     lines.append("## Pad / footprint mismatches (net not attached)")
-    lines.append(f"- **count**: `{len(pad_events)}`")
+    lines.append(
+        f"- **preflight records** (pin keys vs `.kicad_mod` pads): `{len(pin_pad_records)}` "
+        f"— see `{out_pinpad.name}` (fields: refdes, generic_name, footprint, pin_num/name, net, footprint_pads_sample)."
+    )
+    lines.append(f"- **placement events captured**: `{len(pad_events)}`")
     if pad_events:
         lines.append("")
         lines.append("Top entries:")

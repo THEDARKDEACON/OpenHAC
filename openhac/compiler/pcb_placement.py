@@ -80,10 +80,93 @@ def footprint_pad_numbers_from_library(lib_name: str, fp_name: str) -> set[str] 
         return kicad_mod_pad_numbers(f.read())
 
 
+class _BoardCircuitView:
+    __slots__ = ("parts",)
+
+    def __init__(self, parts: tuple[object, ...] | list[object]):
+        self.parts = tuple(parts)
+
+
+def circuit_parts_from_board(board) -> list[object]:
+    """SKiDL parts attached under ``board.modules`` (same iteration as PCB placement)."""
+    parts: list[object] = []
+    seen: set[int] = set()
+    for mod in getattr(board, "modules", []) or []:
+        for child in getattr(mod, "components", []) or []:
+            part = getattr(child, "part", None)
+            if part is None:
+                continue
+            pid = id(part)
+            if pid in seen:
+                continue
+            seen.add(pid)
+            parts.append(part)
+    return parts
+
+
+def circuit_view_from_board(board) -> _BoardCircuitView:
+    """Circuit-like object with ``.parts`` for :func:`pin_pad_coverage_warnings`."""
+    return _BoardCircuitView(circuit_parts_from_board(board))
+
+
+def pin_pad_coverage_warnings_for_board(board) -> list[str]:
+    """Same as :func:`pin_pad_coverage_warnings` but uses ``board.modules`` (recommended for OpenHaC designs)."""
+    return pin_pad_coverage_warnings(circuit_view_from_board(board))
+
+
+def pin_pad_mismatch_records(board) -> list[dict]:
+    """Structured pad↔pin mismatches for reports (ref, footprint, pins, sample pads from ``.kicad_mod``)."""
+    try:
+        from skidl import NC as SKIDL_NC
+    except Exception:
+        SKIDL_NC = None
+    out: list[dict] = []
+    for part in circuit_parts_from_board(board):
+        fpid = parse_footprint_id(getattr(part, "footprint", None))
+        if fpid is None:
+            continue
+        pads = footprint_pad_numbers_from_library(fpid[0], fpid[1])
+        if pads is None:
+            continue
+        def _pad_sort_key(x: str) -> tuple:
+            xs = str(x)
+            return (0, int(xs)) if xs.isdigit() else (1, xs.lower())
+
+        pads_sample = sorted(pads, key=_pad_sort_key)[:48]
+        for pin in _iter_unique_pins(part):
+            try:
+                if SKIDL_NC is not None and pin.net is SKIDL_NC:
+                    continue
+            except Exception:
+                pass
+            if pin.net is None:
+                continue
+            pnum = str(getattr(pin, "num", None) or getattr(pin, "number", None) or "")
+            pname = str(getattr(pin, "name", "") or "").strip()
+            if not pnum and not pname:
+                continue
+            if _pin_covers_footprint_pad(pnum, pname, pads):
+                continue
+            key = pnum or pname
+            out.append(
+                {
+                    "refdes": str(getattr(part, "ref", "") or ""),
+                    "generic_name": str(getattr(part, "name", "") or "").strip(),
+                    "footprint": str(getattr(part, "footprint", "") or ""),
+                    "pin_num": str(pnum),
+                    "pin_name": str(pname),
+                    "net": str(getattr(pin.net, "name", pin.net)),
+                    "footprint_pads_sample": pads_sample,
+                }
+            )
+    return sorted(out, key=lambda d: (d.get("refdes", ""), d.get("pin_num", ""), d.get("pin_name", "")))
+
+
 def pin_pad_coverage_warnings(circuit) -> list[str]:
     """Pre-flight: SKiDL pins on nets whose numbers are absent from the footprint's ``.kicad_mod``.
 
     Does not require ``pcbnew``. Use before ``place_circuit_on_board`` to catch pad-name mismatches (PCB-002).
+    Pass a circuit with ``.parts`` (e.g. from :func:`circuit_view_from_board`).
     """
     try:
         from skidl import NC as SKIDL_NC
@@ -120,23 +203,51 @@ def pin_pad_coverage_warnings(circuit) -> list[str]:
     return sorted(messages)
 
 
+def _pin_synonyms_for_matching(pnum: str, pname: str) -> set[str]:
+    """Extra tokens to match against KiCad footprint pad names (USB-C, naming drift)."""
+    out: set[str] = set()
+    for s in (pnum, pname):
+        s = str(s or "").strip()
+        if not s:
+            continue
+        out.add(s)
+        out.add(s.replace("_", ""))
+        out.add(s.replace("-", ""))
+    n = str(pname or "").strip().lower()
+    p = str(pnum or "").strip().lower()
+    blob = f"{n} {p}".strip()
+    # USB 2.0 / Type-C common synonyms (footprints vary: D+/D-, A6/A7, pad names)
+    usb_pairs = (
+        (("dp", "usb_dp", "d+"), ("D+", "DP", "USB_DP", "A6", "B6")),
+        (("dm", "usb_dm", "d-"), ("D-", "DM", "USB_DM", "A7", "B7")),
+        (("cc1",), ("CC1", "A5")),
+        (("cc2",), ("CC2", "B5")),
+        (("sbu1",), ("SBU1",)),
+        (("sbu2",), ("SBU2",)),
+        (("vbus",), ("VBUS", "A4", "B4", "A9", "B9")),
+        (("gnd", "ground"), ("GND", "A1", "B1", "A12", "B12")),
+    )
+    for keys, vals in usb_pairs:
+        if any(k in blob for k in keys):
+            out.update(vals)
+    return {x for x in out if x}
+
+
 def _pin_covers_footprint_pad(pnum: str, pname: str, pads: set[str]) -> bool:
     """Return True if *pnum* or *pname* (case-insensitive) exists on the footprint pad set."""
     if not pads:
         return False
-    n = str(pnum or "").strip()
-    nm = str(pname or "").strip()
     low = {str(p).lower() for p in pads}
-    if n and n in pads:
-        return True
-    if nm and nm in pads:
-        return True
-    if n and n.lower() in low:
-        return True
-    if nm and nm.lower() in low:
-        return True
+    for tok in _pin_synonyms_for_matching(pnum, pname):
+        if tok in pads:
+            return True
+        t = tok.lower()
+        if t in low:
+            return True
     # LED A/K ↔ 1/2 when footprint is numeric-only
     alias = {"a": "1", "k": "2", "c": "2", "anode": "1", "cathode": "2"}
+    n = str(pnum or "").strip()
+    nm = str(pname or "").strip()
     for lbl in (nm, n):
         al = lbl.lower()
         if al in alias and alias[al] in pads:
@@ -271,6 +382,111 @@ def collect_skidl_part_positions(board) -> dict[object, tuple[float, float]]:
     return positions
 
 
+def apply_pcbnew_pack_to_module_bboxes(board) -> int:
+    """Shrink-wrap each module's ``width``/``height`` using the same row-pack as placement, with real pcbnew bboxes.
+
+    Runs **after** :meth:`openhac.core.base.Module.recalculate_bbox_from_components` so the final
+    module rectangle is ``max(heuristic, pcbnew_pack * inflate)``. Skips when pcbnew is unavailable,
+    ``OPENHAC_MODULE_BBOX_FROM_FP_PACK`` is disabled, or ``OPENHAC_PLACEMENT_USE_FP_BBOX`` is off.
+
+    Returns:
+        Number of modules whose width or height **increased** from this pass.
+    """
+    if os.environ.get("OPENHAC_MODULE_BBOX_FROM_FP_PACK", "1").strip().lower() in (
+        "0",
+        "false",
+        "no",
+        "off",
+    ):
+        return 0
+    if os.environ.get("OPENHAC_PLACEMENT_USE_FP_BBOX", "1").strip().lower() in ("0", "false", "no", "off"):
+        return 0
+    try:
+        import pcbnew as pcbnew_mod  # type: ignore
+    except Exception:
+        logger.debug("apply_pcbnew_pack_to_module_bboxes: pcbnew not available")
+        return 0
+
+    plugin = _get_kicad_sexp_plugin(pcbnew_mod)
+    fp_cache: dict[tuple[str, str], tuple[float, float]] = {}
+    try:
+        gap_mm = float(os.environ.get("OPENHAC_PLACEMENT_FP_GAP_MM", "").strip() or 1.0)
+    except Exception:
+        gap_mm = 1.0
+    try:
+        grid_mm = float(os.environ.get("OPENHAC_PLACEMENT_GRID_MM", "").strip() or 7.0)
+    except Exception:
+        grid_mm = 7.0
+    try:
+        cols = int(os.environ.get("OPENHAC_PLACEMENT_GRID_COLS", "").strip() or 6)
+    except Exception:
+        cols = 6
+    cols = max(1, cols)
+    try:
+        inflate = float(os.environ.get("OPENHAC_MODULE_PACK_INFLATE", "").strip() or 1.15)
+    except Exception:
+        inflate = 1.15
+
+    all_mods = getattr(board, "all_modules", None)
+    if not all_mods and hasattr(board, "_get_all_modules"):
+        all_mods = board._get_all_modules()
+    if not all_mods:
+        all_mods = list(getattr(board, "modules", []) or [])
+
+    enlarged = 0
+    for mod in all_mods:
+        items: list[object] = []
+        for child in getattr(mod, "components", []) or []:
+            if isinstance(child, Module):
+                continue
+            part = getattr(child, "part", None)
+            if part is None:
+                continue
+            items.append(part)
+        if not items:
+            continue
+
+        ax, ay = 0.0, 0.0
+        x_cursor, y_row = ax, ay
+        row_max_h = 0.0
+        col = 0
+        max_r = ax
+        max_b = ay
+        for part in items:
+            fw, fh = _fp_size_mm_for_part(part, plugin, pcbnew_mod, fp_cache, grid_mm=grid_mm)
+            left, top = x_cursor, y_row
+            max_r = max(max_r, left + fw)
+            max_b = max(max_b, top + fh)
+            row_max_h = max(row_max_h, fh + gap_mm)
+            col += 1
+            x_cursor += fw + gap_mm
+            if col >= cols:
+                col = 0
+                x_cursor = ax
+                y_row += row_max_h
+                row_max_h = 0.0
+
+        w_pack = max(0.0, max_r - ax) * inflate
+        h_pack = max(0.0, max_b - ay) * inflate
+        if w_pack <= 0 or h_pack <= 0:
+            continue
+
+        old_w, old_h = float(mod.width), float(mod.height)
+        mod.width = max(old_w, w_pack)
+        mod.height = max(old_h, h_pack)
+        if mod.width > old_w + 1e-9 or mod.height > old_h + 1e-9:
+            enlarged += 1
+            logger.debug(
+                "Module %r bbox from pcbnew pack: %.2fx%.2f mm (was %.2fx%.2f)",
+                getattr(mod, "name", "?"),
+                mod.width,
+                mod.height,
+                old_w,
+                old_h,
+            )
+    return enlarged
+
+
 def _get_kicad_sexp_plugin(pcbnew):
     return pcbnew.PCB_IO_MGR.PluginFind(pcbnew.PCB_IO_MGR.KICAD_SEXP)
 
@@ -311,6 +527,11 @@ def find_pad_for_pin(fp, pin_num: str, pin_name: str | None = None):
         candidates.append(raw_num)
     if raw_name and raw_name not in candidates:
         candidates.append(raw_name)
+    seen_c: set[str] = set(candidates)
+    for syn in _pin_synonyms_for_matching(raw_num, raw_name):
+        if syn and syn not in seen_c:
+            seen_c.add(syn)
+            candidates.append(syn)
 
     # KiCad FOOTPRINT API (preferred — matches GUI behavior)
     try:
@@ -396,25 +617,7 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
     except Exception:
         SKIDL_NC = None
 
-    # Derive a circuit-like view from Board modules so placement works with native Parts.
-    class _BoardCircuitView:
-        def __init__(self, parts):
-            self.parts = parts
-
-    parts: list[object] = []
-    seen: set[int] = set()
-    for mod in getattr(board, "modules", []) or []:
-        for child in getattr(mod, "components", []) or []:
-            part = getattr(child, "part", None)
-            if part is None:
-                continue
-            pid = id(part)
-            if pid in seen:
-                continue
-            seen.add(pid)
-            parts.append(part)
-
-    circuit = _BoardCircuitView(tuple(parts))
+    circuit = circuit_view_from_board(board)
     for msg in pin_pad_coverage_warnings(circuit):
         logger.debug("%s", msg)
 
@@ -521,6 +724,7 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
                     _PAD_MISMATCH_EVENTS.append(
                         {
                             "refdes": str(getattr(part, "ref", "") or ""),
+                            "generic_name": str(getattr(part, "name", "") or "").strip(),
                             "footprint": str(getattr(part, "footprint", "") or ""),
                             "pin_num": str(pnum),
                             "pin_name": str(getattr(pin, "name", "") or ""),

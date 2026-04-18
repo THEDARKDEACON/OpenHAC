@@ -30,10 +30,6 @@ _LABEL_AT_RE = re.compile(
     re.MULTILINE,
 )
 
-_COLS_PER_ROW = 10
-_CELL_SPACING = 10.0
-
-
 def _truthy_env(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
 
@@ -68,13 +64,42 @@ class PartPlacement:
     uuid: str
 
 
+def _schematic_layout_params() -> tuple[int, float]:
+    """Columns per row and cell spacing (KiCad units) for schematic symbol placement.
+
+    Override with ``OPENHAC_SCHEMATIC_COLS_PER_ROW`` and ``OPENHAC_SCHEMATIC_CELL_SPACING``.
+    Defaults are wider than the old 10×10 grid to reduce overlapping symbol bounding boxes.
+    """
+    try:
+        cols = int(os.environ.get("OPENHAC_SCHEMATIC_COLS_PER_ROW", "").strip() or 8)
+    except Exception:
+        cols = 8
+    try:
+        spacing = float(os.environ.get("OPENHAC_SCHEMATIC_CELL_SPACING", "").strip() or 16.0)
+    except Exception:
+        spacing = 16.0
+    return max(1, cols), max(1.0, spacing)
+
+
+def schematic_symbol_lib_key(part) -> str:
+    """Symbol name used in generated ``.kicad_sch`` / ``lib_id`` ``OpenHaC:<key>`` (must match ``.kicad_sym``)."""
+    name = (getattr(part, "name", None) or "").strip()
+    ref = (getattr(part, "ref", None) or "").strip()
+    if name and name != "?":
+        return name
+    if ref and ref != "?":
+        return ref
+    return "PART"
+
+
 def _assign_grid_positions(parts) -> dict:
-    """Row-major grid assignment with 10-unit cell spacing, 10 columns per row."""
+    """Row-major grid assignment; spacing/columns from :func:`_schematic_layout_params`."""
+    cols, cell = _schematic_layout_params()
     positions = {}
     for idx, part in enumerate(parts):
-        col = idx % _COLS_PER_ROW
-        row = idx // _COLS_PER_ROW
-        positions[part] = (col * _CELL_SPACING, row * _CELL_SPACING)
+        col = idx % cols
+        row = idx // cols
+        positions[part] = (col * cell, row * cell)
     return positions
 
 
@@ -99,6 +124,7 @@ def _assign_positions_grouped_by_module(parts) -> dict:
     if not any(_module_field(p) for p in parts):
         return _assign_grid_positions(parts)
 
+    cols, cell = _schematic_layout_params()
     groups: dict[str, list] = {}
     for p in parts:
         groups.setdefault(_module_field(p), []).append(p)
@@ -106,15 +132,15 @@ def _assign_positions_grouped_by_module(parts) -> dict:
     module_names = sorted(groups.keys(), key=lambda s: (s == "", s))
     y0 = 0.0
     positions: dict = {}
-    gap = _CELL_SPACING * 1.5
+    gap = cell * 1.5
     for m in module_names:
         ps = sorted(groups[m], key=_part_stable_key)
         for idx, part in enumerate(ps):
-            col = idx % _COLS_PER_ROW
-            row = idx // _COLS_PER_ROW
-            positions[part] = (col * _CELL_SPACING, y0 + row * _CELL_SPACING)
-        rows = (len(ps) + _COLS_PER_ROW - 1) // _COLS_PER_ROW
-        y0 += max(1, rows) * _CELL_SPACING + gap
+            col = idx % cols
+            row = idx // cols
+            positions[part] = (col * cell, y0 + row * cell)
+        rows = (len(ps) + cols - 1) // cols
+        y0 += max(1, rows) * cell + gap
 
     return positions
 
@@ -281,33 +307,38 @@ def _get_graphic_for_type(sym_type: str, name: str, pin_count: int) -> str:
     return graphics.get(sym_type, _ic_graphic(name, pin_count))
 
 
-def write_generated_symbol_library(output_path: str, circuit_or_parts, *, nickname: str = "OpenHaC") -> str | None:
+def write_generated_symbol_library(
+    output_path: str, circuit_or_parts, *, nickname: str = "OpenHaC"
+) -> tuple[str | None, str | None]:
     """Write a KiCad ``.kicad_sym`` for parts with component-appropriate symbols.
 
     This prevents KiCad showing '?' placeholders when symbols are not available in system libraries.
     Generates type-appropriate symbols: resistors as zig-zags, capacitors as plates, etc.
-    Returns the written path, or None if nothing was generated.
+
+    Returns ``(path, lib_symbols_embed)`` where *lib_symbols_embed* is the body to place inside
+    a schematic ``(lib_symbols ...)`` block (so symbols resolve even when sym-lib-table is missing).
+    Either or both may be ``None`` if nothing was generated or embed is disabled.
     """
     # Accept either a circuit-like object with .parts or an iterable of parts.
     parts = list(getattr(circuit_or_parts, "parts", None) or circuit_or_parts or [])
     if not parts:
-        return None
+        return None, None
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    def _sym_header(name: str, ref_prefix: str, sym_type: str, pin_count: int) -> str:
-        # Choose appropriate reference prefix and graphic
-        graphic = _get_graphic_for_type(sym_type, name, pin_count)
+    def _sym_header(outer_key: str, inner_base: str, ref_prefix: str, sym_type: str, pin_count: int) -> str:
+        # Choose appropriate reference prefix and graphic (inner_base drives unit name and IC bbox).
+        graphic = _get_graphic_for_type(sym_type, inner_base, pin_count)
         return (
-            f'  (symbol "{name}" (in_bom yes) (on_board yes)\n'
+            f'  (symbol "{outer_key}" (in_bom yes) (on_board yes)\n'
             f'    (property "Reference" "{ref_prefix}" (at 0 5.08 0) (effects (font (size 1.27 1.27))))\n'
-            f'    (property "Value" "{name}" (at 0 -5.08 0) (effects (font (size 1.27 1.27))))\n'
-            f'    (symbol "{name}_0_1"\n'
+            f'    (property "Value" "{inner_base}" (at 0 -5.08 0) (effects (font (size 1.27 1.27))))\n'
+            f'    (symbol "{inner_base}_0_1"\n'
             f'{graphic}\n'
         )
 
-    def _sym_footer(name: str) -> str:
+    def _sym_footer() -> str:
         return "    )\n  )\n"
 
     def _pin_block(num: str, pname: str, x: float, y: float, rot: float, side: str) -> str:
@@ -339,30 +370,19 @@ def write_generated_symbol_library(output_path: str, circuit_or_parts, *, nickna
                 break
         return prefix.upper() if prefix else 'U'
 
-    # Stable order by symbol name.
-    def _pname(p) -> str:
-        name = (getattr(p, "name", None) or "").strip()
-        ref = (getattr(p, "ref", None) or "").strip()
-        # Use actual part name if available, not "?"
-        if name and name != "?":
-            return name
-        # Fall back to reference designator if no name
-        if ref and ref != "?":
-            return ref
-        return "PART"
-
-    names = sorted({_pname(p) for p in parts})
+    names = sorted({schematic_symbol_lib_key(p) for p in parts})
     if not names:
-        return None
+        return None, None
 
     # Map symbol name -> representative part (for pin list).
     by_name = {}
     for p in parts:
-        n = _pname(p)
+        n = schematic_symbol_lib_key(p)
         if n and n not in by_name:
             by_name[n] = p
 
     lines = []
+    embed_chunks: list[str] = []
     lines.append('(kicad_symbol_lib (version 20231120) (generator openhac)\n')
     for name in names:
         part = by_name[name]
@@ -371,8 +391,7 @@ def write_generated_symbol_library(output_path: str, circuit_or_parts, *, nickna
         ref_prefix = _get_ref_prefix(part)
         sym_type = _detect_symbol_type(part)
 
-        lines.append(_sym_header(name, ref_prefix, sym_type, len(pins)))
-
+        pin_lines: list[str] = []
         # Pin placement: left/right for 2-pin components, around rectangle for ICs
         if sym_type in ('resistor', 'capacitor', 'inductor', 'diode', 'led', 'fuse') and len(pins) == 2:
             # Horizontal: pins on left and right
@@ -381,7 +400,7 @@ def write_generated_symbol_library(output_path: str, circuit_or_parts, *, nickna
                 pname = str(getattr(pin, "name", "") or num)
                 x = -5.08 if i == 0 else 5.08
                 rot = 180 if i == 0 else 0
-                lines.append(_pin_block(num, pname, x, 0, rot, "left" if i == 0 else "right"))
+                pin_lines.append(_pin_block(num, pname, x, 0, rot, "left" if i == 0 else "right"))
         elif sym_type in ('crystal',) and len(pins) >= 2:
             # Crystal: pins on left/right
             pin_positions = [(-5.08, 0, 180), (5.08, 0, 0)]
@@ -390,7 +409,7 @@ def write_generated_symbol_library(output_path: str, circuit_or_parts, *, nickna
                 pname = str(getattr(pin, "name", "") or num)
                 if i < len(pin_positions):
                     x, y, rot = pin_positions[i]
-                    lines.append(_pin_block(num, pname, x, y, rot, "left" if x < 0 else "right"))
+                    pin_lines.append(_pin_block(num, pname, x, y, rot, "left" if x < 0 else "right"))
         else:
             # IC-style: pins on left and right edges
             height_pins = max(len(pins) // 2, 4)
@@ -402,27 +421,42 @@ def write_generated_symbol_library(output_path: str, circuit_or_parts, *, nickna
                 if i < len(pins) // 2:
                     # Left side, top to bottom
                     y = h - (i * 2.54)
-                    lines.append(_pin_block(num, pname, left_x, y, 0, "left"))
+                    pin_lines.append(_pin_block(num, pname, left_x, y, 0, "left"))
                 else:
                     # Right side, bottom to top
                     idx = i - (len(pins) + 1) // 2
                     y = -h + (idx * 2.54)
-                    lines.append(_pin_block(num, pname, right_x, y, 180, "right"))
+                    pin_lines.append(_pin_block(num, pname, right_x, y, 180, "right"))
 
-        lines.append(_sym_footer(name))
+        lines.append(_sym_header(name, name, ref_prefix, sym_type, len(pins)))
+        lines.extend(pin_lines)
+        lines.append(_sym_footer())
+
+        # Qualified outer name for (lib_symbols ...) embed in .kicad_sch (matches lib_id OpenHaC:name).
+        embed_chunks.append(_sym_header(f"{nickname}:{name}", name, ref_prefix, sym_type, len(pins)))
+        embed_chunks.extend(pin_lines)
+        embed_chunks.append(_sym_footer())
     lines.append(")\n")
 
     out.write_text("".join(lines), encoding="utf-8")
-    return str(out)
+
+    def _nest_for_lib_symbols(body: str) -> str:
+        lines_out: list[str] = []
+        for line in body.splitlines(True):
+            if line.strip():
+                lines_out.append("  " + line)
+            else:
+                lines_out.append(line)
+        return "".join(lines_out)
+
+    embed_body = _nest_for_lib_symbols("".join(embed_chunks))
+    return str(out), embed_body
 
 
 def _emit_symbol_instance(f, part, x, y, uuid_str: str) -> None:
     """Write a (symbol ...) S-expression block for a single part."""
     # Use the generated project-local library when present to avoid KiCad '?' placeholders.
-    # Symbol name should match the generator's `_pname()` selection (part.name/ref fallback).
-    sym_name = (getattr(part, "name", None) or "").strip()
-    if not sym_name or sym_name == "?":
-        sym_name = str(getattr(part, "ref", None) or getattr(part, "refdes", None) or "PART").strip() or "PART"
+    sym_name = schematic_symbol_lib_key(part)
     lib_id = f"OpenHaC:{sym_name}"
     rot = 0.0
     try:
@@ -827,6 +861,21 @@ def _labels_for_module_sheet(circuit, module_name: str, placements: dict, resolv
     return labels
 
 
+def _sch_embed_enabled() -> bool:
+    return os.environ.get("OPENHAC_SCHEMATIC_EMBED_SYMBOLS", "1").strip().lower() not in ("0", "false", "no", "off")
+
+
+def _write_kicad_sch_header(f, file_uuid: str, embedded_lib_symbols: str | None) -> None:
+    f.write('(kicad_sch (version 20231120) (generator openhac)\n')
+    f.write(f'  (uuid "{file_uuid}")\n')
+    f.write('  (paper "A4")\n')
+    emb = embedded_lib_symbols if (_sch_embed_enabled() and embedded_lib_symbols) else None
+    if emb:
+        f.write("  (lib_symbols\n")
+        f.write(emb)
+        f.write("  )\n")
+
+
 def generate_schematic(
     output_path: str,
     board,
@@ -834,6 +883,7 @@ def generate_schematic(
     symbol_resolver: SchematicPinResolver | None = None,
     pinpos_report_path: str | None = None,
     generated_symbol_lib_path: str | None = None,
+    embedded_lib_symbols: str | None = None,
 ) -> None:
     """Generate a KiCad S-expression schematic file from the Board model.
 
@@ -862,6 +912,19 @@ def generate_schematic(
                 continue
             seen_parts.add(pid)
             parts.append(part)
+
+    # SKiDL-only flows / tests: parts may live on the default circuit without OpenHaC modules.
+    if not parts:
+        try:
+            circ = get_default_circuit()
+            for p in getattr(circ, "parts", None) or []:
+                pid = id(p)
+                if pid in seen_parts:
+                    continue
+                seen_parts.add(pid)
+                parts.append(p)
+        except Exception:
+            pass
 
     nets: set[object] = set()
     for part in parts:
@@ -932,10 +995,7 @@ def generate_schematic(
 
         if not multi_sheet:
             with open(output_path, "w", encoding="utf-8") as f:
-                # Header
-                f.write('(kicad_sch (version 20231120) (generator openhac)\n')
-                f.write(f'  (uuid "{file_uuid}")\n')
-                f.write('  (paper "A4")\n')
+                _write_kicad_sch_header(f, file_uuid, embedded_lib_symbols)
 
                 for part in parts:
                     x, y = part_placements[part]
@@ -989,9 +1049,7 @@ def generate_schematic(
 
             # Write root sheet with sheet symbols.
             with open(output_path, "w", encoding="utf-8") as f:
-                f.write('(kicad_sch (version 20231120) (generator openhac)\n')
-                f.write(f'  (uuid "{file_uuid}")\n')
-                f.write('  (paper "A4")\n')
+                _write_kicad_sch_header(f, file_uuid, embedded_lib_symbols)
 
                 # Root-level parts (no module tag).
                 root_parts = sorted(by_mod.get("", []) or [], key=_part_stable_key)
@@ -1014,6 +1072,17 @@ def generate_schematic(
                     fname = f"{stem}.{_safe_sheet_filename(mod_name)}.kicad_sch"
                     x0 = sx
                     y0 = sy + i * (sh + gap)
+                    mod_obj = None
+                    for mm in getattr(board, "modules", []) or []:
+                        if str(getattr(mm, "name", "")) == mod_name:
+                            mod_obj = mm
+                            break
+                    sheet_pins: list[str] = []
+                    if mod_obj is not None:
+                        for net in _interface_nets_for_module(mod_obj):
+                            nn = str(getattr(net, "name", "") or "").strip()
+                            if nn:
+                                sheet_pins.append(nn)
                     _emit_sheet_symbol(
                         f,
                         sheet_name=mod_name,
@@ -1022,6 +1091,7 @@ def generate_schematic(
                         y=y0,
                         w=sw,
                         h=sh,
+                        pin_names=sheet_pins or None,
                     )
 
                 f.write(")\n")
@@ -1033,9 +1103,7 @@ def generate_schematic(
                 sheet_parts = sorted(by_mod.get(mod_name, []) or [], key=_part_stable_key)
 
                 with open(sheet_file, "w", encoding="utf-8") as sf:
-                    sf.write('(kicad_sch (version 20231120) (generator openhac)\n')
-                    sf.write(f'  (uuid "{sheet_uuid}")\n')
-                    sf.write('  (paper "A4")\n')
+                    _write_kicad_sch_header(sf, sheet_uuid, embedded_lib_symbols)
                     for part in sheet_parts:
                         x, y = part_placements[part]
                         ref = str(getattr(part, "ref", "") or "?")

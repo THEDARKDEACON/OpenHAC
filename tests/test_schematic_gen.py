@@ -157,7 +157,7 @@ def test_generate_schematic_emits_rotation_from_part_field(tmp_path, monkeypatch
     out = tmp_path / "rot.kicad_sch"
     generate_schematic(str(out), Board(size_mm=(10, 10)))
     text = out.read_text(encoding="utf-8")
-    assert '(symbol (lib_id "Device:R") (at ' in text
+    assert '(symbol (lib_id "OpenHaC:R") (at ' in text
     assert " 90" in text
 
 

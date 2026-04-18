@@ -11,6 +11,12 @@ import tempfile
 
 import pytest
 
+from openhac.core.dotenv_load import apply_kicad_env_aliases, load_repo_dotenv
+
+# Match CLI: load repo .env and mirror KICAD9_* before any test imports SKiDL.
+load_repo_dotenv(quiet=True)
+apply_kicad_env_aliases()
+
 
 @pytest.fixture()
 def tmp_db(tmp_path):

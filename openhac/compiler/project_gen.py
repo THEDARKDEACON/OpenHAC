@@ -5,6 +5,26 @@ from pathlib import Path
 
 logger = logging.getLogger("openhac.project")
 
+
+def footprint_library_names_from_board(board) -> list[str]:
+    """Collect KiCad footprint library nicknames (``Lib`` in ``Lib:Footprint``) from placed parts."""
+    libs: set[str] = set()
+    try:
+        for mod in getattr(board, "modules", []) or []:
+            for child in getattr(mod, "components", []) or []:
+                p = getattr(child, "part", None)
+                if p is None:
+                    continue
+                fp = str(getattr(p, "footprint", "") or "").strip()
+                if ":" in fp:
+                    lib = fp.split(":", 1)[0].strip()
+                    if lib:
+                        libs.add(lib)
+    except Exception:
+        return []
+    return sorted(libs)
+
+
 def write_sym_lib_table(*, output_dir: str | os.PathLike[str], sym_path: str, nickname: str = "OpenHaC") -> str:
     """Write a KiCad ``sym-lib-table`` pointing at *sym_path* (project-local symbols)."""
     out_dir = Path(output_dir)

@@ -517,6 +517,7 @@ class Board:
         kicad_sch_erc: bool = False,
         kicad_sch_erc_format: str = "report",
         bbox_padding_mm: float = 0.5,
+        module_clearance_mm: float = 0.0,
         deoverlap_max_iters: int = 200,
         deoverlap_step_mm: float = 0.75,
         source_script_path: str | os.PathLike[str] | None = None,
@@ -550,6 +551,10 @@ class Board:
             except Exception:
                 self.bbox_padding_mm = 0.5
             try:
+                self.module_clearance_mm = float(module_clearance_mm or 0.0)
+            except Exception:
+                self.module_clearance_mm = 0.0
+            try:
                 self.deoverlap_max_iters = int(deoverlap_max_iters or 0)
             except Exception:
                 self.deoverlap_max_iters = 200
@@ -567,6 +572,7 @@ class Board:
                 kicad_sch_erc=kicad_sch_erc,
                 kicad_sch_erc_format=kicad_sch_erc_format,
                 bbox_padding_mm=float(bbox_padding_mm or 0.0),
+                module_clearance_mm=float(getattr(self, "module_clearance_mm", 0.0) or 0.0),
                 source_script_path=source_script_path,
                 output_dir=output_dir,
                 release_zip_path=release_zip_path,

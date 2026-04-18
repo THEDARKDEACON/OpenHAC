@@ -68,7 +68,7 @@ python3 -m openhac doctor --strict-layout   # optional preflight
 openhac compile my_design.py --name my_board -o out/
 ```
 
-Use `openhac compile --help` for flags (`--no-route`, `--skip-layout`, `--deterministic`, `--compile-goal fabrication`, auto-enrich, etc.).
+See **`openhac compile` flags and examples** below. The authoritative list is `openhac compile --help`.
 
 **FreeRouting:**
 
@@ -80,6 +80,77 @@ export FREEROUTING_JAR=/path/to/freerouting.jar
 
 ```bash
 openhac export fab my_board.kicad_pcb -o ./gerbers
+```
+
+---
+
+## `openhac compile` flags
+
+Run `openhac compile --help` for the full list. Common flags:
+
+| Flag | Purpose |
+|------|---------|
+| `script` | Path to the hardware `.py` file (required). |
+| `-o`, `--output-dir` | Directory for netlist, BOM, PCB, manifest, schematic, project. |
+| `--name` | Project basename (default: script stem). |
+| `--no-route`, `--no-autoroute`, `--skip-autoroute` | Same behavior: skip FreeRouting / autorouter (PCB placement still runs unless layout is skipped). |
+| `--skip-layout` | Skip `pcbnew` PCB generation and autoroute (sets `OPENHAC_SKIP_LAYOUT=1` for the run). |
+| `--no-schematic` | Skip `.kicad_sch` / `.kicad_pro` export. |
+| `--compile-goal` | `handoff` or `fabrication` (stricter gates). |
+| `--bbox-padding-mm` | Extra mm around footprint bboxes for clamp, de-overlap, and fit checks (default `0.5`). |
+| `--deoverlap-iters`, `--deoverlap-step-mm` | De-overlap post-process knobs (defaults `200` and `0.75`). |
+| `--strict-footprint-pads` | Fail compile if any netted pin has no matching pad on the KiCad footprint (PCB-002); same as `Board(strict_footprint_pin_pad_match=True)` or `OPENHAC_STRICT_FOOTPRINT_PIN_PAD=1`. |
+| `--allow-risky-parts` | Allow low-confidence JIT symbol/footprint guesses. |
+| `--strict-kicad` | Fail if KiCad symbols cannot load. |
+| `--strict-jit` | Stricter JIT unless combined with `--allow-risky-parts`. |
+| `--production`, `--strict` | Same option: strict KiCad + strict JIT. |
+| `--require-verified-parts` | Fail if unverified JIT parts are present. |
+| `--kicad-erc` | After schematic export, run `kicad-cli sch erc`. |
+| `--kicad-erc-json` | With `--kicad-erc`, ERC report as JSON. |
+| `--kicad-symbol-dir`, `--kicad-symbol-dirs`, `--kicad-footprint-dir` | Override KiCad search paths for this run. |
+| `--release-tag`, `--build-profile`, `--bom-profile` | Manifest metadata. |
+| `--zip-release`, `--zip-release-path` | Bundle outputs into a zip. |
+| `--deterministic` | Set `OPENHAC_DETERMINISTIC=1` for more stable artifacts. |
+| `--manifest-sha256-sidecar` | Write manifest `.sha256` sidecar. |
+| `--sync-jlc-before`, `--sync-jlc-categories` | Run JLC catalog sync before compile. |
+| `--pre-seed-file` | Seed the DB from JSON before compile. |
+| `--pre-enrich-json`, `--pre-enrich-vendor`, `--pre-enrich-limit` | Batch enrich from JSON before compile. |
+| `--auto-enrich-board`, `--auto-enrich-vendor`, `--auto-enrich-limit` | Discover missing DB metadata and enrich after loading the board. |
+
+**Environment (not on the CLI):** placement (`OPENHAC_PLACEMENT_*`), PCB overlap checks (`OPENHAC_PCB_CHECK_FP_OVERLAP`, `OPENHAC_FP_OVERLAP_CLEARANCE_MM`), strict pin↔pad (`OPENHAC_STRICT_FOOTPRINT_PIN_PAD`), schematic spacing / embed (`OPENHAC_SCHEMATIC_*`), FreeRouting timeout (`OPENHAC_FREEROUTING_TIMEOUT_S`). See **`.env.example`**. Compile also writes **`*.openhac-pin-pad-report.json`** (preflight pin keys vs `.kicad_mod` pads) when layout runs.
+
+### Examples
+
+```bash
+# Default-style compile with outputs under ./build
+openhac compile my_design.py -o build --name my_board
+
+# Fast iteration: place PCB + schematic, skip autorouting
+openhac compile my_design.py -o build --no-autoroute
+
+# Same as above (aliases)
+openhac compile my_design.py -o build --skip-autoroute
+
+# Netlist / BOM / manifest only (no PCB, no route)
+openhac compile my_design.py -o build --skip-layout
+
+# Stricter pipeline
+openhac compile my_design.py -o build --compile-goal fabrication --production
+
+# Fail on pin↔footprint pad mismatches before pcbnew (fix DB pinout vs footprint)
+openhac compile my_design.py -o build --strict-footprint-pads
+
+# De-overlap and padding when footprints still crowd
+openhac compile my_design.py -o build --bbox-padding-mm 1.0 --deoverlap-iters 400 --deoverlap-step-mm 1.0
+
+# Schematic ERC, then optional JSON report
+openhac compile my_design.py -o build --kicad-erc --kicad-erc-json
+
+# Release bundle
+openhac compile my_design.py -o dist --zip-release --release-tag v1.0.0
+
+# Deterministic artifacts + manifest sha256 sidecar
+openhac compile my_design.py -o out --deterministic --manifest-sha256-sidecar
 ```
 
 ---

@@ -16,6 +16,35 @@ logger = logging.getLogger("openhac.core")
 _IMPLICIT_PIN_EVENTS: list[dict] = []
 
 
+def _component_pin_access_aliases(key: object) -> list[str]:
+    """Map ergonomic netlist names to KiCad symbol pin names (common drift)."""
+    ks = str(key).strip()
+    if not ks:
+        return []
+    alts: list[str] = []
+    low = ks.lower()
+    if low == "in":
+        alts.extend(["VI", "VIN", "VIN_S"])
+    elif low == "out":
+        alts.extend(["VO", "VOUT"])
+    for rx in (
+        r"^(P[A-Z]\d+)_[A-Z0-9][A-Z0-9_]*$",  # PA12_USB_DP, PB6_I2C1_SCL
+        r"^(PH\d+)_[A-Z0-9][A-Z0-9_]*$",  # PH0_OSC_IN
+        r"^(PC\d+)_[A-Z0-9][A-Z0-9_]*$",  # PC14_OSC32_IN
+    ):
+        m = re.match(rx, ks)
+        if m:
+            alts.append(m.group(1))
+            break
+    seen: set[str] = {ks}
+    out: list[str] = []
+    for a in alts:
+        if a not in seen:
+            seen.add(a)
+            out.append(a)
+    return out
+
+
 class OpenHaCError(Exception):
     """Base exception for all OpenHaC errors."""
 
@@ -396,6 +425,11 @@ class Component:
         try:
             return self.part[key]
         except KeyError:
+            for alt in _component_pin_access_aliases(key):
+                try:
+                    return self.part[alt]
+                except KeyError:
+                    continue
             # Best-effort: if pinout is missing, try to enrich and refresh pins once before
             # falling back to implicit pins (handoff/dev only).
             try:
@@ -419,7 +453,14 @@ class Component:
                                         self.part.add_pin(p)
                                     except Exception:
                                         pass
-                                return self.part[key]
+                                try:
+                                    return self.part[key]
+                                except KeyError:
+                                    for alt in _component_pin_access_aliases(key):
+                                        try:
+                                            return self.part[alt]
+                                        except KeyError:
+                                            continue
                             except Exception:
                                 pass
             except Exception:
@@ -468,12 +509,18 @@ class Component:
             except Exception:
                 pass
 
-            # Allocate a new numeric pin ID and bind this name to it.
-            used_nums = {k for k in self.part.pins.keys() if str(k).isdigit()}
-            n = 1
-            while str(n) in used_nums:
-                n += 1
-            new_pin = Pin(str(n), str(key), "bidirectional")
+            # Bind a new pin. Prefer ``number == name`` for non-numeric keys so PCB pad
+            # matching can use KiCad pad names (implicit pins used wrong auto-incrementing
+            # numbers like 224 that never exist on the footprint).
+            key_s = str(key)
+            if key_s.isdigit():
+                used_nums = {k for k in self.part.pins.keys() if str(k).isdigit()}
+                n = 1
+                while str(n) in used_nums:
+                    n += 1
+                new_pin = Pin(str(n), key_s, "bidirectional")
+            else:
+                new_pin = Pin(key_s, key_s, "bidirectional")
             self.part.add_pin(new_pin)
             return self.part[key]
 
@@ -688,13 +735,16 @@ class Module:
     def recalculate_bbox_from_components(self) -> None:
         """Update width/height based on actual component footprints.
 
-        Uses heuristics based on common package names to estimate area requirements.
-        Adds margin for component spacing and routing.
+        Combines (1) a **grid packing** estimate — parts are laid out in rows inside the
+        module, so a single ``sqrt(sum(area))`` box under-estimates span — with (2) the
+        legacy total-area heuristic. The final box is the max of both (conservative).
         """
         if not self.components:
             return
 
-        total_area_mm2 = 0.0
+        import math
+        import os
+
         footprint_sizes = {
             # QFP packages
             r'lqfp-64|qfp-64': (10.0, 10.0),
@@ -749,37 +799,69 @@ class Module:
             r'testpoint': (2.0, 2.0),
         }
 
-        for comp in self.components:
-            fp_name = ""
-            part = getattr(comp, 'part', comp)  # Handle both Component and Part
-            if part and hasattr(part, 'footprint'):
-                fp_name = str(part.footprint).lower()
-
-            # Find matching footprint size
-            matched = False
+        def _dims_for_footprint_string(fp_name: str) -> tuple[float, float, float]:
+            """Return ``(w_mm, h_mm, area_mm2)`` for one footprint id string."""
             for pattern, (w, h) in footprint_sizes.items():
                 if re.search(pattern, fp_name):
-                    total_area_mm2 += w * h
-                    matched = True
-                    break
+                    wf, hf = float(w), float(h)
+                    return wf, hf, wf * hf
+            return 5.0, 5.0, 25.0
 
-            if not matched:
-                # Default estimate: 5x5mm for unknown components
-                total_area_mm2 += 25.0
+        cell_dims: list[tuple[float, float]] = []
+        total_area_mm2 = 0.0
+        for comp in self.components:
+            fp_name = ""
+            part = getattr(comp, "part", comp)
+            if part and hasattr(part, "footprint"):
+                fp_name = str(part.footprint).lower()
+            w, h, a = _dims_for_footprint_string(fp_name)
+            total_area_mm2 += a
+            if not isinstance(comp, Module):
+                cell_dims.append((w, h))
 
-        # Add spacing margin (30% extra area for component spacing and routing)
+        try:
+            gap = float((os.environ.get("OPENHAC_PLACEMENT_FP_GAP_MM") or "1.0").strip() or 1.0)
+        except Exception:
+            gap = 1.0
+        try:
+            pack_inflate = float((os.environ.get("OPENHAC_MODULE_PACK_INFLATE") or "1.15").strip() or 1.15)
+        except Exception:
+            pack_inflate = 1.15
+
+        if cell_dims:
+            n = len(cell_dims)
+            max_w = max(w for w, _ in cell_dims)
+            max_h = max(h for _, h in cell_dims)
+            cols = max(1, int(math.ceil(math.sqrt(n))))
+            rows = int(math.ceil(n / cols))
+            pack_w = cols * max_w + max(0, cols - 1) * gap
+            pack_h = rows * max_h + max(0, rows - 1) * gap
+            w_pack = pack_w * pack_inflate
+            h_pack = pack_h * pack_inflate
+        else:
+            w_pack = h_pack = 0.0
+
+        # Legacy: total area → rectangle (often too small for row-packed parts)
         total_area_mm2 *= 1.3
+        h_legacy = (total_area_mm2 / 1.2) ** 0.5
+        w_legacy = h_legacy * 1.2
 
-        # Convert to roughly rectangular bbox with 1.2:1 aspect ratio
-        # side = sqrt(area / 1.2) for height, 1.2*side for width
-        h = (total_area_mm2 / 1.2) ** 0.5
-        w = h * 1.2
+        w_fin = max(w_pack, w_legacy)
+        h_fin = max(h_pack, h_legacy)
 
-        # Update with minimum bounds
-        self.width = max(self.width, w)
-        self.height = max(self.height, h)
+        self.width = max(self.width, w_fin)
+        self.height = max(self.height, h_fin)
 
-        logger.debug(f"Module '{self.name}' bbox: {self.width:.1f}x{self.height:.1f}mm from {len(self.components)} components")
+        logger.debug(
+            "Module %r bbox: %.1fx%.1f mm (%s components; grid %s, legacy %.1fx%.1f)",
+            self.name,
+            self.width,
+            self.height,
+            len(self.components),
+            f"{w_pack:.1f}x{h_pack:.1f}" if cell_dims else "n/a",
+            w_legacy,
+            h_legacy,
+        )
 
     def expose_interface(self, name: str) -> "Interface":
         """Return the named Interface, raising InterfaceNotFoundError if absent."""

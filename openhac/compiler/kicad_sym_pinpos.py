@@ -99,7 +99,123 @@ def _iter_pin_blocks(symbol_tree: str) -> list[str]:
 
 
 _AT_RE = re.compile(r"\(at\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\)")
-_NUMBER_RE = re.compile(r'\(number\s+"([^"]*)"\)')
+# Pin ``(name ...)`` / ``(number ...)`` are often followed by ``(effects ...)`` on the next
+# line; do not require the closing ``)`` immediately after the opening quoted token.
+_NUMBER_RE = re.compile(r'\(number\s+"([^"]*)"')
+_NAME_RE = re.compile(r'\(name\s+"([^"]*)"')
+_EXTENDS_RE = re.compile(r'\(extends\s+"([^"]+)"\s*\)')
+
+
+def _pin_electrical_type(blk: str) -> str:
+    """First token after ``(pin`` in a pin block (e.g. ``passive``, ``power_in``)."""
+    m = re.match(r"\(pin\s+(\S+)", blk.lstrip())
+    return m.group(1) if m else "bidirectional"
+
+
+def _stm32_symbol_name_aliases(symbol_name: str) -> list[str]:
+    """KiCad libraries often use ``STM32F405RGTx`` while MPNs/catalog rows use ``STM32F405RGT6``."""
+    s = str(symbol_name or "").strip()
+    if not s:
+        return []
+    m = re.match(r"^(STM32F\d+RG)T\d$", s, flags=re.IGNORECASE)
+    if not m:
+        return []
+    alt = f"{m.group(1)}Tx"
+    return [alt] if alt.lower() != s.lower() else []
+
+
+def _symbol_tree_has_pin_blocks(symbol_tree: str) -> bool:
+    if not symbol_tree or "(pin " not in symbol_tree:
+        return False
+    # Pin ``(number ...)`` may be indented on its own line; do not require a single-line match.
+    for blk in _iter_pin_blocks(symbol_tree):
+        if _NUMBER_RE.search(blk):
+            return True
+    return False
+
+
+def resolve_symbol_tree_for_pins(lib_text: str, symbol_name: str, *, _depth: int = 0) -> str | None:
+    """Return a symbol subtree that contains pin definitions, following ``(extends ...)`` stubs.
+
+    KiCad 8/9 often defines derivatives (e.g. ``TPS63001``) as a short stub that only
+    ``(extends "TPS63000")`` while pins live under the base symbol. STM32 parts may use
+    ``STM32F405RGTx`` in the library while the BOM says ``STM32F405RGT6``.
+    """
+    if _depth > 8:
+        return None
+    sym = str(symbol_name or "").strip()
+    if not sym:
+        return None
+    candidates = [sym, *_stm32_symbol_name_aliases(sym)]
+    tree: str | None = None
+    for cand in candidates:
+        tree = _extract_symbol_tree(lib_text, cand)
+        if tree is not None:
+            break
+    if tree is None:
+        return None
+    if _symbol_tree_has_pin_blocks(tree):
+        return tree
+    m = _EXTENDS_RE.search(tree)
+    if not m:
+        return None
+    parent = str(m.group(1) or "").strip()
+    if not parent or parent == sym:
+        return None
+    return resolve_symbol_tree_for_pins(lib_text, parent, _depth=_depth + 1)
+
+
+def parse_kicad_symbol_id(symbol_library_id: str) -> tuple[str, str] | None:
+    """Split ``Library:SymbolName`` (same convention as ``kicad_footprint``)."""
+    s = str(symbol_library_id or "").strip()
+    if ":" not in s:
+        return None
+    lib, name = s.split(":", 1)
+    lib, name = lib.strip(), name.strip()
+    if not lib or not name:
+        return None
+    return lib, name
+
+
+def parse_pinout_from_symbol_tree(symbol_tree: str) -> list[dict]:
+    """Extract pin records ``[{num, name, type}, ...]`` from a KiCad symbol S-expression subtree."""
+    out: list[dict] = []
+    seen: set[str] = set()
+    for blk in _iter_pin_blocks(symbol_tree):
+        nm = _NUMBER_RE.search(blk)
+        if not nm:
+            continue
+        pin_num = nm.group(1).strip()
+        if pin_num in seen:
+            continue
+        seen.add(pin_num)
+        name_m = _NAME_RE.search(blk)
+        pin_name = name_m.group(1) if name_m else ""
+        etype = _pin_electrical_type(blk)
+        out.append({"num": pin_num, "name": pin_name, "type": etype})
+    return out
+
+
+def pinout_from_kicad_symbol_id(kicad_symbol: str) -> list[dict] | None:
+    """Load ``Library:Name`` from search paths and return pinout records, or None if unavailable."""
+    parsed = parse_kicad_symbol_id(kicad_symbol)
+    if not parsed:
+        return None
+    lib, sym = parsed
+    path = find_symbol_library_file(lib)
+    if path is None:
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as e:
+        logger.debug("Could not read symbol library %s: %s", path, e)
+        return None
+    tree = resolve_symbol_tree_for_pins(text, sym)
+    if tree is None:
+        logger.debug("Symbol %r not found (or no pins after extends) in %s", sym, path)
+        return None
+    po = parse_pinout_from_symbol_tree(tree)
+    return po if po else None
 
 
 def parse_pin_positions_from_symbol_tree(symbol_tree: str) -> dict[str, tuple[float, float]]:
@@ -129,9 +245,9 @@ def _cached_pin_map(path: str, symbol_name: str, mtime_ns: int) -> dict[str, tup
     except OSError as e:
         logger.debug("Could not read %s: %s", p, e)
         return None
-    tree = _extract_symbol_tree(text, symbol_name)
+    tree = resolve_symbol_tree_for_pins(text, symbol_name)
     if tree is None:
-        logger.debug("Symbol %r not found in %s", symbol_name, p)
+        logger.debug("Symbol %r not found (or no pins after extends) in %s", symbol_name, p)
         return None
     return parse_pin_positions_from_symbol_tree(tree)
 

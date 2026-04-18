@@ -15,6 +15,9 @@ from openhac.compiler.kicad_sym_pinpos import (
     find_symbol_library_file,
     load_symbol_pin_positions,
     parse_pin_positions_from_symbol_tree,
+    parse_pinout_from_symbol_tree,
+    pinout_from_kicad_symbol_id,
+    resolve_symbol_tree_for_pins,
 )
 from openhac.compiler.schematic_gen import (
     EmptySymbolPinResolver,
@@ -25,6 +28,32 @@ from openhac.compiler.schematic_gen import (
 from openhac.core.board import Board
 
 _FIXTURE_SYM = Path(__file__).resolve().parent / "fixtures" / "kicad_symbols" / "Device.kicad_sym"
+_FIXTURE_EXTENDS = Path(__file__).resolve().parent / "fixtures" / "kicad_symbols" / "ExtendsDemo.kicad_sym"
+
+
+def test_parse_pinout_from_fixture_resistor():
+    text = _FIXTURE_SYM.read_text(encoding="utf-8")
+    po = parse_pinout_from_symbol_tree(text)
+    assert len(po) == 2
+    assert po[0]["num"] == "1" and po[0]["name"] == "~" and po[0]["type"] == "passive"
+    assert po[1]["num"] == "2" and po[1]["name"] == "~"
+
+
+def test_pinout_from_kicad_symbol_id_uses_search_path(monkeypatch):
+    monkeypatch.setenv("OPENHAC_KICAD_SYMBOL_DIRS", str(_FIXTURE_SYM.parent))
+    clear_symbol_pin_cache()
+    po = pinout_from_kicad_symbol_id("Device:R")
+    assert po and len(po) == 2
+    assert po[0]["type"] == "passive"
+
+
+def test_resolve_extends_stub_loads_parent_pins():
+    text = _FIXTURE_EXTENDS.read_text(encoding="utf-8")
+    tree = resolve_symbol_tree_for_pins(text, "DerivedPart")
+    assert tree is not None
+    po = parse_pinout_from_symbol_tree(tree)
+    assert len(po) == 2
+    assert {p["num"]: p["name"] for p in po} == {"1": "VIN", "2": "GND"}
 
 
 def test_parse_fixture_resistor_pins():

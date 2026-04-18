@@ -51,3 +51,22 @@ def load_repo_dotenv(*, quiet: bool = True) -> None:
     n += _apply_env_file(root / ".env.local", override=True)
     if not quiet and n:
         logger.info("Loaded %s environment entries from .env / .env.local under %s", n, root)
+
+
+def apply_kicad_env_aliases() -> None:
+    """Mirror ``KICAD9_*`` into legacy env names SKiDL / KiCad 6–8 bindings probe at import time.
+
+    Call this immediately after :func:`load_repo_dotenv` and **before** ``import skidl``.
+    """
+    sym = (os.environ.get("KICAD9_SYMBOL_DIR") or "").strip()
+    if sym:
+        for key in (
+            "KICAD_SYMBOL_DIR",
+            "KICAD6_SYMBOL_DIR",
+            "KICAD7_SYMBOL_DIR",
+            "KICAD8_SYMBOL_DIR",
+        ):
+            os.environ.setdefault(key, sym)
+    fp = (os.environ.get("KICAD9_FOOTPRINT_DIR") or "").strip()
+    if fp:
+        os.environ.setdefault("KICAD_FOOTPRINT_DIR", fp)

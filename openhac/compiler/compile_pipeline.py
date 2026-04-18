@@ -36,6 +36,7 @@ class CompileState:
     output_dir: str | os.PathLike[str] | None
     release_zip_path: str | os.PathLike[str] | None
     bbox_padding_mm: float = 0.5
+    module_clearance_mm: float = 0.0
     skip_layout: bool = field(init=False)
     net_path: str = field(init=False)
     bom_path: str | None = field(init=False)
@@ -75,7 +76,7 @@ def phase_enrich_parts(state: CompileState) -> None:
     skipped = 0
     failed = 0
     try:
-        from openhac.database.enrich import enrich_component_in_db, network_allowed
+        from openhac.database.enrich import enrich_component_in_db, needs_pinout_database_enrich, network_allowed
     except Exception:
         return
 
@@ -99,7 +100,7 @@ def phase_enrich_parts(state: CompileState) -> None:
             seen.add(gn)
             try:
                 cd = getattr(comp, "_comp_data", {}) or {}
-                if cd.get("pinout_json") or cd.get("symbol_data"):
+                if not needs_pinout_database_enrich(cd.get("pinout_json")):
                     skipped += 1
                     continue
             except Exception:
@@ -281,6 +282,15 @@ def phase_netlist_bom(state: CompileState) -> None:
     )
 
 
+def phase_footprint_pin_pad(state: CompileState) -> None:
+    """PCB-002: optional strict pin↔footprint pad check before pcbnew (fail fast)."""
+    if state.skip_layout:
+        return
+    from openhac.compiler.layout_gen import assert_footprint_pin_pad_or_raise
+
+    assert_footprint_pin_pad_or_raise(state.board)
+
+
 def phase_layout(state: CompileState) -> None:
     if state.skip_layout:
         logger.warning(
@@ -298,6 +308,34 @@ def phase_layout(state: CompileState) -> None:
     # Auto-calculate module bounding boxes from component footprints
     for mod in state.board._get_all_modules():
         mod.recalculate_bbox_from_components()
+
+    # pcbnew / SKiDL resolve ``Library:Footprint`` via fp-lib-table in the project directory.
+    # Schematic phase used to write this *after* layout; without it, placement warns and pad
+    # discovery can fail. Write the same table early next to the upcoming .kicad_pcb.
+    try:
+        from pathlib import Path
+
+        from openhac.compiler.project_gen import footprint_library_names_from_board, write_fp_lib_table
+
+        pcb_parent = str(Path(state.pcb_path).resolve().parent)
+        fp_libs = footprint_library_names_from_board(state.board)
+        if fp_libs:
+            write_fp_lib_table(output_dir=pcb_parent, footprint_libs=fp_libs)
+            logger.info(
+                "Wrote fp-lib-table (%s footprint libraries) before PCB layout.",
+                len(fp_libs),
+            )
+    except Exception as e:
+        logger.warning("Early fp-lib-table write failed (continuing): %s", e)
+
+    try:
+        from openhac.compiler.pcb_placement import apply_pcbnew_pack_to_module_bboxes
+
+        n_pack = apply_pcbnew_pack_to_module_bboxes(state.board)
+        if n_pack:
+            logger.info("Module bbox refinement (pcbnew footprint pack): %s module(s) enlarged.", n_pack)
+    except Exception as e:
+        logger.debug("pcbnew module bbox pack skipped: %s", e)
 
     from openhac.compiler.layout_gen import generate_layout
 
@@ -395,9 +433,10 @@ def phase_schematic(state: CompileState) -> None:
     # Generate project-local symbol library for board parts so KiCad renders them.
     gen_sym_path = _artifact_path(state.project_name, ".openhac-generated.kicad_sym", state.output_dir)
     sym_path = None
+    embed_syms: str | None = None
+    # Use board-derived parts, not SKiDL default_circuit.
+    parts: list[object] = []
     try:
-        # Use board-derived parts, not SKiDL default_circuit.
-        parts: list[object] = []
         seen: set[int] = set()
         for mod in getattr(state.board, "modules", []) or []:
             for child in getattr(mod, "components", []) or []:
@@ -409,46 +448,32 @@ def phase_schematic(state: CompileState) -> None:
                     continue
                 seen.add(pid)
                 parts.append(p)
-        sym_path = write_generated_symbol_library(gen_sym_path, parts, nickname="OpenHaC")
+        sym_path, embed_syms = write_generated_symbol_library(gen_sym_path, parts, nickname="OpenHaC")
     except Exception:
-        sym_path = None
+        logger.exception("OpenHaC generated symbol library failed; schematic may show missing symbols (?)")
+        sym_path, embed_syms = None, None
+
+    if sym_path is None and parts:
+        logger.warning(
+            "No project-local .kicad_sym was produced; schematic symbols may show as '?' in KiCad. "
+            "Check component pin data and prior errors."
+        )
 
     generate_schematic(
         state.sch_path,
         state.board,
         pinpos_report_path=pinpos_report,
         generated_symbol_lib_path=sym_path,
+        embedded_lib_symbols=embed_syms,
     )
 
-    # Derive footprint library names from placed parts so KiCad can resolve Footprint fields.
-    footprint_libs: set[str] = set()
-    try:
-        parts: list[object] = []
-        seen: set[int] = set()
-        for mod in getattr(state.board, "modules", []) or []:
-            for child in getattr(mod, "components", []) or []:
-                p = getattr(child, "part", None)
-                if p is None:
-                    continue
-                pid = id(p)
-                if pid in seen:
-                    continue
-                seen.add(pid)
-                parts.append(p)
-        for part in parts:
-            fp = str(getattr(part, "footprint", "") or "").strip()
-            if ":" in fp:
-                lib = fp.split(":", 1)[0].strip()
-                if lib:
-                    footprint_libs.add(lib)
-    except Exception:
-        footprint_libs = set()
+    from openhac.compiler.project_gen import footprint_library_names_from_board
 
     generate_project_file(
         state.pro_path,
         sym_lib_path=sym_path,
         sym_lib_nick="OpenHaC",
-        footprint_libs=sorted(footprint_libs),
+        footprint_libs=footprint_library_names_from_board(state.board),
     )
 
     if not state.kicad_sch_erc:
@@ -531,6 +556,7 @@ DEFAULT_COMPILE_PHASES: tuple[Callable[[CompileState], None], ...] = (
     phase_pinout_coverage,
     phase_interface_validation,
     phase_netlist_bom,
+    phase_footprint_pin_pad,
     phase_layout,
     phase_post_layout_checks,
     phase_autoroute,

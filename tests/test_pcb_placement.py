@@ -3,6 +3,7 @@
 import pytest
 
 from openhac.compiler.pcb_placement import (
+    _pin_covers_footprint_pad,
     collect_skidl_part_positions,
     find_pad_for_pin,
     footprint_search_roots,
@@ -216,3 +217,11 @@ class TestPinPadCoverageWarnings:
 
         msgs = pin_pad_coverage_warnings(get_default_circuit())
         assert any("RX" in m and "2" in m and "pad" in m.lower() for m in msgs)
+
+
+def test_pin_covers_footprint_pad_usb_typec_synonyms():
+    pads = {"D+", "D-", "GND", "VBUS", "A6", "A7", "CC1", "CC2", "A1", "B1"}
+    assert _pin_covers_footprint_pad("", "DP", pads)
+    assert _pin_covers_footprint_pad("", "DM", pads)
+    assert _pin_covers_footprint_pad("", "CC1", pads)
+    assert _pin_covers_footprint_pad("99", "VBUS", pads)

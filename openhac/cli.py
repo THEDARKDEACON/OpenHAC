@@ -3,7 +3,7 @@ OpenHaC CLI — compile declarative hardware Python into KiCad projects.
 
 Usage:
     openhac compile board.py                     # compile to KiCad project
-    openhac compile board.py --no-route        # skip autorouter
+    openhac compile board.py --no-route        # skip FreeRouting / autorouter (same: --no-autoroute)
     openhac compile board.py --name my_board     # custom project name
     openhac compile board.py --allow-risky-parts # allow low-confidence JIT parts
     openhac compile board.py --kicad-erc        # run kicad-cli sch erc after .kicad_sch
@@ -15,8 +15,7 @@ Usage:
     openhac seed                                 # seed database with samples
     openhac export fab board.kicad_pcb -o gerbers/ [--zip] [--ipc2581]
     openhac compile board.py --strict-jit   # block medium-confidence JIT (LIB-003)
-    openhac compile board.py --production  # strict KiCad + strict JIT (LIB-004)
-    openhac compile board.py --strict       # same as --production (LIB-003 umbrella)
+    openhac compile board.py --production   # strict KiCad + strict JIT (same: --strict)
     openhac compile board.py -o out/ --zip-release --release-tag v1.0.0
     openhac export assembly board.kicad_pcb -o pos/
 
@@ -43,6 +42,12 @@ import os
 import sys
 import shutil
 import json
+
+from openhac.core.dotenv_load import apply_kicad_env_aliases, load_repo_dotenv
+
+# Repo .env + KiCad paths must load before SKiDL import (it probes KICAD*_SYMBOL_DIR at import).
+load_repo_dotenv(quiet=True)
+apply_kicad_env_aliases()
 
 # Pre-import skidl to avoid logger initialization conflicts
 try:
@@ -144,7 +149,7 @@ def cmd_compile(args):
     Component.allow_risky_part_lookups = bool(getattr(args, "allow_risky_parts", False))
     Component.require_kicad_symbols = bool(getattr(args, "strict_kicad", False))
 
-    if getattr(args, "production", False) or getattr(args, "strict", False):
+    if getattr(args, "production", False):
         os.environ["OPENHAC_STRICT_KICAD"] = "1"
         os.environ["OPENHAC_STRICT_JIT"] = "1"
         os.environ["OPENHAC_REQUIRE_VERIFIED_PARTS"] = "1"
@@ -281,9 +286,12 @@ def cmd_compile(args):
         if cg:
             board.compile_goal = str(cg)
 
+        if getattr(args, "strict_footprint_pads", False):
+            board.strict_footprint_pin_pad_match = True
+
         if getattr(args, "strict_kicad", False):
             board.strict_kicad = True
-        if getattr(args, "production", False) or getattr(args, "strict", False):
+        if getattr(args, "production", False):
             board.strict_kicad = True
             board.strict_jit_lookups = True
         elif getattr(args, "strict_jit", False):
@@ -318,6 +326,7 @@ def cmd_compile(args):
             output_dir=getattr(args, "output_dir", None),
             release_zip_path=zip_path,
             bbox_padding_mm=float(getattr(args, "bbox_padding_mm", 0.5) or 0.5),
+            module_clearance_mm=float(getattr(args, "module_gap_mm", 0.0) or 0.0),
             deoverlap_max_iters=int(getattr(args, "deoverlap_iters", 200) or 200),
             deoverlap_step_mm=float(getattr(args, "deoverlap_step_mm", 0.75) or 0.75),
         )
@@ -824,10 +833,10 @@ def _setup_logging(verbose: bool = False):
 
 
 def main():
-    from openhac.core.dotenv_load import load_repo_dotenv
     from openhac.version_info import get_version
 
     load_repo_dotenv(quiet=True)
+    apply_kicad_env_aliases()
 
     parser = argparse.ArgumentParser(
         prog="openhac",
@@ -850,7 +859,14 @@ def main():
     p_compile = subparsers.add_parser("compile", help="Compile hardware to KiCad project")
     p_compile.add_argument("script", help="Path to the hardware description .py file")
     p_compile.add_argument("--name", default=None, help="Project name (default: script basename)")
-    p_compile.add_argument("--no-route", action="store_true", help="Skip auto-routing")
+    p_compile.add_argument(
+        "--no-route",
+        "--no-autoroute",
+        "--skip-autoroute",
+        action="store_true",
+        dest="no_route",
+        help="Skip FreeRouting / auto-routing (faster CI and iterative schematic-only runs)",
+    )
     p_compile.add_argument(
         "--compile-goal",
         default=None,
@@ -906,6 +922,19 @@ def main():
         help="Step size (mm) for PCB de-overlap post-process (default: 0.75).",
     )
     p_compile.add_argument(
+        "--module-gap-mm",
+        type=float,
+        default=0.0,
+        help="Minimum edge-to-edge gap (mm) between module bounding boxes in the Z3 placer "
+        "(reduces footprint spill-over between regions). Default: 0. Also: OPENHAC_MODULE_CLEARANCE_MM.",
+    )
+    p_compile.add_argument(
+        "--strict-footprint-pads",
+        action="store_true",
+        help="Fail compile if any netted pin has no matching footprint pad (PCB-002); same as "
+        "Board(strict_footprint_pin_pad_match=True) or OPENHAC_STRICT_FOOTPRINT_PIN_PAD=1",
+    )
+    p_compile.add_argument(
         "--allow-risky-parts",
         action="store_true",
         help="Allow low-confidence live/JIT KiCad symbol/footprint guesses (may be wrong)",
@@ -927,18 +956,15 @@ def main():
     )
     p_compile.add_argument(
         "--production",
+        "--strict",
         action="store_true",
-        help="Strict KiCad symbols + strict JIT (LIB-004 / LIB-003); sets OPENHAC_STRICT_KICAD + OPENHAC_STRICT_JIT for the compile",
+        dest="production",
+        help="Strict KiCad symbols + strict JIT (LIB-004 / LIB-003)",
     )
     p_compile.add_argument(
         "--require-verified-parts",
         action="store_true",
         help="Fail DRC if any JIT/unverified parts (medium/low confidence) are present (sets OPENHAC_REQUIRE_VERIFIED_PARTS=1)",
-    )
-    p_compile.add_argument(
-        "--strict",
-        action="store_true",
-        help="Alias for --production: strict KiCad + strict JIT (LIB-003 umbrella on CLI)",
     )
     p_compile.add_argument(
         "--release-tag",

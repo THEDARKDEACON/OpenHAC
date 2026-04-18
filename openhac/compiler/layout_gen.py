@@ -1,5 +1,6 @@
 import logging
 import math
+import os
 
 from openhac.compiler.layout_constraints import add_bbox_minimum_gap, add_center_l1_max
 from openhac.core.base import LayoutGenerationError
@@ -35,6 +36,21 @@ def solve_placement(board):
         for rule in board.constraints:
             logger.info(f"    - {rule['type']}: {rule['args']}")
 
+    try:
+        g_mm = float(getattr(board, "module_clearance_mm", 0.0) or 0.0)
+    except Exception:
+        g_mm = 0.0
+    if g_mm <= 0:
+        ev = (os.environ.get("OPENHAC_MODULE_CLEARANCE_MM") or "").strip()
+        if ev:
+            try:
+                g_mm = float(ev)
+            except Exception:
+                g_mm = 0.0
+    g_int = max(0, int(math.ceil(g_mm)))
+    if g_mm > 0:
+        logger.info("  Z3 module bbox clearance target: >= %s mm (edge-to-edge, int %s)", g_mm, g_int)
+
     solver = Solver()
     # 1. Bounds Constraints
     for mod in all_mods:
@@ -52,13 +68,27 @@ def solve_placement(board):
         for j in range(i + 1, n):
             a = all_mods[i]
             b = all_mods[j]
-            no_overlap = Or(
-                a.z3_x + int(a.width) <= b.z3_x,
-                b.z3_x + int(b.width) <= a.z3_x,
-                a.z3_y + int(a.height) <= b.z3_y,
-                b.z3_y + int(b.height) <= a.z3_y
-            )
-            solver.add(no_overlap)
+            if g_int > 0:
+                add_bbox_minimum_gap(
+                    solver,
+                    a.z3_x,
+                    a.z3_y,
+                    int(a.width),
+                    int(a.height),
+                    b.z3_x,
+                    b.z3_y,
+                    int(b.width),
+                    int(b.height),
+                    g_int,
+                )
+            else:
+                no_overlap = Or(
+                    a.z3_x + int(a.width) <= b.z3_x,
+                    b.z3_x + int(b.width) <= a.z3_x,
+                    a.z3_y + int(a.height) <= b.z3_y,
+                    b.z3_y + int(b.height) <= a.z3_y,
+                )
+                solver.add(no_overlap)
             
     # 3. User Defined Constraints
     for rule in board.constraints:
@@ -186,17 +216,27 @@ def solve_placement_with_relaxation(board, max_relaxations: int = 2) -> bool:
 
 
 def assert_footprint_pin_pad_or_raise(board) -> None:
-    """Raise :class:`LayoutGenerationError` if strict PCB-002 checks find pad↔pin mismatches."""
-    if not getattr(board, "strict_footprint_pin_pad_match", False):
-        return
-    from openhac.circuit import get_default_circuit
-    from openhac.compiler.pcb_placement import pin_pad_coverage_warnings
+    """Raise :class:`LayoutGenerationError` if strict PCB-002 checks find pad↔pin mismatches.
 
-    try:
-        circuit = get_default_circuit()
-    except RuntimeError:
+    Strict mode is enabled by :attr:`Board.strict_footprint_pin_pad_match` or
+    ``OPENHAC_STRICT_FOOTPRINT_PIN_PAD=1``. Uses :func:`openhac.compiler.pcb_placement.pin_pad_coverage_warnings_for_board`
+    so the check matches **OpenHaC board modules** (not only SKiDL's default circuit).
+    """
+    import os
+
+    strict = bool(getattr(board, "strict_footprint_pin_pad_match", False))
+    if not strict:
+        strict = os.environ.get("OPENHAC_STRICT_FOOTPRINT_PIN_PAD", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        )
+    if not strict:
         return
-    msgs = pin_pad_coverage_warnings(circuit)
+    from openhac.compiler.pcb_placement import pin_pad_coverage_warnings_for_board
+
+    msgs = pin_pad_coverage_warnings_for_board(board)
     if msgs:
         raise LayoutGenerationError(
             "PCB-002 strict footprint pin↔pad check failed:\n" + "\n".join(msgs)
@@ -265,8 +305,14 @@ def generate_layout(netlist_path: str, output_pcb_path: str, board):
             max_iters = int(getattr(board, "deoverlap_max_iters", 200) or 200)
             step_mm = float(getattr(board, "deoverlap_step_mm", 0.75) or 0.75)
             clamp_footprints_inside_edge_cuts(pcb, pcbnew, margin_mm=margin_mm)
-            # Best-effort de-overlap for handoff/dev readability.
-            spread_footprints_no_overlap(pcb, pcbnew, max_iters=max_iters, step_mm=step_mm, margin_mm=margin_mm)
+            # Best-effort de-overlap for handoff/dev readability (repeat passes help dense boards).
+            try:
+                deo_passes = int((os.environ.get("OPENHAC_DEOVERLAP_PASSES") or "1").strip() or 1)
+            except Exception:
+                deo_passes = 1
+            deo_passes = max(1, min(deo_passes, 20))
+            for _ in range(deo_passes):
+                spread_footprints_no_overlap(pcb, pcbnew, max_iters=max_iters, step_mm=step_mm, margin_mm=margin_mm)
             try:
                 from openhac.compiler.pcb_fit import count_footprint_bbox_overlap_pairs
 

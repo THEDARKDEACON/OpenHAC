@@ -1,0 +1,13 @@
+(kicad_symbol_lib (version 20220914) (generator openhac_test_fixture)
+  (symbol "DerivedPart"
+    (extends "BasePart")
+    (property "Reference" "U" (at 0 0 0))
+  )
+  (symbol "BasePart"
+    (property "Reference" "U" (at 0 0 0))
+    (symbol "BasePart_1_1"
+      (pin power_in line (at 0 5.08 0) (length 2.54) (name "VIN") (number "1"))
+      (pin power_in line (at 0 -5.08 0) (length 2.54) (name "GND") (number "2"))
+    )
+  )
+)
