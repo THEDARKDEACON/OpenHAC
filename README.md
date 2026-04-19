@@ -177,11 +177,6 @@ Preflight: `openhac doctor --json` (add `--strict-layout`, `--strict-routing`, e
 
 ---
 
-## LaTeX report
-
-Long-form write-up: `docs/report/`. Build PDF: `python3 scripts/build_latex_report.py` (needs a LaTeX engine).
-
----
 
 ## Errors
 
