@@ -9,7 +9,8 @@ environment (CLI and scripts without a host board).
 from __future__ import annotations
 
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
@@ -22,6 +23,8 @@ _ctx: ContextVar["OpenHaCCompileContext | None"] = ContextVar("openhac_compile_c
 class OpenHaCCompileContext:
     board: Board
     allow_risky_part_lookups: bool = False
+    #: Extra catalog overlay files or directories (JSON). Merged after bundled overlays; see ``catalog_overlay`` module.
+    catalog_overlay_paths: tuple[str | Path, ...] = field(default_factory=tuple)
 
 
 def get_compile_context() -> OpenHaCCompileContext | None:

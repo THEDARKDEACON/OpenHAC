@@ -150,7 +150,7 @@ __main__ = SchLib(tool=SKIDL).add_parts(*[
             Pin(num='4',name='RXD',func=pin_types.UNSPEC),
             Pin(num='5',name='CANH',func=pin_types.UNSPEC),
             Pin(num='6',name='CANL',func=pin_types.UNSPEC),
-            Pin(num='7',name='STB',func=pin_types.UNSPEC),
+            Pin(num='7',name='S',func=pin_types.UNSPEC),
             Pin(num='8',name='WAKE',func=pin_types.UNSPEC)] }),
         Part(**{ 'name':'LED_STATUS_0603', 'dest':TEMPLATE, 'tool':SKIDL, 'aliases':Alias({'LED_STATUS_0603'}), 'ref_prefix':'D', 'fplist':None, 'footprint':'LED_SMD:LED_0603_1608Metric', 'keywords':None, 'description':'', 'datasheet':None, 'pins':[
             Pin(num='1',name='A',func=pin_types.UNSPEC),

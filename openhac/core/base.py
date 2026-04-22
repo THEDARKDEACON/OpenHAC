@@ -17,16 +17,16 @@ _IMPLICIT_PIN_EVENTS: list[dict] = []
 
 
 def _component_pin_access_aliases(key: object) -> list[str]:
-    """Map ergonomic netlist names to KiCad symbol pin names (common drift)."""
+    """MCU pin-name shorthands (e.g. ``PA12_USB_DP`` → ``PA12``).
+
+    Board code should use the same pin names as the KiCad symbol where possible;
+    this helper only covers stable, non-ambiguous suffix stripping for STM32-style
+    labels.
+    """
     ks = str(key).strip()
     if not ks:
         return []
     alts: list[str] = []
-    low = ks.lower()
-    if low == "in":
-        alts.extend(["VI", "VIN", "VIN_S"])
-    elif low == "out":
-        alts.extend(["VO", "VOUT"])
     for rx in (
         r"^(P[A-Z]\d+)_[A-Z0-9][A-Z0-9_]*$",  # PA12_USB_DP, PB6_I2C1_SCL
         r"^(PH\d+)_[A-Z0-9][A-Z0-9_]*$",  # PH0_OSC_IN
@@ -222,7 +222,11 @@ class Component:
             pass
         
         # Get or generate reference designator
-        ref_prefix = self._get_refdes_prefix(comp_data['category'])
+        ref_prefix = self._get_refdes_prefix(
+            comp_data.get("category"),
+            generic_name=generic_name,
+            mpn=comp_data.get("mpn"),
+        )
         refdes = kwargs.get('refdes') or default_circuit.auto_generate_refdes(ref_prefix)
         
         self.part = Part(
@@ -525,7 +529,18 @@ class Component:
             return self.part[key]
 
     def __setitem__(self, key, value):
-        self.part[key] = value
+        """Connect ``value`` to pin ``key``, resolving the same aliases as :meth:`__getitem__`.
+
+        Python rewrites ``comp[alias] += net`` as getitem → iadd(pin, net) → setitem(alias, pin).
+        The final store must not require ``alias`` to exist on the underlying :class:`Part`
+        when ``alias`` only maps to a canonical symbol pin (e.g. ``PH0_OSC_IN`` → ``PH0``).
+        """
+        from openhac.core.part import Pin as PinType
+
+        if isinstance(value, PinType):
+            return
+        pin = self.__getitem__(key)
+        pin += value
 
     def _get_pins_from_data(self, comp_data: dict) -> list[Pin]:
         """Get pinout from database.
@@ -617,8 +632,39 @@ class Component:
         # Default: 8 pins
         return [Pin(str(i), str(i), "bidirectional") for i in range(1, 9)]
 
-    def _get_refdes_prefix(self, category: str | None) -> str:
+    def _get_refdes_prefix(
+        self,
+        category: str | None,
+        *,
+        generic_name: str | None = None,
+        mpn: str | None = None,
+    ) -> str:
         """Get reference designator prefix based on component category."""
+        gn_u = str(generic_name or "").strip().upper()
+        mpn_u = str(mpn or "").strip().upper()
+        if gn_u == "CAN_TJA1051" or "TJA1051" in mpn_u:
+            return "U"
+        if gn_u.startswith("XTAL_"):
+            return "X"
+        for prefix, rfx in (
+            ("MCU_", "U"),
+            ("IMU_", "U"),
+            ("BARO_", "U"),
+            ("MAG_", "U"),
+            ("FLASH_", "U"),
+            ("LDO_", "U"),
+            ("BUCK_", "U"),
+            ("ESD_", "U"),
+            ("CONN_", "J"),
+            ("USB_", "J"),
+        ):
+            if gn_u.startswith(prefix):
+                return rfx
+        if gn_u.startswith("LED_"):
+            return "D"
+        if gn_u.startswith("SW_"):
+            return "S"
+
         category_map = {
             "resistor": "R",
             "capacitor": "C",
@@ -643,6 +689,12 @@ class Component:
         if not category:
             return "U"  # Default to IC prefix
         cat_lower = category.lower()
+        # JLC / catalog motion-sensor categories (substring-safe before generic map).
+        if any(
+            m in cat_lower
+            for m in ("accelerometer", "gyroscope", "barometer", "magnetometer")
+        ):
+            return "U"
         for key, prefix in category_map.items():
             if key in cat_lower:
                 return prefix

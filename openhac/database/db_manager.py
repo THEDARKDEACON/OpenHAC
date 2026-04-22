@@ -74,6 +74,25 @@ _V8_COLUMNS = {
 }
 
 
+def _normalize_sensor_category_for_db(
+    category: str,
+    *,
+    mpn: str | None = None,
+    generic_name: str | None = None,
+) -> str:
+    """Map motion/sensor catalog labels to ``ic`` for consistent refdes (U*) and metadata."""
+    gn_u = str(generic_name or "").strip().upper()
+    mpn_u = str(mpn or "").strip().upper()
+    if gn_u == "CAN_TJA1051" or "TJA1051" in mpn_u:
+        return "ic"
+    if gn_u.startswith("XTAL_"):
+        return "crystals"
+    cl = str(category or "").strip().lower()
+    if any(m in cl for m in ("accelerometer", "gyroscope", "barometer", "magnetometer")):
+        return "ic"
+    return str(category or "").strip()
+
+
 class DatabaseManager:
     def __init__(self, db_path=DB_PATH):
         self.db_path = db_path
@@ -167,13 +186,25 @@ class DatabaseManager:
 
     def get_component(self, generic_name: str) -> dict:
         """Fetches a component by its generic name."""
+        from openhac.database.catalog_fixups import merge_catalog_fixup
+
         with sqlite3.connect(self.db_path) as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
-            cursor.execute("SELECT * FROM components WHERE generic_name = ?", (generic_name,))
+            # Prefer rows with pinout/symbol data when duplicates exist (bad sync/INSERT OR IGNORE).
+            cursor.execute(
+                """
+                SELECT * FROM components WHERE generic_name = ?
+                ORDER BY length(COALESCE(pinout_json, '')) DESC,
+                         length(COALESCE(symbol_data, '')) DESC,
+                         id DESC
+                LIMIT 1
+                """,
+                (generic_name,),
+            )
             row = cursor.fetchone()
             if row:
-                return dict(row)
+                return merge_catalog_fixup(dict(row))
             return None
 
     def get_component_by_supplier_sku(self, supplier_sku: str) -> dict | None:
@@ -383,7 +414,11 @@ class DatabaseManager:
         if getattr(part_info, "description", None):
             updates["description"] = part_info.description
         if getattr(part_info, "category", None):
-            updates["category"] = part_info.category
+            updates["category"] = _normalize_sensor_category_for_db(
+                str(part_info.category),
+                mpn=getattr(part_info, "mpn", None),
+                generic_name=generic_name,
+            )
         if getattr(part_info, "package", None):
             updates["package"] = part_info.package
         if getattr(part_info, "stock", None) is not None:

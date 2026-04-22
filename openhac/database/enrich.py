@@ -65,6 +65,11 @@ def network_allowed() -> bool:
     return True
 
 
+def enrich_strict_pinout_pads() -> bool:
+    """When true, pad mismatches during enrich raise instead of only logging."""
+    return _truthy(os.environ.get("OPENHAC_ENRICH_STRICT_PINOUT_PADS"))
+
+
 def _warn_if_pinout_mismatches_footprint_pads(db, gn: str) -> None:
     """After a successful DB update, log if stored pinout keys do not appear on the KiCad footprint."""
     try:
@@ -109,20 +114,19 @@ def _warn_if_pinout_mismatches_footprint_pads(db, gn: str) -> None:
         if not _pin_covers_footprint_pad(num, name, pads):
             bad.append(f"{num or '?'}/{name or '?'}")
     if bad:
-        logger.warning(
-            "Enriched pinout for %s may not match footprint %s pads (examples: %s). "
-            "Align pin num/name with the `.kicad_mod` pad list.",
-            gn,
-            fp,
-            ", ".join(bad[:12]),
+        msg = (
+            f"Enriched pinout for {gn} may not match footprint {fp} pads (examples: "
+            f"{', '.join(bad[:12])}). Align pin num/name with the `.kicad_mod` pad list."
         )
+        if enrich_strict_pinout_pads():
+            raise RuntimeError(msg)
+        logger.warning(msg)
 
 
-def _pinout_is_meaningful(pinout: Any) -> bool:
-    """Reject placeholder pinouts where name==num for all pins."""
+def _pinout_legacy_name_diversity(pinout: Any) -> bool:
+    """True when some pin has a human-readable name that differs from its number (datasheet-style)."""
     if not isinstance(pinout, list) or not pinout:
         return False
-    ok = False
     for p in pinout:
         if not isinstance(p, dict):
             continue
@@ -131,9 +135,66 @@ def _pinout_is_meaningful(pinout: Any) -> bool:
         if not num:
             continue
         if name and name != num:
-            ok = True
-            break
-    return ok
+            return True
+    return False
+
+
+def _pinout_numeric_fallback(pinout: Any) -> bool:
+    """Conservative OK when footprint pads are unknown: distinct non-empty numeric-ish nums only."""
+    if not isinstance(pinout, list) or not pinout:
+        return False
+    nums: list[str] = []
+    for p in pinout:
+        if not isinstance(p, dict):
+            continue
+        num = str(p.get("num") or "").strip()
+        if not num:
+            return False
+        nums.append(num)
+    if len(nums) != len(set(nums)):
+        return False
+    if not (1 <= len(nums) <= 256):
+        return False
+    return True
+
+
+def _pinout_footprint_aligned(pinout: Any, row: dict[str, Any]) -> bool:
+    """True if every pinout entry with num/name resolves to a pad on ``row['kicad_footprint']``."""
+    if not isinstance(pinout, list) or not pinout or not row:
+        return False
+    pads = _footprint_pad_set_for_row(row)
+    if not pads:
+        return False
+    from openhac.compiler.pcb_placement import _pin_covers_footprint_pad
+
+    for p in pinout:
+        if not isinstance(p, dict):
+            continue
+        num = str(p.get("num") or "")
+        name = str(p.get("name") or "")
+        if not num and not name:
+            continue
+        if not _pin_covers_footprint_pad(num, name, pads):
+            return False
+    return True
+
+
+def _pinout_is_sufficient(pinout: Any, catalog_row: dict[str, Any] | None = None) -> bool:
+    """Pinout is complete enough to skip re-enrichment: legacy diversity, footprint parity, or numeric fallback."""
+    if not isinstance(pinout, list) or not pinout:
+        return False
+    if _pinout_legacy_name_diversity(pinout):
+        return True
+    if catalog_row is not None and _pinout_footprint_aligned(pinout, catalog_row):
+        return True
+    if catalog_row is None or not _footprint_pad_set_for_row(catalog_row):
+        return _pinout_numeric_fallback(pinout)
+    return False
+
+
+def _pinout_is_meaningful(pinout: Any) -> bool:
+    """Backward-compatible alias: legacy name/num diversity only (vendor placeholder heuristic)."""
+    return _pinout_legacy_name_diversity(pinout)
 
 
 def _pinout_list_from_raw(raw: Any) -> list | None:
@@ -153,9 +214,16 @@ def _pinout_list_from_raw(raw: Any) -> list | None:
     return None
 
 
-def needs_pinout_database_enrich(pinout_json_raw: Any) -> bool:
-    """True when the catalog row should still receive pinout enrichment (missing or placeholder-only)."""
-    return not _pinout_is_meaningful(_pinout_list_from_raw(pinout_json_raw))
+def needs_pinout_database_enrich(
+    pinout_json_raw: Any,
+    *,
+    catalog_row: dict[str, Any] | None = None,
+) -> bool:
+    """True when the catalog row should still receive pinout enrichment (missing or not pad-safe)."""
+    po = _pinout_list_from_raw(pinout_json_raw)
+    if po is None:
+        return True
+    return not _pinout_is_sufficient(po, catalog_row)
 
 
 def _footprint_pad_set_for_row(row: dict[str, Any]) -> set[str] | None:
@@ -206,35 +274,17 @@ def _best_enrich_pin_name(num: str, loc_name: str, ven_name: str) -> str:
     return ven_name or loc_name or num
 
 
-def _merge_kicad_and_vendor_pinouts(
-    local: list[dict] | None,
+def _merge_pinouts_local_vendor_by_local_nums(
+    local: list[dict],
     vendor: list[dict] | None,
     *,
-    preference: str = "auto",
-) -> list[dict] | None:
-    pref = (preference or "auto").strip().lower()
-    vm = _pinout_is_meaningful(vendor)
-    lm = _pinout_is_meaningful(local)
+    local_nums_only: bool = False,
+) -> list[dict]:
+    """Build merged pinout: pad numbers from *local* KiCad symbol order; names/types filled from vendor.
 
-    if pref == "vendor":
-        if vm:
-            return list(vendor or [])
-        return list(local) if local else None
-    if pref == "kicad_symbol":
-        if lm:
-            return list(local or [])
-        return list(vendor) if vendor else None
-
-    if not local and not vendor:
-        return None
-    if not vm and lm:
-        return list(local)
-    if not lm and vm:
-        return list(vendor or [])
-    if not lm and not vm:
-        cand = vendor or local
-        return list(cand) if cand else None
-
+    When *local_nums_only* is True (pad-aligned KiCad local pinout), do not append extra vendor-only
+    ``num`` keys (e.g. signal names that are not footprint pads).
+    """
     v_by_num: dict[str, dict] = {}
     for p in vendor or []:
         if isinstance(p, dict) and str(p.get("num") or "").strip():
@@ -249,13 +299,14 @@ def _merge_kicad_and_vendor_pinouts(
             continue
         seen.add(n)
         order.append(n)
-    for p in vendor or []:
-        if not isinstance(p, dict):
-            continue
-        n = str(p.get("num") or "").strip()
-        if n and n not in seen:
-            seen.add(n)
-            order.append(n)
+    if not local_nums_only:
+        for p in vendor or []:
+            if not isinstance(p, dict):
+                continue
+            n = str(p.get("num") or "").strip()
+            if n and n not in seen:
+                seen.add(n)
+                order.append(n)
 
     merged: list[dict] = []
     for n in order:
@@ -273,7 +324,81 @@ def _merge_kicad_and_vendor_pinouts(
         if typ is None:
             typ = "bidirectional"
         merged.append({"num": n, "name": name, "type": typ})
-    return merged if merged else None
+    return merged
+
+
+def _merge_kicad_and_vendor_pinouts(
+    local: list[dict] | None,
+    vendor: list[dict] | None,
+    *,
+    preference: str = "auto",
+    row: dict[str, Any] | None = None,
+) -> list[dict] | None:
+    pref = (preference or "auto").strip().lower()
+    pads = _footprint_pad_set_for_row(row) if row else None
+    pads_known = bool(pads)
+    loc_aligned = bool(local) and row is not None and _pinout_footprint_aligned(local, row)
+    ven_aligned = bool(vendor) and row is not None and _pinout_footprint_aligned(vendor, row)
+
+    def _lm_eff() -> bool:
+        if not local:
+            return False
+        return bool(
+            loc_aligned
+            or _pinout_legacy_name_diversity(local)
+            or (not pads_known and _pinout_numeric_fallback(local))
+        )
+
+    def _vm_eff() -> bool:
+        if not vendor:
+            return False
+        if pads_known:
+            return ven_aligned
+        return _pinout_legacy_name_diversity(vendor) or _pinout_numeric_fallback(vendor)
+
+    if pref == "vendor":
+        if vendor and _vm_eff():
+            return list(vendor)
+        return list(local) if local else None
+    if pref == "kicad_symbol":
+        if local and _lm_eff():
+            return list(local)
+        return list(vendor) if vendor else None
+
+    if not local and not vendor:
+        return None
+
+    if local and vendor and loc_aligned and pref == "auto":
+        return _merge_pinouts_local_vendor_by_local_nums(local, vendor, local_nums_only=True)
+
+    le, ve = _lm_eff(), _vm_eff()
+
+    if not vendor:
+        return list(local) if le else None
+
+    if not local:
+        if ve:
+            return list(vendor)
+        if vendor and pads_known and not ven_aligned:
+            if enrich_strict_pinout_pads():
+                return None
+            return list(vendor)
+        if vendor:
+            return list(vendor)
+        return None
+
+    if not ve and le:
+        return list(local)
+    if not le and ve:
+        return list(vendor)
+    if not le and not ve:
+        cand = vendor or local
+        if cand and pads_known and not _pinout_footprint_aligned(cand, row):
+            if enrich_strict_pinout_pads():
+                return None
+        return list(cand) if cand else None
+
+    return _merge_pinouts_local_vendor_by_local_nums(local, vendor, local_nums_only=False)
 
 
 def _persist_pinout_only(
@@ -327,7 +452,8 @@ def enrich_component_in_db(
         return EnrichResult(attempted=False, updated=False, vendor=None, reason="not_in_db")
 
     existing_po = _pinout_list_from_raw(row.get("pinout_json"))
-    if _pinout_is_meaningful(existing_po):
+    row_d = dict(row)
+    if _pinout_is_sufficient(existing_po, row_d):
         return EnrichResult(attempted=False, updated=False, vendor=None, reason="already_has_pinout")
 
     pref = (os.environ.get("OPENHAC_ENRICH_PINOUT_PREFERENCE") or "auto").strip().lower()
@@ -336,7 +462,7 @@ def enrich_component_in_db(
     def _persist_kicad_symbol_pinout(*, attempted: bool) -> EnrichResult | None:
         if not local_po or pref == "vendor":
             return None
-        if not _pinout_is_meaningful(local_po):
+        if not _pinout_is_sufficient(local_po, row_d):
             return None
         if not _persist_pinout_only(db, gn, local_po, pinout_source="kicad_symbol"):
             return None
@@ -405,11 +531,11 @@ def enrich_component_in_db(
         return EnrichResult(attempted=True, updated=False, vendor=None, reason="not_found")
 
     vendor_po_raw = getattr(part, "pinout", None)
-    had_meaningful_vendor = _pinout_is_meaningful(vendor_po_raw)
+    had_usable_vendor_pinout = _pinout_is_sufficient(vendor_po_raw, row_d)
     pinout = getattr(part, "pinout", None)
-    if pinout and not _pinout_is_meaningful(pinout):
+    if pinout and not _pinout_is_sufficient(pinout, row_d):
         try:
-            logger.info("Ignoring placeholder pinout for %s from %s.", gn, getattr(part, "source_vendor", None))
+            logger.info("Ignoring unusable pinout for %s from %s.", gn, getattr(part, "source_vendor", None))
         except Exception:
             pass
         try:
@@ -418,17 +544,26 @@ def enrich_component_in_db(
             pass
 
     vendor_po = getattr(part, "pinout", None)
-    merged = _merge_kicad_and_vendor_pinouts(local_po, vendor_po, preference=pref)
+    merged = _merge_kicad_and_vendor_pinouts(local_po, vendor_po, preference=pref, row=row_d)
     if merged:
         part.pinout = merged  # type: ignore[attr-defined]
+    elif local_po and _pinout_footprint_aligned(local_po, row_d):
+        part.pinout = list(local_po)  # type: ignore[attr-defined]
+    else:
+        try:
+            part.pinout = None  # type: ignore[attr-defined]
+        except Exception:
+            pass
+
+    if part.pinout:
         ven_tag = str(getattr(part, "source_vendor", None) or "").strip()
-        if local_po and _pinout_is_meaningful(local_po):
-            if had_meaningful_vendor and ven_tag:
+        if local_po and _pinout_is_sufficient(local_po, row_d):
+            if had_usable_vendor_pinout and ven_tag:
                 try:
                     setattr(part, "source_vendor", f"kicad_symbol+{ven_tag}")  # type: ignore[misc]
                 except Exception:
                     pass
-            elif not had_meaningful_vendor:
+            elif not had_usable_vendor_pinout:
                 try:
                     setattr(part, "source_vendor", "kicad_symbol")  # type: ignore[misc]
                 except Exception:
@@ -509,15 +644,16 @@ def discover_enrich_targets_from_board(board: Any) -> list[dict[str, Any]]:
                 cd = getattr(comp, "_comp_data", {}) or {}
             except Exception:
                 cd = {}
-            if not needs_pinout_database_enrich(cd.get("pinout_json")):
-                continue
             row = None
             try:
                 row = comp.db.get_component(gn)  # type: ignore[attr-defined]
             except Exception:
                 row = None
+            row_d = dict(row) if row else None
+            if not needs_pinout_database_enrich(cd.get("pinout_json"), catalog_row=row_d):
+                continue
             if row:
-                if not needs_pinout_database_enrich(row.get("pinout_json")):
+                if not needs_pinout_database_enrich(row.get("pinout_json"), catalog_row=row_d):
                     continue
                 rec: dict[str, Any] = {"generic_name": gn}
                 mpn = row.get("mpn")

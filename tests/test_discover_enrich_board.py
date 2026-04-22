@@ -33,19 +33,20 @@ def test_discover_skips_when_pinout_present() -> None:
 
 
 def test_discover_includes_placeholder_pinout() -> None:
-    """Placeholder-only pinout (name == num) still needs enrichment."""
+    """Invalid / duplicate pin numbers still need enrichment (not pad-safe)."""
     board = MagicMock()
     mod = MagicMock()
     comp = MagicMock()
+    bad_po = '[{"num":"1","name":"1"},{"num":"1","name":"1"}]'
     comp.generic_name = "U_PLH"
-    comp._comp_data = {"pinout_json": '[{"num":"1","name":"1"}]'}
+    comp._comp_data = {"pinout_json": bad_po}
     comp.db = _FakeDB(
         {
             "U_PLH": {
                 "generic_name": "U_PLH",
                 "mpn": "X",
                 "supplier_sku": "C999",
-                "pinout_json": '[{"num":"1","name":"1"}]',
+                "pinout_json": bad_po,
             }
         }
     )

@@ -100,7 +100,13 @@ def phase_enrich_parts(state: CompileState) -> None:
             seen.add(gn)
             try:
                 cd = getattr(comp, "_comp_data", {}) or {}
-                if not needs_pinout_database_enrich(cd.get("pinout_json")):
+                row = None
+                try:
+                    row = comp.db.get_component(gn)  # type: ignore[attr-defined]
+                except Exception:
+                    row = None
+                row_d = dict(row) if row else None
+                if not needs_pinout_database_enrich(cd.get("pinout_json"), catalog_row=row_d):
                     skipped += 1
                     continue
             except Exception:
@@ -280,6 +286,16 @@ def phase_netlist_bom(state: CompileState) -> None:
         bom_path=state.bom_path,
         bom_profile=getattr(state.board, "bom_profile", None),
     )
+
+
+def phase_catalog_overlay_info(state: CompileState) -> None:
+    """Log active JSON catalog overlay sources (bundled always; user via env / CLI / Board.compile)."""
+    try:
+        from openhac.database import catalog_overlay as co
+
+        co.log_active_overlay_sources()
+    except Exception:
+        pass
 
 
 def phase_footprint_pin_pad(state: CompileState) -> None:
@@ -556,6 +572,7 @@ DEFAULT_COMPILE_PHASES: tuple[Callable[[CompileState], None], ...] = (
     phase_pinout_coverage,
     phase_interface_validation,
     phase_netlist_bom,
+    phase_catalog_overlay_info,
     phase_footprint_pin_pad,
     phase_layout,
     phase_post_layout_checks,

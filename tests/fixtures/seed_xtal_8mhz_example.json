@@ -1,0 +1,18 @@
+[
+  {
+    "generic_name": "XTAL_8MHZ_3225_EXAMPLE",
+    "kicad_symbol": "Device:Crystal_GND24_Small",
+    "kicad_footprint": "Crystal:Crystal_SMD_3225-4Pin_3.2x2.5mm",
+    "manufacturer": "Example",
+    "mpn": "8MHz3225",
+    "supplier_sku": "C000000",
+    "description": "Example 8 MHz crystal; pad numbers 1–4 for footprint alignment.",
+    "category": "crystals",
+    "pinout": [
+      {"num": "1", "name": "1", "type": "passive"},
+      {"num": "2", "name": "2", "type": "passive"},
+      {"num": "3", "name": "3", "type": "passive"},
+      {"num": "4", "name": "4", "type": "passive"}
+    ]
+  }
+]

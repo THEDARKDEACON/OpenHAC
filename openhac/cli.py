@@ -314,6 +314,7 @@ def cmd_compile(args):
             else:
                 zip_path = f"{name}-release.zip"
 
+        overlay_paths = getattr(args, "catalog_overlay", None) or []
         board.compile(
             project_name=name,
             generate_bom=True,
@@ -329,6 +330,7 @@ def cmd_compile(args):
             module_clearance_mm=float(getattr(args, "module_gap_mm", 0.0) or 0.0),
             deoverlap_max_iters=int(getattr(args, "deoverlap_iters", 200) or 200),
             deoverlap_step_mm=float(getattr(args, "deoverlap_step_mm", 0.75) or 0.75),
+            catalog_overlay_paths=tuple(overlay_paths) if overlay_paths else (),
         )
         logger.info("Compilation complete.")
     finally:
@@ -1070,6 +1072,14 @@ def main():
         default=0,
         type=int,
         help="Max enrichment attempts for --auto-enrich-board (0 = no limit).",
+    )
+    p_compile.add_argument(
+        "--catalog-overlay",
+        action="append",
+        default=None,
+        metavar="PATH",
+        help="JSON catalog overlay file or directory (*.json). Repeatable; merged after bundled overlays. "
+        "Same as env OPENHAC_CATALOG_OVERLAY (pathsep-separated). See openhac/database/catalog_overlay.py.",
     )
     p_compile.set_defaults(func=cmd_compile)
 

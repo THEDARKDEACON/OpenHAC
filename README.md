@@ -46,6 +46,10 @@ Dependencies live in **`pyproject.toml`**. Copy **`.env.example`** → **`.env`*
 | `OPENHAC_DETERMINISTIC` | More stable outputs for CI/golden tests |
 | `FREEROUTING_JAR` | Path to FreeRouting `.jar` |
 | `KICAD9_FOOTPRINT_DIR` / `KICAD8_FOOTPRINT_DIR` | Footprint search roots |
+| `OPENHAC_STRICT_FOOTPRINT_PIN_PAD` | `1` = fail compile when a netted pin has no matching footprint pad (PCB-002); same idea as `--strict-footprint-pads` |
+| `OPENHAC_ENRICH_STRICT_PINOUT_PADS` | `1` = when merging enriched pinouts, require pad names to line up with the KiCad footprint (stricter than default) |
+| `OPENHAC_CATALOG_OVERLAY` | Pathsep-separated files/dirs of JSON catalog overrides (see `openhac/database/package_catalog_overlays/README.md`) |
+| `OPENHAC_NO_BUNDLED_CATALOG_OVERLAYS` | `1` = do not merge bundled `package_catalog_overlays/*.json` (use your own overlays only) |
 
 Vendor API variables (DigiKey, Mouser, TME, JLC) are documented in **`.env.example`**. Fabrication export also uses KiCad env vars as usual.
 
@@ -81,6 +85,24 @@ export FREEROUTING_JAR=/path/to/freerouting.jar
 ```bash
 openhac export fab my_board.kicad_pcb -o ./gerbers
 ```
+
+### JLC / LCSC boards — simple workflow
+
+Use this when your design uses LCSC/JLC parts and you want the catalog, enrich, and optional pad checks to line up.
+
+1. **Footprints** — Set `KICAD*_FOOTPRINT_DIR` so every `*.kicad_mod` your BOM references can be found (see Requirements above).
+2. **Catalog in SQLite** — Refresh occasionally: `python3 -m openhac.database.sync_jlc`, or add `--sync-jlc-before` on `openhac compile` so sync runs automatically before the board loads.
+3. **Fill gaps after load** — Add `--auto-enrich-board` so OpenHaC can discover missing DB rows and enrich symbol/pinout data for the parts on your board.
+4. **Stricter fab check (optional)** — When you are ready to fail on bad pin↔pad pairing: `--strict-footprint-pads` (or `OPENHAC_STRICT_FOOTPRINT_PIN_PAD=1`). For stricter merge rules during enrich, set `OPENHAC_ENRICH_STRICT_PINOUT_PADS=1`.
+5. **Catalog overlays** — Bundled JSON fixes live under `openhac/database/package_catalog_overlays/` and merge automatically unless `OPENHAC_NO_BUNDLED_CATALOG_OVERLAYS=1`. For **extra** project-specific overrides, use `--catalog-overlay /path/to/dir-or-file` or `OPENHAC_CATALOG_OVERLAY`. Details: `openhac/database/package_catalog_overlays/README.md`.
+
+Example (sync + enrich in one compile):
+
+```bash
+openhac compile my_design.py -o build --sync-jlc-before --auto-enrich-board
+```
+
+**Schematic appearance:** Auto-generated schematics can look crowded (overlapping text, `C?`/`U?` until you run **Tools → Annotate Schematic** in KiCad). That is mostly layout and annotation in KiCad, not the same problem as footprint pad mismatches. The steps above address **correctness** (nets ↔ pads ↔ DB); cleaning the drawing is a separate KiCad editing step.
 
 ---
 

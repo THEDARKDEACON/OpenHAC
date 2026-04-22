@@ -238,8 +238,15 @@ def assert_footprint_pin_pad_or_raise(board) -> None:
 
     msgs = pin_pad_coverage_warnings_for_board(board)
     if msgs:
+        hint = ""
+        try:
+            from openhac.database.catalog_overlay import pcb002_failure_hint
+
+            hint = "\n\n" + pcb002_failure_hint()
+        except Exception:
+            pass
         raise LayoutGenerationError(
-            "PCB-002 strict footprint pin↔pad check failed:\n" + "\n".join(msgs)
+            "PCB-002 strict footprint pin↔pad check failed:\n" + "\n".join(msgs) + hint
         )
 
 

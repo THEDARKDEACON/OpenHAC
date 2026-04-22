@@ -523,6 +523,7 @@ class Board:
         source_script_path: str | os.PathLike[str] | None = None,
         output_dir: str | os.PathLike[str] | None = None,
         release_zip_path: str | os.PathLike[str] | None = None,
+        catalog_overlay_paths: list[str | os.PathLike[str]] | tuple[str | os.PathLike[str], ...] | None = None,
     ):
         if kicad_sch_erc and not export_schematic:
             raise ValueError("kicad_sch_erc=True requires export_schematic=True")
@@ -543,7 +544,14 @@ class Board:
         except Exception:
             pass
 
-        ctx = OpenHaCCompileContext(self, allow_risky_part_lookups=allow_risky_part_lookups)
+        co_paths: tuple[str | os.PathLike[str], ...] = ()
+        if catalog_overlay_paths:
+            co_paths = tuple(catalog_overlay_paths)
+        ctx = OpenHaCCompileContext(
+            self,
+            allow_risky_part_lookups=allow_risky_part_lookups,
+            catalog_overlay_paths=co_paths,
+        )
         tok = compile_context_set(ctx)
         try:
             try:

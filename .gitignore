@@ -95,6 +95,13 @@ openhac/database/.cache/
 .skidl/
 
 # =============================================================================
+# Non-production board bring-up / local experiments (not shipped with the library)
+# =============================================================================
+/flight_controller_jlc_only.py
+/flight_controller_real.py
+/flight_controller_DEPRECATED.py.old
+
+# =============================================================================
 # Generated build scripts (integration test outputs, not the tests/ suite)
 # =============================================================================
 test_complex.py

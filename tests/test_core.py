@@ -1,5 +1,6 @@
 """Tests for openhac.core — Component, Module, Interface primitives."""
 
+import json
 import warnings
 from unittest.mock import patch, MagicMock
 
@@ -12,6 +13,7 @@ from openhac.core.base import (
     Interface,
     InterfaceNotFoundError,
     OpenHaCError,
+    _component_pin_access_aliases,
 )
 
 
@@ -169,6 +171,45 @@ class TestModule:
         mod = Module("test")
         assert mod.width == 10.0
         assert mod.height == 10.0
+
+
+# ---------------------------------------------------------------------------
+# Pin name shorthands (MCU-style labels)
+# ---------------------------------------------------------------------------
+
+
+def test_pin_alias_mcu_suffix_strips_to_port_pin():
+    assert "PA12" in _component_pin_access_aliases("PA12_USB_DP")
+
+
+def test_component_augmented_assign_uses_mcu_pin_alias(tmp_db):
+    """``comp['PH0_OSC_IN'] += net`` must resolve to symbol pin ``PH0`` (see Component.__setitem__)."""
+    _, dm = tmp_db
+    dm.insert_component(
+        {
+            "generic_name": "MCU_ALIAS_TEST",
+            "kicad_symbol": "MCU_ST:STM32F405RGTx",
+            "kicad_footprint": "Package_QFP:LQFP-64_10x10mm_P0.5mm",
+            "manufacturer": "X",
+            "mpn": "MCU_ALIAS_TEST",
+            "supplier_sku": "C1",
+            "description": "",
+            "category": "ic",
+            "attributes_json": "{}",
+            "pinout_json": json.dumps(
+                [
+                    {"num": "5", "name": "PH0", "type": "bidirectional"},
+                    {"num": "6", "name": "PH1", "type": "bidirectional"},
+                ]
+            ),
+        },
+        ignore_duplicate=True,
+    )
+    with patch.object(Component, "db", dm):
+        comp = Component("MCU_ALIAS_TEST")
+    n = Net("XTAL_IN")
+    comp["PH0_OSC_IN"] += n
+    assert comp["PH0"].net is n
 
 
 # ---------------------------------------------------------------------------

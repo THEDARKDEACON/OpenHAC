@@ -1,0 +1,111 @@
+[
+  {
+    "generic_name": "IMU_ICM42688P",
+    "category": "Accelerometers",
+    "supplier_sku": "C1850418",
+    "mpn": "ICM-42688-P",
+    "kicad_footprint": "Package_DFN_QFN:DHWQFN-14-1EP_2.5x3mm_P0.5mm_EP1x1.5mm",
+    "pinout": [
+      {"num": "1", "name": "CS", "type": "input"},
+      {"num": "2", "name": "NC2", "type": "no_connect"},
+      {"num": "3", "name": "NC3", "type": "no_connect"},
+      {"num": "4", "name": "NC4", "type": "no_connect"},
+      {"num": "5", "name": "INT1", "type": "output"},
+      {"num": "6", "name": "INT2", "type": "output"},
+      {"num": "7", "name": "FSYNC", "type": "input"},
+      {"num": "8", "name": "VDDIO", "type": "power_in"},
+      {"num": "9", "name": "GND", "type": "power_in"},
+      {"num": "10", "name": "GND2", "type": "power_in"},
+      {"num": "11", "name": "SDO", "type": "bidirectional"},
+      {"num": "12", "name": "SDI", "type": "bidirectional"},
+      {"num": "13", "name": "SCK", "type": "input"},
+      {"num": "14", "name": "VDD", "type": "power_in"},
+      {"num": "15", "name": "EP", "type": "power_in"}
+    ]
+  },
+  {
+    "generic_name": "IMU_ICM42688",
+    "category": "Accelerometers",
+    "supplier_sku": "C1850418",
+    "mpn": "ICM-42688-P",
+    "kicad_footprint": "Package_DFN_QFN:DHWQFN-14-1EP_2.5x3mm_P0.5mm_EP1x1.5mm",
+    "pinout": [
+      {"num": "1", "name": "CS", "type": "input"},
+      {"num": "2", "name": "NC2", "type": "no_connect"},
+      {"num": "3", "name": "NC3", "type": "no_connect"},
+      {"num": "4", "name": "NC4", "type": "no_connect"},
+      {"num": "5", "name": "INT1", "type": "output"},
+      {"num": "6", "name": "INT2", "type": "output"},
+      {"num": "7", "name": "FSYNC", "type": "input"},
+      {"num": "8", "name": "VDDIO", "type": "power_in"},
+      {"num": "9", "name": "GND", "type": "power_in"},
+      {"num": "10", "name": "GND2", "type": "power_in"},
+      {"num": "11", "name": "SDO", "type": "bidirectional"},
+      {"num": "12", "name": "SDI", "type": "bidirectional"},
+      {"num": "13", "name": "SCK", "type": "input"},
+      {"num": "14", "name": "VDD", "type": "power_in"},
+      {"num": "15", "name": "EP", "type": "power_in"}
+    ]
+  },
+  {
+    "generic_name": "BARO_BMP388",
+    "category": "Board Mount Pressure Sensors",
+    "kicad_footprint": "Package_LGA:ST_HLGA-10_2.5x2.5mm_P0.6mm_LayoutBorder3x2y",
+    "pinout": [
+      {"num": "1", "name": "VDDIO", "type": "power_in"},
+      {"num": "2", "name": "SCK", "type": "input"},
+      {"num": "3", "name": "GND", "type": "power_in"},
+      {"num": "4", "name": "SDI", "type": "bidirectional"},
+      {"num": "5", "name": "SDO", "type": "bidirectional"},
+      {"num": "6", "name": "CSB", "type": "input"},
+      {"num": "7", "name": "INT", "type": "output"},
+      {"num": "8", "name": "GND2", "type": "power_in"},
+      {"num": "9", "name": "GND3", "type": "power_in"},
+      {"num": "10", "name": "VDD", "type": "power_in"}
+    ]
+  },
+  {
+    "generic_name": "MAG_QMC5883L",
+    "category": "Magnetometers",
+    "kicad_footprint": "Package_LGA:LGA-16_3x3mm_P0.5mm",
+    "pinout": [
+      {"num": "1", "name": "SCL", "type": "input"},
+      {"num": "2", "name": "VDD", "type": "power_in"},
+      {"num": "3", "name": "NC3", "type": "no_connect"},
+      {"num": "4", "name": "S1", "type": "passive"},
+      {"num": "5", "name": "NC5", "type": "no_connect"},
+      {"num": "6", "name": "NC6", "type": "no_connect"},
+      {"num": "7", "name": "NC7", "type": "no_connect"},
+      {"num": "8", "name": "SETP", "type": "passive"},
+      {"num": "9", "name": "GND", "type": "power_in"},
+      {"num": "10", "name": "C1", "type": "passive"},
+      {"num": "11", "name": "GND2", "type": "power_in"},
+      {"num": "12", "name": "SETC", "type": "passive"},
+      {"num": "13", "name": "VDDIO", "type": "power_in"},
+      {"num": "14", "name": "NC14", "type": "no_connect"},
+      {"num": "15", "name": "DRDY", "type": "output"},
+      {"num": "16", "name": "SDA", "type": "bidirectional"}
+    ]
+  },
+  {
+    "generic_name": "FLASH_W25Q128JV",
+    "pinout": [
+      {"num": "1", "name": "CS", "type": "input"},
+      {"num": "2", "name": "DO", "type": "output"},
+      {"num": "3", "name": "WP", "type": "input"},
+      {"num": "4", "name": "GND", "type": "power_in"},
+      {"num": "5", "name": "DI", "type": "input"},
+      {"num": "6", "name": "CLK", "type": "input"},
+      {"num": "7", "name": "HOLD", "type": "input"},
+      {"num": "8", "name": "VCC", "type": "power_in"}
+    ]
+  },
+  {
+    "generic_name": "LDO_LDL1117S33R",
+    "pinout": [
+      {"num": "1", "name": "OUT", "type": "power_out"},
+      {"num": "2", "name": "GND", "type": "power_in"},
+      {"num": "3", "name": "IN", "type": "power_in"}
+    ]
+  }
+]
