@@ -123,3 +123,116 @@ class Capacitor(Module, _ParametricMixin):
 
         self._comp = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
         self.max_current_draw_ma = 0.0
+
+
+class Inductor(Module, _ParametricMixin):
+    """Parametric inductor."""
+
+    def __init__(self, value: str = "10uH", package: str = "0603",
+                 current_max_ma: float = None, **kwargs):
+        super().__init__(f"L_{value}")
+        from openhac.database.db_manager import DatabaseManager
+        db = DatabaseManager()
+        comp_data, _ = db.parametric_search("inductors", value=value, package=package)
+        if not comp_data:
+            comp_data = Component._live_lookup(f"L_{value}_{package}")
+        self._comp = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
+
+
+class ResistorArray(Module, _ParametricMixin):
+    """Parametric Resistor Array (e.g. 4x 10k).
+
+    Args:
+        value: Resistance value, e.g. "10k".
+        count: Number of resistors in pack (2, 4, 8).
+        package: Package code (e.g. "0603x4").
+    """
+
+    def __init__(self, value: str = "10k", count: int = 4,
+                 package: str = "0603x4", **kwargs):
+        super().__init__(f"RA_{count}x{value}")
+
+        from openhac.database.db_manager import DatabaseManager
+        db = DatabaseManager()
+
+        desc = f"ResistorArray(value={value}, count={count})"
+
+        comp_data, was_fallback = db.parametric_search(
+            "resistor_arrays",
+            value=value,
+            count=count,
+            package=package
+        )
+
+        if comp_data is None:
+            generic_name = f"RA_{value}_{package}"
+            comp_data = db.get_component(generic_name)
+            if comp_data is None:
+                comp_data = Component._live_lookup(generic_name)
+            if comp_data is None:
+                self._raise_not_found(desc)
+            was_fallback = True
+
+        if was_fallback:
+            self._warn_soft_fallback(desc, comp_data)
+
+        self.ic = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
+        self.ic.lib = "Device"
+
+
+class FerriteBead(Module, _ParametricMixin):
+    """Parametric Ferrite Bead for noise suppression.
+
+    Args:
+        impedance_at_100mhz: Impedance in ohms (e.g. 600).
+        i_max: Maximum DC current (A).
+        package: SMD package code (e.g. "0603").
+    """
+
+    def __init__(self, impedance_at_100mhz: float = 600, i_max: float = 0.5,
+                 package: str = "0603", **kwargs):
+        super().__init__(f"FB_{impedance_at_100mhz}R")
+
+        from openhac.database.db_manager import DatabaseManager
+        db = DatabaseManager()
+
+        desc = f"FerriteBead(z={impedance_at_100mhz}R, i_max={i_max}A)"
+
+        comp_data, was_fallback = db.parametric_search(
+            "ferrite_beads",
+            impedance=impedance_at_100mhz,
+            i_max=i_max,
+            package=package
+        )
+
+        if comp_data is None:
+            generic_name = f"FB_{impedance_at_100mhz}R_{package}"
+            comp_data = db.get_component(generic_name)
+            if comp_data is None:
+                comp_data = Component._live_lookup(generic_name)
+            if comp_data is None:
+                self._raise_not_found(desc)
+            was_fallback = True
+
+        if was_fallback:
+            self._warn_soft_fallback(desc, comp_data)
+
+        self.ic = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
+        self.ic.lib = "Device"
+
+        self.p1 = Net("P1")
+        self.p2 = Net("P2")
+        self.ic["1"] += self.p1
+        self.ic["2"] += self.p2
+
+
+class Transformer(Module, _ParametricMixin):
+    """Parametric Transformer."""
+
+    def __init__(self, type: str = "signal", **kwargs):
+        super().__init__(f"XFMR_{type.upper()}")
+        from openhac.database.db_manager import DatabaseManager
+        db = DatabaseManager()
+        comp_data = db.get_component("Transformer_Signal")
+        self.ic = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
+        self.ic.lib = "Device"

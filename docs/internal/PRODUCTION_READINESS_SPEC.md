@@ -196,7 +196,7 @@ Each requirement includes: **problem**, **current state** (as of this spec), **t
 |-------|---------|
 | **Severity** | P3 |
 | **Problem** | High-speed designs need impedance, reflection, eye analysis. |
-| **Current state** | Example **``docs/stackup_template.yaml``** for handoff; no in-tool solver. |
+| **Current state** | Example **``../stackup_template.yaml``** for handoff; no in-tool solver. |
 | **Target state** | Tier D: export to external SI tools **or** integrate basic calculator + stackup. |
 | **Acceptance criteria** | Documented handoff (e.g. HyperLynx, KiCad field solver) + **stackup file** export. |
 | **Approach** | Start with **documentation + stackup YAML**; tool integration later. |
@@ -299,7 +299,7 @@ Each requirement includes: **problem**, **current state** (as of this spec), **t
 |-------|---------|
 | **Severity** | P2 |
 | **Problem** | Impedance needs Dk/Df, thickness, copper weight. |
-| **Current state** | Example vendor stackup JSON: **`docs/fab_stackup_jlc_example.json`** (human / calculator handoff). |
+| **Current state** | Example vendor stackup JSON: **`../fab_stackup_jlc_example.json`** (human / calculator handoff). |
 | **Target state** | Stackup file with **material specs**; feeds impedance calculator (SIG-001). |
 | **Acceptance criteria** | Single fab’s stackup JSON checked in as example. |
 | **Approach** | Vendor-specific templates (JLC, Eurocircuits). |
@@ -370,6 +370,17 @@ Each requirement includes: **problem**, **current state** (as of this spec), **t
 | **Acceptance criteria** | Example: `board.add_mounting_hole(mmx, mmy, dia)`. |
 | **Approach** | NPTH pads + mechanical layer shapes. |
 
+### PCB-011 — 3D Model & Footprint Automation
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | Missing footprints or 3D models in local libraries break fabrication confidence and 3D visualization. |
+| **Current state** | JIT generation from EasyEDA/LCSC via `easyeda2kicad`; absolute pathing for 3D models; persistent cache in `~/.kiro/openhac/`. |
+| **Target state** | Automated fetch/convert/attach for all JLC-sourced components with fallback for MPN-based matches. |
+| **Acceptance criteria** | Compilation with `--auto-enrich-board` produces a `.kicad_pcb` with valid 3D model links and a project-local `fp-lib-table` that includes generated footprints. |
+| **Approach** | Integrate `easyeda2kicad` into the enrichment phase; normalize asset storage and pathing. |
+
 ---
 
 ## 5. Simulation
@@ -439,7 +450,7 @@ Each requirement includes: **problem**, **current state** (as of this spec), **t
 |-------|---------|
 | **Severity** | P3 |
 | **Problem** | Dimensions, tolerances, layer stack table on **drawing**. |
-| **Current state** | **``examples/fab_stackup_table.md``** — human-editable stackup table for fab docs; link to **``docs/fab_stackup_jlc_example.json``**. PDF from KiCad plot still manual. |
+| **Current state** | **``examples/fab_stackup_table.md``** — human-editable stackup table for fab docs; link to **``../fab_stackup_jlc_example.json``**. PDF from KiCad plot still manual. |
 | **Target state** | **Generate PDF** from template or export KiCad **plot** + **stackup table** page. |
 | **Acceptance criteria** | One example PDF in `examples/` with stackup table. |
 | **Approach** | Latex/PDF template or KiCad plot. |
@@ -572,7 +583,7 @@ Each requirement includes: **problem**, **current state** (as of this spec), **t
 |-------|---------|
 | **Severity** | P1 |
 | **Problem** | README claims **fully placed and routed**; references **`build.py`** missing; version strings inconsistent (`OpenHaC/1.0` vs `2.0`). |
-| **Current state** | README tier wording + env/CLI notes; **[docs/RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md)**; **`openhac --version`**; User-Agent via `openhac.version_info`; **`scripts/example_build.py`**. |
+| **Current state** | README tier wording + env/CLI notes; **[./RELEASE_CHECKLIST.md](./RELEASE_CHECKLIST.md)**; **`openhac --version`**; User-Agent via `openhac.version_info`; **`scripts/example_build.py`**. |
 | **Target state** | Per-release doc checklist; any remaining version strings grep-clean. |
 | **Acceptance criteria** | Checklist review before each release. |
 | **Approach** | Edit README; add `scripts/example_build.py` if needed. |
@@ -622,7 +633,7 @@ Each requirement includes: **problem**, **current state** (as of this spec), **t
 | LIB-001 to LIB-006 | P2, P2, P0, P1, P3, P2 |
 | SCH-001 to SCH-005 | P0, P2, P1, P2, P2 |
 | SIG-001 to SIG-006 | P3, P0, P3, P3, P2, P2 |
-| PCB-001 to PCB-010 | P0, P0, P1, P2, P1, P1, P1, P2, P2, P2 |
+| PCB-001 to PCB-011 | P0, P0, P1, P2, P1, P1, P1, P2, P2, P2, P1 |
 | SIM-001 to SIM-003 | P1, P2, P3 |
 | MFG-001 to MFG-005 | P0, P1, P3, P2, P2 |
 | PWR-001, PWR-002 | P0, P2 |
@@ -636,13 +647,13 @@ Each requirement includes: **problem**, **current state** (as of this spec), **t
 | Area | Primary files |
 |------|-----------------|
 | Compile pipeline | `openhac/core/board.py`, `openhac/core/compile_context.py`, `openhac/compiler/compile_pipeline.py`, `openhac/compiler/*.py` |
-| Software architecture notes | `docs/ARCHITECTURE.md` |
+| Software architecture notes | `./ARCHITECTURE.md` |
 | Schematic round-trip (SCH-001) | `openhac/compiler/schematic_gen.py` (`schematic_geometry`, wire/label parsers) |
 | PCB pad ↔ net (PCB-002) | `openhac/compiler/pcb_placement.py` (`pin_pad_coverage_warnings`, `kicad_mod_pad_numbers`) |
 | CI layout smoke (SW-006) | `.github/workflows/ci.yml`, `scripts/ci_full_compile_smoke.py` |
 | Release zip (MFG-005) | `openhac/compiler/release_bundle.py` |
 | ERC report parse (SCH-003) | `openhac/compiler/kicad_erc_report.py` |
-| Release checklist (SW-004) | `docs/RELEASE_CHECKLIST.md` |
+| Release checklist (SW-004) | `./RELEASE_CHECKLIST.md` |
 | SKiDL default circuit | `openhac/circuit.py` (`get_default_circuit`, `get_circuit` — SW-005) |
 | ERC/DRC | `openhac/compiler/rule_check.py` |
 | Example ERC hooks | `openhac/stdlib/erc_rules.py` (SCH-005) |

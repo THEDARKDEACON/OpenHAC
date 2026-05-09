@@ -1,0 +1,10 @@
+### Missing 3D models - created on 2026-05-09 14:36
+### Printed by checking_3D_models plugin
+Board file: /home/gareth-joel/Downloads/Hardware as Code/examples/ADCS/ADCS.kicad_pcb
+3D missing models written to:
+/home/gareth-joel/Downloads/Hardware as Code/examples/ADCS/ADCS_missing3Dmodels.txt
+-------
+('U13', '/home/gareth-joel/.kiro/openhac/easyeda_generated.3dshapes/SENSOR-TH_ACS758LCB-100B-PFF-T.step/SENSOR-TH_L10.0-W13.0-H7.0-ACS758LCB-100B-PFF-T.step')
+-------
+NUM of 3D missing models:1
+checked extensions ['.stp', '.step', '.stpZ']

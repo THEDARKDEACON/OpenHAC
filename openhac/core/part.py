@@ -53,14 +53,24 @@ class Pin:
                 new_net.add_pin(self)
                 new_net.add_pin(other)
             return self
-        elif isinstance(other, Net):
-            # Connecting pin to net
+        elif isinstance(other, Net) or type(other).__name__ == "Net":
+            # Connecting pin to net (allow SKiDL Net too during migration)
             if self.net:
                 # Already connected to a net, merge nets
-                self.net += other
+                if type(other).__name__ == "Net" and type(self.net).__name__ != "Net":
+                    # Cannot easily merge SKiDL and native net, just inject
+                    if hasattr(other, "pins"):
+                        other.pins.extend(self.net.pins)
+                else:
+                    self.net += other
             else:
                 self.net = other
-                other.add_pin(self)
+                if hasattr(other, "add_pin"):
+                    other.add_pin(self)
+                elif hasattr(other, "pins") and isinstance(other.pins, list):
+                    other.pins.append(self)
+                else:
+                    other += self
             return self
         else:
             raise TypeError(f"Cannot connect Pin to {type(other)}")

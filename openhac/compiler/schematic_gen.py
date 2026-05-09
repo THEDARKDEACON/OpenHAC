@@ -115,14 +115,26 @@ def _module_field(part) -> str:
         pass
     return ""
 
+def _module_layer(part) -> int | None:
+    try:
+        fields = getattr(part, "fields", None)
+        if isinstance(fields, dict):
+            v = fields.get("OpenHaC_Module_Layer")
+            if v is not None:
+                return int(v)
+    except Exception:
+        pass
+    return None
+
 
 def _assign_positions_grouped_by_module(parts) -> dict:
-    """Place parts in per-module blocks for readability (stretch).
-
-    Falls back to a plain grid when no parts are tagged with ``OpenHaC_Module``.
-    """
-    if not any(_module_field(p) for p in parts):
-        return _assign_grid_positions(parts)
+    """Place parts using a DAG or grid layout based on module tags."""
+    try:
+        import networkx as nx
+        has_nx = True
+    except ImportError:
+        logger.debug("networkx not installed; falling back to basic grid layout.")
+        has_nx = False
 
     cols, cell = _schematic_layout_params()
     groups: dict[str, list] = {}
@@ -130,17 +142,111 @@ def _assign_positions_grouped_by_module(parts) -> dict:
         groups.setdefault(_module_field(p), []).append(p)
 
     module_names = sorted(groups.keys(), key=lambda s: (s == "", s))
-    y0 = 0.0
+    
     positions: dict = {}
-    gap = cell * 1.5
+    
+    # Layout each module individually
+    mod_positions = {}
+    mod_dims = {}
+    
     for m in module_names:
-        ps = sorted(groups[m], key=_part_stable_key)
-        for idx, part in enumerate(ps):
-            col = idx % cols
-            row = idx // cols
-            positions[part] = (col * cell, y0 + row * cell)
-        rows = (len(ps) + cols - 1) // cols
-        y0 += max(1, rows) * cell + gap
+        m_parts = groups[m]
+        
+        # Always use a deterministic grid layout for schematics.
+        # Force-directed graphs cluster disconnected components on top of each other.
+        # We sort by ref prefix to group ICs (U), Connectors (J/CONN), and Passives (C, R, L)
+        def sort_key(p):
+            ref = str(getattr(p, "ref", "") or "").upper()
+            if ref.startswith("U"): return (0, ref)
+            if ref.startswith("J") or ref.startswith("CONN"): return (1, ref)
+            if ref.startswith("C"): return (2, ref)
+            if ref.startswith("R"): return (3, ref)
+            return (4, ref)
+            
+        sorted_parts = sorted(m_parts, key=sort_key)
+        lpos = {}
+        for idx, part in enumerate(sorted_parts):
+            c = idx % cols
+            r = idx // cols
+            lpos[part] = (c * cell, r * cell)
+            
+        mod_positions[m] = lpos
+        
+        # Calculate bounding box of this module
+        if lpos:
+            min_x = min(x for x, y in lpos.values())
+            max_x = max(x for x, y in lpos.values())
+            min_y = min(y for x, y in lpos.values())
+            max_y = max(y for x, y in lpos.values())
+            mod_dims[m] = (max_x - min_x + cell, max_y - min_y + cell)
+        else:
+            mod_dims[m] = (cell, cell)
+            
+    # Determine layers
+    mod_layers = {}
+    has_layers = False
+    for m, m_parts in groups.items():
+        layer = None
+        for p in m_parts:
+            l = _module_layer(p)
+            if l is not None:
+                layer = l
+                has_layers = True
+                break
+        mod_layers[m] = layer if layer is not None else 0
+
+    if has_layers:
+        # Pack by layer (DAG flow left-to-right)
+        layer_mods = {}
+        for m, l in mod_layers.items():
+            layer_mods.setdefault(l, []).append(m)
+            
+        current_x = 0.0
+        for l in sorted(layer_mods.keys()):
+            mods_in_layer = sorted(layer_mods[l])
+            current_y = 0.0
+            max_w = 0.0
+            for m in mods_in_layer:
+                w, h = mod_dims[m]
+                lpos = mod_positions[m]
+                min_x = min([x for x, y in lpos.values()] + [0])
+                min_y = min([y for x, y in lpos.values()] + [0])
+                for part, (lx, ly) in lpos.items():
+                    positions[part] = (current_x + (lx - min_x), current_y + (ly - min_y))
+                current_y += h + cell * 2
+                max_w = max(max_w, w)
+            current_x += max_w + cell * 3
+    else:
+        # Pack the modules into a global grid (e.g. 2 columns of modules)
+        global_cols = max(1, cols // 2)
+        row_heights = {}
+        
+        for idx, m in enumerate(module_names):
+            r = idx // global_cols
+            w, h = mod_dims[m]
+            row_heights[r] = max(row_heights.get(r, 0), h)
+            
+        current_y = 0.0
+        for r in sorted(row_heights.keys()):
+            current_x = 0.0
+            for c in range(global_cols):
+                idx = r * global_cols + c
+                if idx >= len(module_names):
+                    break
+                m = module_names[idx]
+                w, h = mod_dims[m]
+                
+                # Translate module parts to global position
+                lpos = mod_positions[m]
+                min_x = min([x for x, y in lpos.values()] + [0])
+                min_y = min([y for x, y in lpos.values()] + [0])
+                
+                for part, (lx, ly) in lpos.items():
+                    positions[part] = (current_x + (lx - min_x), current_y + (ly - min_y))
+                    
+                current_x += w + cell * 2 # Add generous padding between modules
+                
+            current_y += row_heights[r] + cell * 2
 
     return positions
 
@@ -280,16 +386,17 @@ def _fuse_graphic() -> str:
       (polyline (pts (xy 1.27 0) (xy 3.175 0)) (stroke (width 0.254)))"""
 
 
-def _ic_graphic(name: str, pin_count: int) -> str:
+def _ic_graphic(name: str, pin_count: int, w_mm: float = 10.16, h_mm: float = 0) -> str:
     """IC rectangle with appropriate size for pin count."""
-    # Calculate height based on pin count (2.54mm per pin pair)
-    height_pins = max(pin_count // 2, 4)
-    h = height_pins * 1.27  # half spacing
-    w = 5.08  # standard width
-    return f'      (rectangle (start -{w} -{h}) (end {w} {h}) (stroke (width 0.254)) (fill (type none)))'
+    if h_mm == 0:
+        height_pins = max(pin_count // 2, 4)
+        h_mm = height_pins * 2.54
+    w = w_mm / 2
+    h = h_mm / 2
+    return f'      (rectangle (start -{w:.3f} -{h:.3f}) (end {w:.3f} {h:.3f}) (stroke (width 0.254)) (fill (type background)))'
 
 
-def _get_graphic_for_type(sym_type: str, name: str, pin_count: int) -> str:
+def _get_graphic_for_type(sym_type: str, name: str, pin_count: int, w_mm: float = 10.16, h_mm: float = 0) -> str:
     """Return appropriate graphic for component type."""
     graphics = {
         'resistor': _resistor_graphic(),
@@ -301,10 +408,10 @@ def _get_graphic_for_type(sym_type: str, name: str, pin_count: int) -> str:
         'crystal': _crystal_graphic(),
         'fuse': _fuse_graphic(),
         'switch': _fuse_graphic(),  # Rectangle for now
-        'connector': _ic_graphic(name, pin_count),
-        'ic': _ic_graphic(name, pin_count),
+        'connector': _ic_graphic(name, pin_count, w_mm, h_mm),
+        'ic': _ic_graphic(name, pin_count, w_mm, h_mm),
     }
-    return graphics.get(sym_type, _ic_graphic(name, pin_count))
+    return graphics.get(sym_type, _ic_graphic(name, pin_count, w_mm, h_mm))
 
 
 def write_generated_symbol_library(
@@ -327,13 +434,17 @@ def write_generated_symbol_library(
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
 
-    def _sym_header(outer_key: str, inner_base: str, ref_prefix: str, sym_type: str, pin_count: int) -> str:
+    def _sym_header(outer_key: str, inner_base: str, ref_prefix: str, sym_type: str, pin_count: int, w_mm: float = 10.16, h_mm: float = 0) -> str:
         # Choose appropriate reference prefix and graphic (inner_base drives unit name and IC bbox).
-        graphic = _get_graphic_for_type(sym_type, inner_base, pin_count)
+        graphic = _get_graphic_for_type(sym_type, inner_base, pin_count, w_mm, h_mm)
+        
+        # Position reference slightly above the IC body, and Value below
+        h = h_mm / 2 if h_mm > 0 else (max(pin_count // 2, 4) * 1.27)
+        
         return (
             f'  (symbol "{outer_key}" (in_bom yes) (on_board yes)\n'
-            f'    (property "Reference" "{ref_prefix}" (at 0 5.08 0) (effects (font (size 1.27 1.27))))\n'
-            f'    (property "Value" "{inner_base}" (at 0 -5.08 0) (effects (font (size 1.27 1.27))))\n'
+            f'    (property "Reference" "{ref_prefix}" (at 0 {h + 2.54:.3f} 0) (effects (font (size 1.27 1.27))))\n'
+            f'    (property "Value" "{inner_base}" (at 0 -{h + 2.54:.3f} 0) (effects (font (size 1.27 1.27))))\n'
             f'    (symbol "{inner_base}_0_1"\n'
             f'{graphic}\n'
         )
@@ -341,18 +452,24 @@ def write_generated_symbol_library(
     def _sym_footer() -> str:
         return "    )\n  )\n"
 
-    def _pin_block(num: str, pname: str, x: float, y: float, rot: float, side: str) -> str:
+    def _pin_block(num: str, pname: str, x: float, y: float, rot: float, explicit_type: str | None = None) -> str:
         # Use pin numbers for SCH-001 resolver (number "N") with (at x y rot).
         safe_name = pname.replace('"', "'")
-        pin_type = "passive"
-        # Power pins get power type
-        if any(p in pname.upper() for p in ['VCC', 'VDD', '3V3', '5V', 'VBAT', 'GND', 'VSS']):
-            pin_type = "power_in" if side == "left" else "power_out"
-        # Output pins
-        if any(p in pname.upper() for p in ['OUT', 'OUTPUT']):
-            pin_type = "output"
+        
+        # Map JSON pin type to KiCad pin type
+        kicad_type = "passive"
+        t = str(explicit_type or "").lower()
+        if t in ("input", "output", "bidirectional", "tri_state", "passive", "unspecified", "power_in", "power_out", "open_collector", "open_emitter", "no_connect"):
+            kicad_type = t
+        elif t == "power":
+            kicad_type = "power_in"
+            
+        # Fallback heuristic for power pins if type wasn't explicitly power
+        if kicad_type in ("passive", "bidirectional", "unspecified") and any(p in pname.upper() for p in ['VCC', 'VDD', '3V3', '5V', 'VBAT', 'GND', 'VSS']):
+            kicad_type = "power_in"
+            
         return (
-            f'      (pin {pin_type} line (at {_fmt_mm(x)} {_fmt_mm(y)} {_fmt_mm(rot)}) (length 2.54)\n'
+            f'      (pin {kicad_type} line (at {_fmt_mm(x)} {_fmt_mm(y)} {_fmt_mm(rot)}) (length 2.54)\n'
             f'        (name "{safe_name}" (effects (font (size 0.8 0.8))))\n'
             f'        (number "{num}" (effects (font (size 0.8 0.8))))\n'
             f"      )\n"
@@ -386,54 +503,110 @@ def write_generated_symbol_library(
     lines.append('(kicad_symbol_lib (version 20231120) (generator openhac)\n')
     for name in names:
         part = by_name[name]
-        pins_raw = getattr(part, "pins", []) or []
-        pins = list(pins_raw.values()) if isinstance(pins_raw, dict) else list(pins_raw)
+        if hasattr(part, "get_pins"):
+            pins = part.get_pins()
+        else:
+            pins_raw = getattr(part, "pins", []) or []
+            if isinstance(pins_raw, dict):
+                seen = set()
+                pins = []
+                for p_ in pins_raw.values():
+                    if id(p_) not in seen:
+                        seen.add(id(p_))
+                        pins.append(p_)
+            else:
+                pins = list(pins_raw)
         ref_prefix = _get_ref_prefix(part)
         sym_type = _detect_symbol_type(part)
 
         pin_lines: list[str] = []
-        # Pin placement: left/right for 2-pin components, around rectangle for ICs
+        w_mm = 10.16
+        h_mm = 0
+        
+        # Pin placement: left/right for 2-pin components, smart box for ICs
         if sym_type in ('resistor', 'capacitor', 'inductor', 'diode', 'led', 'fuse') and len(pins) == 2:
             # Horizontal: pins on left and right
             for i, pin in enumerate(pins):
                 num = str(getattr(pin, "num", "") or str(i + 1))
                 pname = str(getattr(pin, "name", "") or num)
+                ptype = str(getattr(pin, "pin_type", ""))
                 x = -5.08 if i == 0 else 5.08
-                rot = 180 if i == 0 else 0
-                pin_lines.append(_pin_block(num, pname, x, 0, rot, "left" if i == 0 else "right"))
+                rot = 0 if i == 0 else 180
+                pin_lines.append(_pin_block(num, pname, x, 0, rot, ptype))
         elif sym_type in ('crystal',) and len(pins) >= 2:
             # Crystal: pins on left/right
-            pin_positions = [(-5.08, 0, 180), (5.08, 0, 0)]
+            pin_positions = [(-5.08, 0, 0), (5.08, 0, 180)]
             for i, pin in enumerate(pins[:4]):
                 num = str(getattr(pin, "num", "") or str(i + 1))
                 pname = str(getattr(pin, "name", "") or num)
+                ptype = str(getattr(pin, "pin_type", ""))
                 if i < len(pin_positions):
                     x, y, rot = pin_positions[i]
-                    pin_lines.append(_pin_block(num, pname, x, y, rot, "left" if x < 0 else "right"))
+                    pin_lines.append(_pin_block(num, pname, x, y, rot, ptype))
         else:
-            # IC-style: pins on left and right edges
-            height_pins = max(len(pins) // 2, 4)
-            h = height_pins * 1.27
-            left_x, right_x = -5.08, 5.08
-            for i, pin in enumerate(pins):
-                num = str(getattr(pin, "num", "") or str(i + 1))
+            # IC-style: Smart pin placement
+            top_pins = []
+            bottom_pins = []
+            left_pins = []
+            right_pins = []
+            
+            for pin in pins:
+                num = str(getattr(pin, "num", "") or str(getattr(pin, "number", "")))
                 pname = str(getattr(pin, "name", "") or num)
-                if i < len(pins) // 2:
-                    # Left side, top to bottom
-                    y = h - (i * 2.54)
-                    pin_lines.append(_pin_block(num, pname, left_x, y, 0, "left"))
+                ptype = str(getattr(pin, "pin_type", "")).lower()
+                
+                pn_upper = pname.upper()
+                is_power = ptype in ("power_in", "power_out", "power") or any(x in pn_upper for x in ("VCC", "VDD", "3V3", "5V", "VBAT", "GND", "VSS"))
+                
+                if is_power:
+                    if "GND" in pn_upper or "VSS" in pn_upper:
+                        bottom_pins.append((num, pname, ptype))
+                    else:
+                        top_pins.append((num, pname, ptype))
+                elif ptype == "input" or any(x in pn_upper for x in ("CLK", "RST", "EN")):
+                    left_pins.append((num, pname, ptype))
+                elif ptype == "output":
+                    right_pins.append((num, pname, ptype))
                 else:
-                    # Right side, bottom to top
-                    idx = i - (len(pins) + 1) // 2
-                    y = -h + (idx * 2.54)
-                    pin_lines.append(_pin_block(num, pname, right_x, y, 180, "right"))
+                    if len(left_pins) <= len(right_pins):
+                        left_pins.append((num, pname, ptype))
+                    else:
+                        right_pins.append((num, pname, ptype))
+            
+            h_pins = max(len(left_pins), len(right_pins))
+            w_pins = max(len(top_pins), len(bottom_pins))
+            
+            h_mm = max((h_pins + 1) * 2.54, 10.16)
+            w_mm = max((w_pins + 1) * 2.54, 10.16)
+            
+            left_x = -(w_mm / 2) - 2.54
+            right_x = (w_mm / 2) + 2.54
+            top_y = (h_mm / 2) + 2.54
+            bottom_y = -(h_mm / 2) - 2.54
+            
+            def _distribute_pins(pin_list, x_fixed, y_fixed, rot, is_vertical, length_mm):
+                lines = []
+                if not pin_list: return lines
+                spacing = length_mm / (len(pin_list) + 1)
+                for i, (num, pname, ptype) in enumerate(pin_list):
+                    offset = (length_mm / 2) - ((i + 1) * spacing)
+                    if is_vertical:
+                        lines.append(_pin_block(num, pname, x_fixed, offset, rot, ptype))
+                    else:
+                        lines.append(_pin_block(num, pname, -offset, y_fixed, rot, ptype))
+                return lines
 
-        lines.append(_sym_header(name, name, ref_prefix, sym_type, len(pins)))
+            pin_lines.extend(_distribute_pins(left_pins, left_x, 0, 0, True, h_mm))
+            pin_lines.extend(_distribute_pins(right_pins, right_x, 0, 180, True, h_mm))
+            pin_lines.extend(_distribute_pins(top_pins, 0, top_y, 270, False, w_mm))
+            pin_lines.extend(_distribute_pins(bottom_pins, 0, bottom_y, 90, False, w_mm))
+
+        lines.append(_sym_header(name, name, ref_prefix, sym_type, len(pins), w_mm, h_mm))
         lines.extend(pin_lines)
         lines.append(_sym_footer())
 
         # Qualified outer name for (lib_symbols ...) embed in .kicad_sch (matches lib_id OpenHaC:name).
-        embed_chunks.append(_sym_header(f"{nickname}:{name}", name, ref_prefix, sym_type, len(pins)))
+        embed_chunks.append(_sym_header(f"{nickname}:{name}", name, ref_prefix, sym_type, len(pins), w_mm, h_mm))
         embed_chunks.extend(pin_lines)
         embed_chunks.append(_sym_footer())
     lines.append(")\n")
@@ -499,6 +672,39 @@ def _emit_wire(f, x1, y1, x2, y2) -> None:
     f.write(f'  )\n')
 
 
+def _emit_sheet_instances(f, *, sheet_paths: list[tuple[str, str]] | None = None) -> None:
+    """Emit minimal (sheet_instances ...) so KiCad can open the schematic reliably.
+
+    KiCad 7+ expects sheet instances even for single-sheet designs.
+    """
+    f.write("  (sheet_instances\n")
+    # Root sheet always exists.
+    f.write('    (path "/" (page "1"))\n')
+    for p, page in (sheet_paths or []):
+        sp = str(p or "").strip()
+        if not sp.startswith("/"):
+            sp = "/" + sp
+        f.write(f'    (path "{kicad_string_escape(sp)}" (page "{kicad_string_escape(str(page))}"))\n')
+    f.write("  )\n")
+
+
+def _emit_symbol_instances(f, *, sym_paths: list[tuple[str, str, str, str]] | None = None) -> None:
+    """Emit minimal (symbol_instances ...) for KiCad bookkeeping.
+
+    Each entry: (path, reference, value, footprint).
+    """
+    f.write("  (symbol_instances\n")
+    for path, ref, val, fp in (sym_paths or []):
+        p = str(path or "").strip() or "/"
+        if not p.startswith("/"):
+            p = "/" + p
+        f.write(
+            f'    (path "{kicad_string_escape(p)}" (reference "{kicad_string_escape(ref)}") '
+            f'(unit 1) (value "{kicad_string_escape(val)}") (footprint "{kicad_string_escape(fp)}"))\n'
+        )
+    f.write("  )\n")
+
+
 def _pin_world_xy(
     pin,
     part,
@@ -521,7 +727,8 @@ def _pin_index_on_part(pin) -> int:
     if part is None:
         return 0
     try:
-        for idx, p in enumerate(part.pins):
+        pins = part.get_pins() if hasattr(part, "get_pins") else getattr(part, "pins", [])
+        for idx, p in enumerate(pins):
             if p is pin:
                 return idx
     except Exception:
@@ -645,21 +852,48 @@ def schematic_geometry(
         if len(pins) < 2:
             continue
 
-        for i in range(len(pins) - 1):
-            pin_a = pins[i]
-            pin_b = pins[i + 1]
-            ax, ay = part_placements.get(pin_a.part, (0.0, 0.0))
-            bx, by = part_placements.get(pin_b.part, (0.0, 0.0))
-            axw, ayw = _pin_world_xy(pin_a, pin_a.part, (ax, ay), resolver)
-            bxw, byw = _pin_world_xy(pin_b, pin_b.part, (bx, by), resolver)
-            wires.append((axw, ayw, bxw, byw))
+        net_name = getattr(net, "name", None) or str(net)
+        is_power = any(n in net_name.upper() for n in ["GND", "VCC", "3V3", "5V", "VBAT", "PWR", "VSS", "VDD", "SOURCE"])
 
-        if len(pins) > 2:
-            first_pin = pins[0]
-            lx, ly = part_placements.get(first_pin.part, (0.0, 0.0))
-            lxw, lyw = _pin_world_xy(first_pin, first_pin.part, (lx, ly), resolver)
-            net_name = getattr(net, "name", None) or str(net)
-            labels.append((net_name, lxw, lyw))
+        if is_power:
+            for pin in pins:
+                px, py = part_placements.get(pin.part, (0.0, 0.0))
+                pxw, pyw = _pin_world_xy(pin, pin.part, (px, py), resolver)
+                
+                # Determine outward stub direction relative to component center
+                if abs(pxw - px) < 0.1:
+                    # Top or bottom edge
+                    dy = -5.08 if pyw < py else 5.08
+                    wires.append((pxw, pyw, pxw, pyw + dy))
+                    labels.append((net_name, pxw, pyw + dy))
+                else:
+                    # Left or right edge
+                    dx = -5.08 if pxw < px else 5.08
+                    wires.append((pxw, pyw, pxw + dx, pyw))
+                    labels.append((net_name, pxw + dx, pyw))
+        else:
+            for i in range(len(pins) - 1):
+                pin_a = pins[i]
+                pin_b = pins[i + 1]
+                ax, ay = part_placements.get(pin_a.part, (0.0, 0.0))
+                bx, by = part_placements.get(pin_b.part, (0.0, 0.0))
+                axw, ayw = _pin_world_xy(pin_a, pin_a.part, (ax, ay), resolver)
+                bxw, byw = _pin_world_xy(pin_b, pin_b.part, (bx, by), resolver)
+                
+                mid_x = round(((axw + bxw) / 2) / 2.54) * 2.54
+                for x1, y1, x2, y2 in [
+                    (axw, ayw, mid_x, ayw),
+                    (mid_x, ayw, mid_x, byw),
+                    (mid_x, byw, bxw, byw),
+                ]:
+                    if abs(x1 - x2) > 0.001 or abs(y1 - y2) > 0.001:
+                        wires.append((x1, y1, x2, y2))
+
+            if len(pins) > 2:
+                first_pin = pins[0]
+                lx, ly = part_placements.get(first_pin.part, (0.0, 0.0))
+                lxw, lyw = _pin_world_xy(first_pin, first_pin.part, (lx, ly), resolver)
+                labels.append((net_name, lxw, lyw))
 
     return {"part_placements": part_placements, "wires": wires, "labels": labels}
 
@@ -712,12 +946,24 @@ def schematic_wire_endpoint_pairs(circuit) -> list[frozenset[tuple[str, str]]]:
 
 
 def _emit_net_label(f, net_name: str, x, y) -> None:
-    """Write a (label ...) S-expression block for nets with > 2 pins."""
+    """Write a (label ...) S-expression block for local nets."""
     label_uuid = _uuid_for(f"label:{net_name}:{x:.6f},{y:.6f}")
     safe = kicad_string_escape(net_name)
     f.write(f'  (label "{safe}" (at {_fmt_mm(x)} {_fmt_mm(y)} 0)\n')
     f.write(f'    (effects (font (size 1.27 1.27)))\n')
     f.write(f'    (uuid "{label_uuid}")\n')
+    f.write(f'  )\n')
+
+def _emit_global_label(f, net_name: str, x, y) -> None:
+    """Write a (global_label ...) S-expression block for true connectivity."""
+    label_uuid = _uuid_for(f"glabel:{net_name}:{x:.6f},{y:.6f}")
+    safe = kicad_string_escape(net_name)
+    f.write(f'  (global_label "{safe}" (shape input) (at {_fmt_mm(x)} {_fmt_mm(y)} 0)\n')
+    f.write(f'    (effects (font (size 1.27 1.27)) (justify left))\n')
+    f.write(f'    (uuid "{label_uuid}")\n')
+    f.write(f'    (property "Intersheetrefs" "${{INTERSHEET_REFS}}" (at {_fmt_mm(x)} {_fmt_mm(y)} 0)\n')
+    f.write(f'      (effects (font (size 1.27 1.27)) (hide yes))\n')
+    f.write(f'    )\n')
     f.write(f'  )\n')
 
 
@@ -747,7 +993,7 @@ def _emit_sheet_symbol(
     su = _uuid_for(f"sheet:{sheet_name}:{sheet_file}:{x:.3f},{y:.3f}")
     safe_name = kicad_string_escape(sheet_name)
     safe_file = kicad_string_escape(sheet_file)
-    f.write(f'  (sheet (at {_fmt_mm(x)} {_fmt_mm(y)} 0) (size {_fmt_mm(w)} {_fmt_mm(h)})\n')
+    f.write(f'  (sheet (at {_fmt_mm(x)} {_fmt_mm(y)}) (size {_fmt_mm(w)} {_fmt_mm(h)})\n')
     # Minimal stroke/fill so KiCad treats this as a proper sheet symbol.
     f.write('    (stroke (width 0.1524) (type default) (color 0 0 0 0))\n')
     f.write('    (fill (color 0 0 0 0))\n')
@@ -953,17 +1199,16 @@ def generate_schematic(
 
     file_uuid = _uuid_for("schematic:file")
     try:
+        from openhac.compiler.kicad_sym_pinpos import SymbolPinResolver, EmptySymbolPinResolver
+        
+        if symbol_resolver is None:
+            symbol_resolver = EmptySymbolPinResolver() if _truthy_env("OPENHAC_SCHEMATIC_STUB_ONLY") else SymbolPinResolver()
+            
+        if generated_symbol_lib_path and hasattr(symbol_resolver, "add_explicit_library"):
+            symbol_resolver.add_explicit_library("OpenHaC", generated_symbol_lib_path)
+            
         if pinpos_report_path is not None:
-            base_resolver: SchematicPinResolver = (
-                symbol_resolver
-                if symbol_resolver is not None
-                else (
-                    EmptySymbolPinResolver()
-                    if _truthy_env("OPENHAC_SCHEMATIC_STUB_ONLY")
-                    else SymbolPinResolver()
-                )
-            )
-            rec = _RecordingPinResolver(base_resolver)
+            rec = _RecordingPinResolver(symbol_resolver)
             geom = schematic_geometry(circuit, symbol_resolver=rec)
         else:
             rec = None
@@ -972,7 +1217,20 @@ def generate_schematic(
         part_placements = geom["part_placements"]
         parts = sorted(list(circuit.parts), key=_part_stable_key)
 
-        multi_sheet = bool(getattr(board, "schematic_multi_sheet", False)) or _truthy_env("OPENHAC_SCHEMATIC_MULTI_SHEET")
+        # Multi-sheet export:
+        # - explicit opt-in via board attr or env
+        # - otherwise auto-enable for larger designs (readability)
+        if bool(getattr(board, "schematic_multi_sheet", False)) or _truthy_env("OPENHAC_SCHEMATIC_MULTI_SHEET"):
+            multi_sheet = True
+        elif _truthy_env("OPENHAC_SCHEMATIC_SINGLE_SHEET"):
+            multi_sheet = False
+        else:
+            try:
+                thr = int((os.environ.get("OPENHAC_SCHEMATIC_MULTI_SHEET_MIN_PARTS") or "25").strip() or 25)
+            except Exception:
+                thr = 25
+            thr = max(2, min(thr, 5000))
+            multi_sheet = len(parts) >= thr
         # Schematic style:
         # - wires: emit explicit wires (can be messy for large designs)
         # - labels: emit only net labels at pins (more readable, KiCad-native)
@@ -997,11 +1255,18 @@ def generate_schematic(
             with open(output_path, "w", encoding="utf-8") as f:
                 _write_kicad_sch_header(f, file_uuid, embedded_lib_symbols)
 
+                sym_instances: list[tuple[str, str, str, str]] = []
                 for part in parts:
                     x, y = part_placements[part]
                     ref = str(getattr(part, "ref", "") or "?")
                     part_uuid = _uuid_for(f"symbol:{ref}")
                     _emit_symbol_instance(f, part, x, y, part_uuid)
+                    try:
+                        val = str(getattr(part, "value", None) or getattr(part, "name", None) or "").strip() or ref
+                        fp = str(getattr(part, "footprint", None) or "").strip()
+                        sym_instances.append((f"/{file_uuid}/{part_uuid}", ref, val, fp))
+                    except Exception:
+                        pass
 
                 if style == "wires":
                     for x1, y1, x2, y2 in geom["wires"]:
@@ -1027,13 +1292,23 @@ def generate_schematic(
                         if len(pins) < 2:
                             continue
                         net_name = getattr(n, "name", None) or str(n)
+                        is_power = any(pw in net_name.upper() for pw in ["GND", "VCC", "3V3", "5V", "VBAT", "PWR", "VSS", "VDD", "SOURCE"])
+                        if is_power:
+                            continue
                         for p in sorted(pins, key=_pin_sort_key):
                             px, py = part_placements.get(p.part, (0.0, 0.0))
                             lxw, lyw = _pin_world_xy(p, p.part, (px, py), label_resolver)
                             _emit_net_label(f, net_name, lxw + 2.54, lyw)
 
                 for net_name, lx, ly in geom["labels"]:
-                    _emit_net_label(f, net_name, lx, ly)
+                    is_power = any(n in net_name.upper() for n in ["GND", "VCC", "3V3", "5V", "VBAT", "PWR", "VSS", "VDD", "SOURCE"])
+                    if is_power:
+                        _emit_global_label(f, net_name, lx, ly)
+                    else:
+                        _emit_net_label(f, net_name, lx, ly)
+
+                _emit_sheet_instances(f)
+                _emit_symbol_instances(f, sym_paths=sym_instances)
 
                 # Close root S-expression
                 f.write(")\n")
@@ -1065,13 +1340,13 @@ def generate_schematic(
 
                 # Emit sheet symbols (with pins) for each top-level module.
                 mods = sorted([m for m in by_mod.keys() if m], key=lambda s: (s == "", s))
-                sx, sy = 10.0, 10.0
-                sw, sh = 60.0, 20.0
-                gap = 10.0
+                sx, sy = 50.0, 40.0 # Centered-ish start
+                sw = 80.0
+                gap = 20.0
+                sheet_inst: list[tuple[str, str]] = []
                 for i, mod_name in enumerate(mods):
                     fname = f"{stem}.{_safe_sheet_filename(mod_name)}.kicad_sch"
                     x0 = sx
-                    y0 = sy + i * (sh + gap)
                     mod_obj = None
                     for mm in getattr(board, "modules", []) or []:
                         if str(getattr(mm, "name", "")) == mod_name:
@@ -1083,6 +1358,12 @@ def generate_schematic(
                             nn = str(getattr(net, "name", "") or "").strip()
                             if nn:
                                 sheet_pins.append(nn)
+                    
+                    # Dynamic height based on pin count
+                    sh = max(30.0, (len(sheet_pins) + 2) * 5.0)
+                    y0 = sy
+                    sy += sh + gap # Vertical stacking
+                    
                     _emit_sheet_symbol(
                         f,
                         sheet_name=mod_name,
@@ -1093,7 +1374,15 @@ def generate_schematic(
                         h=sh,
                         pin_names=sheet_pins or None,
                     )
+                    # Best-effort: record subsheet instance by its schematic uuid key.
+                    try:
+                        sheet_uuid = _uuid_for(f"schematic:sheet:{mod_name}")
+                        sheet_inst.append((f"/{sheet_uuid}", str(i + 2)))
+                    except Exception:
+                        pass
 
+                _emit_sheet_instances(f, sheet_paths=sheet_inst)
+                _emit_symbol_instances(f, sym_paths=[])
                 f.write(")\n")
 
             # Write each subsheet: module’s parts + local wires + hierarchical labels for interface nets.
@@ -1104,11 +1393,18 @@ def generate_schematic(
 
                 with open(sheet_file, "w", encoding="utf-8") as sf:
                     _write_kicad_sch_header(sf, sheet_uuid, embedded_lib_symbols)
+                    sym_instances: list[tuple[str, str, str, str]] = []
                     for part in sheet_parts:
                         x, y = part_placements[part]
                         ref = str(getattr(part, "ref", "") or "?")
                         part_uuid = _uuid_for(f"symbol:{mod_name}:{ref}")
                         _emit_symbol_instance(sf, part, x, y, part_uuid)
+                        try:
+                            val = str(getattr(part, "value", None) or getattr(part, "name", None) or "").strip() or ref
+                            fp = str(getattr(part, "footprint", None) or "").strip()
+                            sym_instances.append((f"/{part_uuid}", ref, val, fp))
+                        except Exception:
+                            pass
 
                     # Local wiring: only nets fully contained in this module.
                     for net in sorted(list(circuit.nets), key=_net_stable_key):
@@ -1154,6 +1450,8 @@ def generate_schematic(
                             _emit_hierarchical_label(sf, name=nn, pin_type="passive", x=lxw + 2.54, y=lyw)
                             _emit_wire(sf, lxw, lyw, lxw + 2.54, lyw)
 
+                    _emit_sheet_instances(sf)
+                    _emit_symbol_instances(sf, sym_paths=sym_instances)
                     sf.write(")\n")
 
         logger.info("Schematic S-Expression document generated successfully.")

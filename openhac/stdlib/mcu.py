@@ -7,7 +7,7 @@ direct MPN lookup (e.g. MCU(mpn="ESP32-WROOM-32E")).
 
 from openhac.core.base import Component, Module
 from openhac.stdlib.passives import _ParametricMixin
-from skidl import Net
+from openhac.core.net import Net
 
 
 class MCU(Module, _ParametricMixin):

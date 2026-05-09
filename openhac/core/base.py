@@ -1,3 +1,9 @@
+"""OpenHaC core base module.
+
+Historically this file contained *everything* — exceptions, Component, Module,
+Interface.  The heavy classes have been extracted into submodules; this file
+re-exports them so ``from openhac.core.base import X`` continues to work.
+"""
 from __future__ import annotations
 
 import logging
@@ -10,91 +16,36 @@ from openhac.core.circuit import default_circuit
 from openhac.database.db_manager import DatabaseManager
 from openhac.core.compile_context import get_compile_context
 
+# --- Re-exports from extracted submodules (backward compat) ---
+from openhac.core.exceptions import (          # noqa: F401
+    OpenHaCError,
+    SchematicGenerationError,
+    LayoutGenerationError,
+    UnconnectedInterfaceError,
+    InterfaceNotFoundError,
+    FreeRoutingNotFoundError,
+    AutorouterFailedError,
+    FabExportError,
+    RiskyPartLookupError,
+    PartDatabaseWriteError,
+    KiCadCliNotFoundError,
+    KiCadSchErcError,
+    KicadLibraryLoadError,
+)
+from openhac.core.interface import Interface   # noqa: F401
+from openhac.core.module import Module         # noqa: F401
+from openhac.core.refdes import (
+    component_pin_access_aliases as _component_pin_access_aliases,  # noqa: F401
+    get_refdes_prefix,
+)
+
 logger = logging.getLogger("openhac.core")
 
 # Best-effort compile post-report capture (dev/handoff diagnostics).
 _IMPLICIT_PIN_EVENTS: list[dict] = []
 
 
-def _component_pin_access_aliases(key: object) -> list[str]:
-    """MCU pin-name shorthands (e.g. ``PA12_USB_DP`` → ``PA12``).
-
-    Board code should use the same pin names as the KiCad symbol where possible;
-    this helper only covers stable, non-ambiguous suffix stripping for STM32-style
-    labels.
-    """
-    ks = str(key).strip()
-    if not ks:
-        return []
-    alts: list[str] = []
-    for rx in (
-        r"^(P[A-Z]\d+)_[A-Z0-9][A-Z0-9_]*$",  # PA12_USB_DP, PB6_I2C1_SCL
-        r"^(PH\d+)_[A-Z0-9][A-Z0-9_]*$",  # PH0_OSC_IN
-        r"^(PC\d+)_[A-Z0-9][A-Z0-9_]*$",  # PC14_OSC32_IN
-    ):
-        m = re.match(rx, ks)
-        if m:
-            alts.append(m.group(1))
-            break
-    seen: set[str] = {ks}
-    out: list[str] = []
-    for a in alts:
-        if a not in seen:
-            seen.add(a)
-            out.append(a)
-    return out
-
-
-class OpenHaCError(Exception):
-    """Base exception for all OpenHaC errors."""
-
-
-class SchematicGenerationError(OpenHaCError):
-    """Raised by schematic_gen.py when schematic generation fails."""
-
-
-class LayoutGenerationError(OpenHaCError):
-    """Raised when KiCad pcbnew layout cannot be generated (e.g. bindings missing)."""
-
-
-class UnconnectedInterfaceError(OpenHaCError):
-    """Raised by Board.compile() when a required interface net has fewer than two pins."""
-
-
-class InterfaceNotFoundError(OpenHaCError):
-    """Raised by Module.expose_interface() when the named interface is not registered."""
-
-
-class FreeRoutingNotFoundError(OpenHaCError):
-    """Raised by autoroute_cli.py when the FreeRouting jar cannot be found."""
-
-
-class AutorouterFailedError(OpenHaCError):
-    """Raised by autoroute_cli.py when FreeRouting exits with a non-zero code or produces no SES output."""
-
-
-class FabExportError(OpenHaCError):
-    """Raised when ``kicad-cli`` fabrication export fails."""
-
-
-class RiskyPartLookupError(OpenHaCError):
-    """Raised when a live/JIT part mapping is low-confidence and risky lookups are disallowed (LIB-003)."""
-
-
-class PartDatabaseWriteError(OpenHaCError):
-    """Raised when persisting a JIT-resolved component to the local database fails."""
-
-
-class KiCadCliNotFoundError(OpenHaCError):
-    """Raised when ``kicad-cli`` is required but not on PATH (SCH-003 / fab export)."""
-
-
-class KiCadSchErcError(OpenHaCError):
-    """Raised when ``kicad-cli sch erc`` fails or reports violations (SCH-003)."""
-
-
-class KicadLibraryLoadError(OpenHaCError):
-    """Raised when a KiCad symbol cannot be loaded and synthetic fallback is disabled (LIB-004)."""
+# (Exceptions and _component_pin_access_aliases now imported from submodules above.)
 
 
 class Component:
@@ -163,22 +114,68 @@ class Component:
         comp_data: dict = None,
         *,
         parent_module: "Module | None" = None,
+        pins: dict | None = None,
         **kwargs,
     ):
+        """Initialize a Component.
+        
+        Args:
+            generic_name: Component identifier (e.g., "BUCK_TPS63001DRCR" or "C28060")
+            comp_data: Optional pre-fetched component data from database
+            parent_module: Owning module for strict flag inheritance
+            pins: Optional explicit pin definitions dict:
+                  {pin_number: ("pin_name", "pin_type"), ...}
+                  pin_type can be: "power_in", "power_out", "input", "output", 
+                  "bidirectional", "ground", "no_connect"
+            **kwargs: Additional arguments (refdes, etc.)
+        
+        Examples:
+            # Simple component - pins from database or package template
+            r = Component("C21190")
+            
+            # Complex component with explicit pin definition
+            buck = Component("C28060", pins={
+                1: ("VIN", "power_in"),
+                2: ("GND", "ground"),
+                3: ("SW", "bidirectional"),
+                4: ("VOUT", "power_out"),
+                5: ("EN", "input"),
+                6: ("FB", "input"),
+                7: ("PG", "output"),
+                8: ("PGND", "ground"),
+                9: ("NC", "no_connect"),
+                10: ("EP", "ground"),
+            })
+        """
         self.generic_name = generic_name
         #: Set by :meth:`Module.add` / :meth:`Module.add_part`, or pass ``parent_module=`` so host
         #: :class:`~openhac.core.board.Board` strict flags apply during construction (LIB-003/004).
         self._owning_module: Module | None = parent_module
+        
+        # Store explicit pin definitions for later use
+        self._explicit_pins = pins
 
         if comp_data is None:
             comp_data = self.db.get_component(generic_name)
             if not comp_data:
                 comp_data = self._live_lookup(generic_name)
             if not comp_data:
-                raise ValueError(
-                    f"Component '{generic_name}' not found in database or LCSC catalog. "
-                    f"Run sync_catalog() to refresh the component database, or check the part name."
-                )
+                # Try to dynamically infer pin count from standard naming conventions
+                if not pins:
+                    import re
+                    match = re.search(r"(\d+)PIN", generic_name.upper())
+                    if match:
+                        pin_count = int(match.group(1))
+                        pins = {str(i): (f"P{i}", "passive") for i in range(1, pin_count + 1)}
+
+                # If pins provided explicitly or inferred, create minimal component record
+                if pins:
+                    comp_data = self._create_from_explicit_pins(generic_name, pins)
+                else:
+                    raise ValueError(
+                        f"Component '{generic_name}' not found in database or LCSC catalog. "
+                        f"Run sync_catalog() to refresh the component database, or check the part name."
+                    )
 
         from openhac.database.lookup_meta import (
             confidence_numeric,
@@ -229,9 +226,11 @@ class Component:
         )
         refdes = kwargs.get('refdes') or default_circuit.auto_generate_refdes(ref_prefix)
         
+        footprint = kwargs.get("footprint") or comp_data.get('kicad_footprint')
+        
         self.part = Part(
             refdes=refdes,
-            footprint=comp_data['kicad_footprint'],
+            footprint=footprint,
             fields={},
             pins=pins,
             value=generic_name,
@@ -240,16 +239,8 @@ class Component:
         # Add part to the default circuit
         default_circuit.add_part(self.part)
 
-        # Set fields on the native Part
-        self.part.fields['Manufacturer'] = comp_data['manufacturer'] or ""
-        self.part.fields['MPN'] = comp_data['mpn']
-        self.part.fields['Supplier_SKU'] = comp_data['supplier_sku'] or ""
-        self.part.fields['Value'] = generic_name
-        self.part.fields['kiCad_symbol'] = comp_data['kicad_symbol']
-        jc = comp_data.get("jlc_class")
-        self.part.fields["JLC_Class"] = str(jc) if jc is not None else ""
-        self.part.fields["Mouser_SKU"] = comp_data.get("mouser_sku") or ""
-        self.part.fields["DigiKey_SKU"] = comp_data.get("digikey_sku") or ""
+        self.refresh_from_db()
+
         si = comp_data.get("spice_include")
         self.part.fields["Spice_Include"] = str(si).strip() if si else ""
         ss = comp_data.get("spice_subckt")
@@ -472,6 +463,13 @@ class Component:
 
             # Optional implicit pin creation for designs that use named pins but
             # do not yet have explicit pinout_json coverage in the DB.
+            if (os.environ.get("OPENHAC_SCHEMATIC_STRICT") or "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            ):
+                raise
             raw_allow = (os.environ.get("OPENHAC_ALLOW_IMPLICIT_PINS") or "").strip().lower()
             raw_goal = (os.environ.get("OPENHAC_COMPILE_GOAL") or "").strip().lower()
             # Defaults:
@@ -543,14 +541,21 @@ class Component:
         pin += value
 
     def _get_pins_from_data(self, comp_data: dict) -> list[Pin]:
-        """Get pinout from database.
+        """Get pinout from explicit definitions, database, or generate fallback.
         
-        Database is the single source of truth for component data.
-        If pinout not in DB, falls back to generic generation based on footprint.
+        Priority:
+        1. Explicit pins provided in constructor
+        2. Database pinout_json
+        3. Package template
+        4. Generic numbered pins (last resort)
         """
         import json
 
-        # Best-effort: auto-enrich missing pinout before generating fallback pins.
+        # Priority 1: Explicit pins from constructor
+        if getattr(self, "_explicit_pins", None):
+            return self._pins_from_explicit(self._explicit_pins)
+
+        # Priority 2: Database pinout
         try:
             pinout_json = comp_data.get("pinout_json")
             symbol_data = comp_data.get("symbol_data")
@@ -558,53 +563,129 @@ class Component:
             pinout_json = None
             symbol_data = None
 
-        if not pinout_json and not symbol_data:
-            try:
-                # Avoid repeated network calls for the same instance.
-                if not getattr(self, "_enrich_attempted", False):
-                    setattr(self, "_enrich_attempted", True)
-                    from openhac.database.enrich import enrich_component_in_db
-
-                    res = enrich_component_in_db(db=self.db, generic_name=str(getattr(self, "generic_name", "") or ""))
-                    if res.attempted and res.updated:
-                        fresh = self.db.get_component(str(getattr(self, "generic_name", "") or ""))
-                        if fresh:
-                            comp_data = dict(fresh)
-                            pinout_json = comp_data.get("pinout_json")
-                            symbol_data = comp_data.get("symbol_data")
-            except Exception:
-                pass
-        
-        # Try database pinout first
         if pinout_json:
             try:
                 pinout = json.loads(pinout_json)
                 return [Pin(p["num"], p["name"], p.get("type", "bidirectional")) for p in pinout]
             except (json.JSONDecodeError, KeyError):
-                pass  # Fall through to footprint-based generation
-
-        # Optional: extract pinout from symbol_data if present (V6 column).
-        symbol_data = comp_data.get("symbol_data")
-        if symbol_data:
-            try:
-                sd = json.loads(symbol_data) if isinstance(symbol_data, str) else symbol_data
-                pins = sd.get("pins") if isinstance(sd, dict) else None
-                if isinstance(pins, list) and pins:
-                    out = []
-                    for p in pins:
-                        if not isinstance(p, dict):
-                            continue
-                        num = str(p.get("num") or p.get("number") or "").strip()
-                        name = str(p.get("name") or "").strip() or num
-                        if num:
-                            out.append(Pin(num, name, str(p.get("type") or "bidirectional")))
-                    if out:
-                        return out
-            except Exception:
                 pass
+
+        # Priority 3: Package template
+        package = comp_data.get("package", "")
+        category = comp_data.get("category", "")
+        if package:
+            template_pins = self._get_package_template_pins(package, category)
+            if template_pins:
+                return template_pins
+
+        # Priority 4: Generic numbered pins
+        return self._generate_generic_pins(comp_data)
+    
+    def _pins_from_explicit(self, pins: dict) -> list[Pin]:
+        """Convert explicit pin definitions to Pin objects."""
+        result = []
+        for num, info in pins.items():
+            if isinstance(info, tuple):
+                name, pin_type = info
+                result.append(Pin(str(num), name, pin_type))
+            else:
+                # Simple string name
+                result.append(Pin(str(num), info, "bidirectional"))
+        return result
+    
+    def _get_package_template_pins(self, package: str, category: str) -> list[Pin] | None:
+        """Get pins from package templates for standard packages."""
+        from openhac.templates.packages import get_package_template
+        return get_package_template(package, category)
+    
+    def _generate_generic_pins(self, comp_data: dict) -> list[Pin]:
+        """Generate generic numbered pins as fallback."""
+        # Try to determine pin count from package
+        package = comp_data.get("package", "")
+        pin_count = self._estimate_pin_count(package)
+        return [Pin(str(i), f"Pin_{i}", "bidirectional") for i in range(1, pin_count + 1)]
+    
+    def _estimate_pin_count(self, package: str) -> int:
+        """Estimate number of pins from package name."""
+        if not package:
+            return 2
+        import re
+        # Try to extract pin count from package name (e.g., "QFN-10", "SOIC-8", "CB-2-3")
+        if '-' in str(package):
+            parts = package.split('-')
+            nums = []
+            for p in parts:
+                m = re.search(r'(\d+)', p)
+                if m:
+                    nums.append(int(m.group(1)))
+            if len(nums) > 1:
+                # For CB-2-3 or similar, sum the parts
+                return sum(nums)
+            elif nums:
+                return nums[0]
         
-        # Fallback: generate based on footprint
-        return self._generate_fallback_pins(comp_data)
+        match = re.search(r'(\d+)', str(package))
+        if match:
+            return int(match.group(1))
+        # Default guesses based on package type
+        pkg = str(package).upper()
+        if any(x in pkg for x in ['SOT-23', 'SOT23']):
+            return 3
+        if any(x in pkg for x in ['SOT-223', 'SOT223']):
+            return 4
+        if any(x in pkg for x in ['0805', '0603', '0402', '1206']):
+            return 2
+        return 8  # Default
+    
+    def _create_from_explicit_pins(self, generic_name: str, pins: dict) -> dict:
+        """Create minimal component data from explicit pin definitions."""
+        import json
+        
+        # Build pinout_json
+        pinout = [{"num": str(k), "name": v[0] if isinstance(v, tuple) else v, 
+                   "type": v[1] if isinstance(v, tuple) else "bidirectional"}
+                  for k, v in pins.items()]
+        
+        # Infer package from pin count
+        pin_count = len(pins)
+        package = self._infer_package(pin_count)
+        
+        comp_data = {
+            "generic_name": generic_name,
+            "mpn": generic_name.split("_")[-1] if "_" in generic_name else generic_name,
+            "manufacturer": "",
+            "description": f"User-defined component with {pin_count} pins",
+            "category": "unknown",
+            "package": package,
+            "kicad_symbol": f"Device:IC_{pin_count}PIN",
+            "kicad_footprint": f"Package_SMD:Generic_{pin_count}PIN",
+            "pinout_json": json.dumps(pinout),
+        }
+        
+        # Store in database for reuse
+        try:
+            self.db.insert_component(comp_data, ignore_duplicate=True)
+            logger.info(f"Created component '{generic_name}' with {pin_count} explicit pins")
+        except Exception as e:
+            logger.warning(f"Could not cache component '{generic_name}': {e}")
+        
+        return comp_data
+    
+    def _infer_package(self, pin_count: int) -> str:
+        """Infer package name from pin count."""
+        if pin_count <= 2:
+            return "0805"
+        if pin_count <= 3:
+            return "SOT-23"
+        if pin_count <= 8:
+            return "SOIC-8"
+        if pin_count <= 16:
+            return "QFN-16"
+        return f"QFP-{pin_count}"
+
+    # NOTE: _old_get_pins_from_data was removed in the WS2 decomposition.
+    # The deprecated auto-enrich approach is superseded by the enrich-on-getitem
+    # path in __getitem__ and the `openhac database enrich` CLI command.
     
     def _generate_fallback_pins(self, comp_data: dict) -> list[Pin]:
         """Generate generic pins based on footprint as last resort."""
@@ -632,6 +713,42 @@ class Component:
         # Default: 8 pins
         return [Pin(str(i), str(i), "bidirectional") for i in range(1, 9)]
 
+    def refresh_from_db(self):
+        """Re-read component metadata from the database and update Part fields.
+        
+        Useful after online enrichment to pull in newly downloaded 3D model paths, 
+        pinouts, or symbol mappings.
+        """
+        try:
+            from openhac.database.lookup_meta import strip_openhac_internal_fields
+            fresh = self.db.get_component(self.generic_name)
+            if not fresh:
+                return
+            comp_data = strip_openhac_internal_fields(fresh)
+            self._comp_data = dict(comp_data)
+            
+            # Update Part fields
+            self.part.fields['Manufacturer'] = comp_data.get('manufacturer') or ""
+            self.part.fields['MPN'] = comp_data.get('mpn') or ""
+            self.part.fields['Supplier_SKU'] = comp_data.get('supplier_sku') or ""
+            self.part.fields['kiCad_symbol'] = comp_data.get('kicad_symbol') or ""
+            
+            jc = comp_data.get("jlc_class")
+            self.part.fields["JLC_Class"] = str(jc) if jc is not None else ""
+            self.part.fields["Mouser_SKU"] = comp_data.get("mouser_sku") or ""
+            self.part.fields["DigiKey_SKU"] = comp_data.get("digikey_sku") or ""
+            self.part.fields["Model_3D_Local"] = comp_data.get("model_3d_local") or ""
+            
+            # Update Part footprint if it was NULL or changed to easyeda_generated
+            new_fp = comp_data.get('kicad_footprint')
+            if new_fp and (not self.part.footprint or "easyeda_generated" in new_fp):
+                self.part.footprint = new_fp
+
+            # Note: We don't update pins here as they are already wired in the Circuit.
+            # Pinout mismatches are caught by separate DRC checks.
+        except Exception as e:
+            logger.debug("Failed to refresh component %s from DB: %s", self.generic_name, e)
+
     def _get_refdes_prefix(
         self,
         category: str | None,
@@ -639,307 +756,8 @@ class Component:
         generic_name: str | None = None,
         mpn: str | None = None,
     ) -> str:
-        """Get reference designator prefix based on component category."""
-        gn_u = str(generic_name or "").strip().upper()
-        mpn_u = str(mpn or "").strip().upper()
-        if gn_u == "CAN_TJA1051" or "TJA1051" in mpn_u:
-            return "U"
-        if gn_u.startswith("XTAL_"):
-            return "X"
-        for prefix, rfx in (
-            ("MCU_", "U"),
-            ("IMU_", "U"),
-            ("BARO_", "U"),
-            ("MAG_", "U"),
-            ("FLASH_", "U"),
-            ("LDO_", "U"),
-            ("BUCK_", "U"),
-            ("ESD_", "U"),
-            ("CONN_", "J"),
-            ("USB_", "J"),
-        ):
-            if gn_u.startswith(prefix):
-                return rfx
-        if gn_u.startswith("LED_"):
-            return "D"
-        if gn_u.startswith("SW_"):
-            return "S"
+        """Delegate to :func:`openhac.core.refdes.get_refdes_prefix`."""
+        return get_refdes_prefix(category, generic_name=generic_name, mpn=mpn)
 
-        category_map = {
-            "resistor": "R",
-            "capacitor": "C",
-            "inductor": "L",
-            "led": "D",
-            "diode": "D",
-            "transistor": "Q",
-            "mosfet": "Q",
-            "ic": "U",
-            "mcu": "U",
-            "microcontroller": "U",
-            "connector": "J",
-            "header": "J",
-            "crystal": "X",
-            "switch": "S",
-            "button": "S",
-            "relay": "K",
-            "fuse": "F",
-            "transformer": "T",
-        }
-        
-        if not category:
-            return "U"  # Default to IC prefix
-        cat_lower = category.lower()
-        # JLC / catalog motion-sensor categories (substring-safe before generic map).
-        if any(
-            m in cat_lower
-            for m in ("accelerometer", "gyroscope", "barometer", "magnetometer")
-        ):
-            return "U"
-        for key, prefix in category_map.items():
-            if key in cat_lower:
-                return prefix
-        return "U"  # Default to IC prefix
-
-class Interface:
-    def __init__(self, name: str, *signals):
-        self.name = name
-        self.signals = list(signals)
-
-    def connect(self, other_interface):
-        for sig1, sig2 in zip(self.signals, other_interface.signals):
-            # Merge both ways so either side's Net object remains usable.
-            sig1 += sig2
-            try:
-                sig2 += sig1
-            except Exception:
-                pass
-
-class Module:
-    def __init__(self, name=None):
-        self.name = name or self.__class__.__name__
-        self.components = []
-        self.required_interfaces: dict[str, "Interface"] = {}
-        self.optional_interfaces: dict[str, "Interface"] = {}
-        self.width = 10.0
-        self.height = 10.0
-        self.placed_x = None
-        self.placed_y = None
-
-        # Physics / ERC / DRC properties
-        self.max_current_draw_ma = 0.0
-        self.source_current_max_ma = 0.0
-        #: Optional extra draw (mA) attributed to named rails for converters / loss (PWR-002 hook).
-        self.extra_input_draw_by_rail_ma: dict[str, float] = {}
-
-    def __iter__(self):
-        """Yield direct child nodes (:class:`Component` or nested :class:`Module`) for tree walks (ERC/DRC)."""
-        return iter(self.components)
-
-    def add(self, component):
-        self.components.append(component)
-        if isinstance(component, Component):
-            component._owning_module = self
-            # Tag the underlying SKiDL part so schematic/BOM tooling can group by module.
-            try:
-                p = getattr(component, "part", None)
-                if p is not None and hasattr(p, "fields") and isinstance(p.fields, dict):
-                    p.fields.setdefault("OpenHaC_Module", str(self.name))
-            except Exception:
-                pass
-        elif isinstance(component, Module):
-            hb = getattr(self, "_openhac_host_board", None)
-            if hb is not None:
-                hb._propagate_board_ref(component)
-        else:
-            # Allow direct SKiDL Parts to be added to modules (common in stress-test scripts).
-            try:
-                if hasattr(component, "fields") and isinstance(component.fields, dict):
-                    component.fields.setdefault("OpenHaC_Module", str(self.name))
-            except Exception:
-                pass
-        return component
-
-    def add_part(self, generic_name: str, **kwargs):
-        """Like ``add(Component(...))`` but passes *this* module as ``parent_module`` so board strict flags apply at construction."""
-        c = Component(generic_name, parent_module=self, **kwargs)
-        self.components.append(c)
-        try:
-            p = getattr(c, "part", None)
-            if p is not None and hasattr(p, "fields") and isinstance(p.fields, dict):
-                p.fields.setdefault("OpenHaC_Module", str(self.name))
-        except Exception:
-            pass
-        return c
-
-    def declare_interface(self, name: str, *nets, required: bool = True) -> "Interface":
-        """Register a named Interface.
-
-        By default interfaces are **required** and must have >=2 pins connected per net.
-        Use ``required=False`` for debug/test breakouts that may remain unconnected.
-        """
-        iface = Interface(name, *nets)
-        if required:
-            self.required_interfaces[name] = iface
-        else:
-            self.optional_interfaces[name] = iface
-        return iface
-
-    def recalculate_bbox_from_components(self) -> None:
-        """Update width/height based on actual component footprints.
-
-        Combines (1) a **grid packing** estimate — parts are laid out in rows inside the
-        module, so a single ``sqrt(sum(area))`` box under-estimates span — with (2) the
-        legacy total-area heuristic. The final box is the max of both (conservative).
-        """
-        if not self.components:
-            return
-
-        import math
-        import os
-
-        footprint_sizes = {
-            # QFP packages
-            r'lqfp-64|qfp-64': (10.0, 10.0),
-            r'lqfp-48|qfp-48': (7.0, 7.0),
-            r'lqfp-32|qfp-32': (7.0, 7.0),
-            r'tqfp-44|qfp-44': (10.0, 10.0),
-            r'lqfp-100|qfp-100': (14.0, 14.0),
-            r'lqfp-128|qfp-128': (14.0, 14.0),
-            r'lqfp-144|qfp-144': (20.0, 20.0),
-            # QFN packages
-            r'qfn-32': (5.0, 5.0),
-            r'qfn-48': (6.0, 6.0),
-            r'qfn-64': (8.0, 8.0),
-            # SOIC packages
-            r'soic-8|so-8': (4.9, 3.9),
-            r'soic-14|so-14': (8.7, 3.9),
-            r'soic-16|so-16': (9.9, 3.9),
-            # SOT packages
-            r'sot-23-3|sot-23': (2.9, 1.6),
-            r'sot-23-5': (2.9, 1.6),
-            r'sot-23-6': (2.9, 1.6),
-            r'sot-89': (4.5, 2.5),
-            r'sot-223': (6.5, 3.5),
-            # Passives
-            r'0402': (1.0, 0.5),
-            r'0603': (1.6, 0.8),
-            r'0805': (2.0, 1.25),
-            r'1206': (3.2, 1.6),
-            r'1210': (3.2, 2.5),
-            r'2512': (6.4, 3.2),
-            # Diodes
-            r'sma|do-214ac': (4.5, 2.7),
-            r'smb|do-214aa': (5.3, 3.4),
-            r'smc|do-214ab': (7.9, 5.3),
-            r'sod-123': (3.6, 1.6),
-            # Inductors
-            r'l_6.3x6.3': (6.3, 6.3),
-            r'l_4x4': (4.0, 4.0),
-            r'l_5x5': (5.0, 5.0),
-            # Connectors
-            r'xt60': (16.0, 8.0),
-            r'pinheader_2.54_1x4': (10.0, 2.5),
-            r'pinheader_2.54_1x6': (15.0, 2.5),
-            r'pinheader_2.54_2x5': (12.5, 5.0),
-            r'usb': (10.0, 8.0),
-            # Crystals
-            r'3225': (3.2, 2.5),
-            r'5032': (5.0, 3.2),
-            r'7050': (7.0, 5.0),
-            # Misc
-            r'buzzer': (12.0, 9.5),
-            r'testpoint': (2.0, 2.0),
-        }
-
-        def _dims_for_footprint_string(fp_name: str) -> tuple[float, float, float]:
-            """Return ``(w_mm, h_mm, area_mm2)`` for one footprint id string."""
-            for pattern, (w, h) in footprint_sizes.items():
-                if re.search(pattern, fp_name):
-                    wf, hf = float(w), float(h)
-                    return wf, hf, wf * hf
-            return 5.0, 5.0, 25.0
-
-        cell_dims: list[tuple[float, float]] = []
-        total_area_mm2 = 0.0
-        for comp in self.components:
-            fp_name = ""
-            part = getattr(comp, "part", comp)
-            if part and hasattr(part, "footprint"):
-                fp_name = str(part.footprint).lower()
-            w, h, a = _dims_for_footprint_string(fp_name)
-            total_area_mm2 += a
-            if not isinstance(comp, Module):
-                cell_dims.append((w, h))
-
-        try:
-            gap = float((os.environ.get("OPENHAC_PLACEMENT_FP_GAP_MM") or "1.0").strip() or 1.0)
-        except Exception:
-            gap = 1.0
-        try:
-            pack_inflate = float((os.environ.get("OPENHAC_MODULE_PACK_INFLATE") or "1.15").strip() or 1.15)
-        except Exception:
-            pack_inflate = 1.15
-
-        if cell_dims:
-            n = len(cell_dims)
-            max_w = max(w for w, _ in cell_dims)
-            max_h = max(h for _, h in cell_dims)
-            cols = max(1, int(math.ceil(math.sqrt(n))))
-            rows = int(math.ceil(n / cols))
-            pack_w = cols * max_w + max(0, cols - 1) * gap
-            pack_h = rows * max_h + max(0, rows - 1) * gap
-            w_pack = pack_w * pack_inflate
-            h_pack = pack_h * pack_inflate
-        else:
-            w_pack = h_pack = 0.0
-
-        # Legacy: total area → rectangle (often too small for row-packed parts)
-        total_area_mm2 *= 1.3
-        h_legacy = (total_area_mm2 / 1.2) ** 0.5
-        w_legacy = h_legacy * 1.2
-
-        w_fin = max(w_pack, w_legacy)
-        h_fin = max(h_pack, h_legacy)
-
-        self.width = max(self.width, w_fin)
-        self.height = max(self.height, h_fin)
-
-        logger.debug(
-            "Module %r bbox: %.1fx%.1f mm (%s components; grid %s, legacy %.1fx%.1f)",
-            self.name,
-            self.width,
-            self.height,
-            len(self.components),
-            f"{w_pack:.1f}x{h_pack:.1f}" if cell_dims else "n/a",
-            w_legacy,
-            h_legacy,
-        )
-
-    def expose_interface(self, name: str) -> "Interface":
-        """Return the named Interface, raising InterfaceNotFoundError if absent."""
-        try:
-            return self.required_interfaces[name]
-        except KeyError:
-            try:
-                return self.optional_interfaces[name]
-            except KeyError:
-                raise InterfaceNotFoundError(
-                    f"Interface '{name}' is not registered on module '{self.name}'."
-                )
-
-    def __getitem__(self, key):
-        """Allow subscripting the module to access pins of its internal components.
-        
-        If the module contains components, delegates to the first component.
-        This provides backward compatibility for scripts that treat modules as parts.
-        """
-        if self.components:
-            return self.components[0][key]
-        raise AttributeError(f"Module '{self.name}' has no components to subscript.")
-
-    def __setitem__(self, key, value):
-        """Allow setting pins/properties on the module's primary component."""
-        if self.components:
-            self.components[0][key] = value
-        else:
-            raise AttributeError(f"Module '{self.name}' has no components to setitem.")
+# Interface and Module classes are now in their own submodules.
+# They are re-exported at the top of this file for backward compatibility.

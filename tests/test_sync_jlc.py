@@ -84,8 +84,8 @@ class TestPackageToFootprint:
         assert fp == "Diode_SMD:D_SOD-123"
 
     def test_unknown_package_fallback(self):
-        fp = _package_to_footprint("resistors", "2512")
-        assert fp == "Resistor_SMD:R_2512"
+        fp = _package_to_footprint("resistors", "9999")
+        assert fp == "9999"
 
 
 # ---------------------------------------------------------------------------

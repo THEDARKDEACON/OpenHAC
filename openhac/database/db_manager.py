@@ -72,6 +72,12 @@ _V8_COLUMNS = {
     "package": "TEXT",  # vendor package / case code (e.g. SOT-23, 0603)
     "stock": "INTEGER",  # distributor stock level when APIs expose it
 }
+# Columns added in schema v9 (3D Model Automation)
+_V9_COLUMNS = {
+    "model_3d_url": "TEXT",  # Remote URL (e.g. EasyEDA UUID or direct link)
+    "model_3d_local": "TEXT", # Local filesystem path
+}
+
 
 
 def _normalize_sensor_category_for_db(
@@ -111,6 +117,7 @@ class DatabaseManager:
             self._migrate_v6_pinout(conn)
             self._migrate_v7_complete_data(conn)
             self._migrate_v8_vendor_enrich_fields(conn)
+            self._migrate_v9_3d_models(conn)
             conn.commit()
 
     @staticmethod
@@ -128,6 +135,15 @@ class DatabaseManager:
         cursor = conn.execute("PRAGMA table_info(components)")
         existing = {row[1] for row in cursor.fetchall()}
         for col_name, col_def in _V3_COLUMNS.items():
+            if col_name not in existing:
+                conn.execute(f"ALTER TABLE components ADD COLUMN {col_name} {col_def}")
+
+    @staticmethod
+    def _migrate_v9_3d_models(conn):
+        """Add 3D model columns (idempotent)."""
+        cursor = conn.execute("PRAGMA table_info(components)")
+        existing = {row[1] for row in cursor.fetchall()}
+        for col_name, col_def in _V9_COLUMNS.items():
             if col_name not in existing:
                 conn.execute(f"ALTER TABLE components ADD COLUMN {col_name} {col_def}")
 
@@ -506,11 +522,13 @@ class DatabaseManager:
         family: str = None,
         mpn: str = None,
         limit: int = 10,
+        **kwargs,
     ) -> tuple[dict | None, bool]:
         """Find the best component match using parametric constraints.
 
         Hard constraints (must match exactly):
             - category, value (if given), package (if given), mpn (if given)
+            - Any additional kwargs (exact match in generic_name or description)
 
         Soft constraints (may over-spec):
             - voltage_rating: selects ≥ requested
@@ -548,6 +566,12 @@ class DatabaseManager:
             if family:
                 hard_conditions.append("(mpn LIKE ? OR generic_name LIKE ? OR description LIKE ?)")
                 hard_params.extend([f"%{family}%", f"%{family}%", f"%{family}%"])
+
+            # Add any extra parametric kwargs as fuzzy description/name matches
+            for key, val in kwargs.items():
+                if val is not None:
+                    hard_conditions.append("(generic_name LIKE ? OR description LIKE ?)")
+                    hard_params.extend([f"%{val}%", f"%{val}%"])
 
             if v_out is not None:
                 # For voltage regulators: look for the output voltage in the name

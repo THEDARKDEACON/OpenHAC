@@ -32,6 +32,14 @@ class Net:
         self.name = name
         self.pins: list[Pin] = []
         self.code: Optional[int] = None  # Assigned by Circuit
+        self.current_a: float = 0.0  # Current in Amperes for IPC-2152 trace width
+        
+    def set_current(self, amps: float) -> Net:
+        """Define the expected maximum current on this net (in Amperes).
+        Used for physics-based DRC trace width generation via IPC-2152.
+        """
+        self.current_a = float(amps)
+        return self
         
     def add_pin(self, pin: Pin):
         """Connect a pin to this net."""
@@ -100,3 +108,27 @@ class Bus:
 
 # Forward reference for type hints
 from openhac.core.part import Pin  # noqa: E402
+
+
+class _NCNet(Net):
+    """Special net representing a 'No Connect' explicitly.
+    
+    Pins connected to this net are ignored in DRC checks for unconnected pins.
+    """
+    def __init__(self):
+        super().__init__(name="NC")
+    
+    def __add__(self, other: Net | Pin) -> Net:
+        if isinstance(other, Pin):
+            other.net = self
+            if other not in self.pins:
+                self.pins.append(other)
+            return self
+        elif isinstance(other, Net):
+            # Ignore merging NC into another Net
+            return self
+        return super().__add__(other)
+
+
+# Singleton No Connect net
+NC = _NCNet()

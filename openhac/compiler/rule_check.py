@@ -499,7 +499,7 @@ def _net_is_no_connect_rail(net, circuit) -> bool:
 def _pin_is_no_connect(pin) -> bool:
     """SKiDL versions differ: legacy ``NC`` singleton vs ``NCNet`` instances."""
     try:
-        from skidl import NC as _NC
+        from openhac.core.net import NC as _NC
 
         if pin.net is _NC:
             return True

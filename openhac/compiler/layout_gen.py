@@ -17,6 +17,27 @@ def solve_placement(board):
 
     all_mods = getattr(board, 'all_modules', board.modules)
 
+    # Estimate module bounds based on component density before Z3 placement
+    for mod in all_mods:
+        if mod.width == 10.0 and mod.height == 10.0:
+            area = 0.0
+            for child in mod.components:
+                from openhac.core.base import Module
+                if isinstance(child, Module):
+                    continue
+                part = getattr(child, "part", None)
+                if part:
+                    fp = str(getattr(part, "footprint", "")).upper()
+                    if "0402" in fp or "0201" in fp: area += 4.0
+                    elif "0603" in fp or "0805" in fp: area += 8.0
+                    elif "QFN" in fp or "QFP" in fp or "BGA" in fp: area += 100.0
+                    elif "CONN" in fp: area += 150.0
+                    else: area += 20.0
+            if area > 0:
+                side = math.sqrt(area) * 1.2
+                mod.width = max(10.0, side)
+                mod.height = max(10.0, side)
+
     # Debug: Log layout problem details
     logger.info("Layout problem:")
     logger.info(f"  Board: {board.size_mm[0]} x {board.size_mm[1]} mm ({board.layers} layers)")
@@ -336,6 +357,12 @@ def generate_layout(netlist_path: str, output_pcb_path: str, board):
             logger.warning("PCB post-process helpers failed (continuing): %s", e)
 
         pcbnew.SaveBoard(output_pcb_path, pcb)
+        try:
+            from openhac.compiler.pcb_postprocess import inject_kicad_stackup
+            inject_kicad_stackup(output_pcb_path, board.layers)
+        except Exception as e:
+            logger.warning("Failed to inject physical stackup (PCB-003): %s", e)
+            
         logger.info("Board outline and footprints generated successfully.")
     except Exception as e:
         logger.error(f"KiCad PCBNew API failed or unavailable: {e}")

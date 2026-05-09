@@ -36,15 +36,6 @@ if __name__ == "__main__":
     except Exception:
         pass
 
-# Debug: Show which API keys are configured
-if __name__ == "__main__":
-    print("\nAPI Keys configured:")
-    print(f"  DIGIKEY_CLIENT_ID: {bool(os.environ.get('DIGIKEY_CLIENT_ID'))}")
-    print(f"  MOUSER_API_KEY: {bool(os.environ.get('MOUSER_API_KEY'))}")
-    print(f"  TME_API_TOKEN: {bool(os.environ.get('TME_API_TOKEN'))}")
-    print(f"  JLCPCB_API_KEY: {bool(os.environ.get('JLCPCB_API_KEY'))}")
-    print()
-
 API_BASE = "https://jlcsearch.tscircuit.com"
 HEADERS = {"User-Agent": user_agent(), "Accept": "application/json"}
 
@@ -102,113 +93,130 @@ def _format_capacitance(c: float) -> str:
     return f"{v:.0f}pF" if v == int(v) else f"{v:.1f}pF"
 
 
-def _package_to_footprint(category: str, package: str) -> str:
+import json
+import logging
+import os
+from pathlib import Path
+
+logger = logging.getLogger("openhac.database.sync_jlc")
+
+_FOOTPRINT_MAP_CACHE = None
+
+def _load_footprint_map() -> dict:
+    global _FOOTPRINT_MAP_CACHE
+    if _FOOTPRINT_MAP_CACHE is not None:
+        return _FOOTPRINT_MAP_CACHE
+        
+    map_path = Path(__file__).parent / "footprint_map.json"
+    if map_path.is_file():
+        try:
+            with open(map_path, "r", encoding="utf-8") as f:
+                _FOOTPRINT_MAP_CACHE = json.load(f)
+        except Exception as e:
+            logger.warning("Failed to load footprint_map.json: %s", e)
+            _FOOTPRINT_MAP_CACHE = {}
+    else:
+        _FOOTPRINT_MAP_CACHE = {}
+    return _FOOTPRINT_MAP_CACHE
+
+def _package_to_footprint(category: str, package: str, lcsc: str = "") -> str:
     pkg = package or ""
+    fmap = _load_footprint_map()
+    
+    # 1. Check JSON map
+    cat_map = fmap.get(category)
+    if cat_map and pkg in cat_map:
+        return cat_map[pkg]
+
+    # Helper to attempt introspection and return if valid
+    def try_resolve(candidate_fp: str) -> str | None:
+        chosen, ok, res, notes = _verify_and_resolve_kicad_footprint(candidate_fp)
+        if ok:
+            logger.info("Resolved %r via KiCad library scan: %s (consider adding to footprint_map.json)", pkg, res)
+            return res
+        return None
+
+    # 3. Try intelligent construction (which feeds into step 2: Introspection)
+    candidate = None
     if category == "resistors":
-        mapping = {
-            "0201": "Resistor_SMD:R_0201_0603Metric",
-            "0402": "Resistor_SMD:R_0402_1005Metric",
-            "0603": "Resistor_SMD:R_0603_1608Metric",
-            "0805": "Resistor_SMD:R_0805_2012Metric",
-            "1206": "Resistor_SMD:R_1206_3216Metric",
-        }
-        return mapping.get(pkg, f"Resistor_SMD:R_{pkg}")
-
-    if category == "capacitors":
-        mapping = {
-            "0201": "Capacitor_SMD:C_0201_0603Metric",
-            "0402": "Capacitor_SMD:C_0402_1005Metric",
-            "0603": "Capacitor_SMD:C_0603_1608Metric",
-            "0805": "Capacitor_SMD:C_0805_2012Metric",
-            "1206": "Capacitor_SMD:C_1206_3216Metric",
-        }
-        return mapping.get(pkg, f"Capacitor_SMD:C_{pkg}")
-
-    if category == "leds":
-        mapping = {
-            "0402": "LED_SMD:LED_0402_1005Metric",
-            "0603": "LED_SMD:LED_0603_1608Metric",
-            "0805": "LED_SMD:LED_0805_2012Metric",
-        }
-        return mapping.get(pkg, f"LED_SMD:LED_{pkg}")
-
-    if category == "mosfets":
-        mapping = {
-            "SOT-23":   "Package_TO_SOT_SMD:SOT-23",
-            "SOT-23-3": "Package_TO_SOT_SMD:SOT-23",
-            "SOT-23-6": "Package_TO_SOT_SMD:SOT-23-6_Handsoldering",
-        }
-        return mapping.get(pkg, f"Package_TO_SOT_SMD:{pkg}")
-
-    if category == "microcontrollers":
-        return f"RF_Module:{pkg}" if pkg else "RF_Module:Generic_MCU"
-
-    if category == "voltage_regulators":
-        mapping = {
-            "SOT-223": "Package_TO_SOT_SMD:SOT-223-3_TabPin2",
-            "SOT-23":  "Package_TO_SOT_SMD:SOT-23",
-            "TO-252":  "Package_TO_SOT_SMD:TO-252-2",
-            "TO-263":  "Package_TO_SOT_SMD:TO-263-3_TabPin2",
-        }
-        return mapping.get(pkg, f"Package_TO_SOT_SMD:{pkg}")
-
-    if category == "diodes":
-        mapping = {
-            "SOD-123": "Diode_SMD:D_SOD-123",
-            "SOD-323": "Diode_SMD:D_SOD-323",
-            "SOT-23":  "Diode_SMD:D_SOT-23",
-            "SOD-523": "Diode_SMD:D_SOD-523",
-        }
-        return mapping.get(pkg, f"Diode_SMD:D_{pkg}")
-
-    if category == "switches":
-        return f"Button_Switch_SMD:SW_SPST_SKQG" if not pkg else f"Button_Switch_SMD:SW_{pkg}"
-
-    if category == "accelerometers":
-        if pkg == "LGA-14":
-            return "Package_LGA:LGA-14_3x5mm_P0.8mm"
-        if pkg.startswith("QFN"):
-            return f"Package_DFN_QFN:QFN-{pkg}"
-        return f"Sensor:Sensor_{pkg}" if pkg else "Sensor:Sensor_Generic"
-
-    if category == "crystals":
-        mapping = {
-            "HC-49S": "Crystal:Crystal_HC49-4H_Vertical",
-            "3225": "Crystal:Crystal_SMD_3225-4Pin_3.2x2.5mm",
-            "5032": "Crystal:Crystal_SMD_5032-2Pin_5.0x3.2mm",
-            "7050": "Crystal:Crystal_SMD_7050-4Pin_7.0x5.0mm",
-        }
-        return mapping.get(pkg, f"Crystal:Crystal_{pkg}")
-
-    if category == "connectors":
-        if "USB-C" in pkg or "USBC" in pkg:
-            return "Connector_USB:USB_C_Receptacle_HRO_TYPE-C-31-M-12"
+        candidate = f"Resistor_SMD:R_{pkg}"
+    elif category == "capacitors":
+        candidate = f"Capacitor_SMD:C_{pkg}"
+    elif category == "leds":
+        candidate = f"LED_SMD:LED_{pkg}"
+    elif category == "mosfets":
+        candidate = f"Package_TO_SOT_SMD:{pkg}"
+    elif category == "voltage_regulators":
+        candidate = f"Package_TO_SOT_SMD:{pkg}"
+    elif category == "diodes":
+        candidate = f"Diode_SMD:D_{pkg}"
+    elif category == "crystals":
+        candidate = f"Crystal:Crystal_{pkg}"
+    elif category == "microcontrollers":
+        if "LQFP" in pkg or "TQFP" in pkg or "QFP" in pkg:
+            candidate = f"Package_QFP:{pkg}"
+        elif "QFN" in pkg or "DFN" in pkg:
+            candidate = f"Package_DFN_QFN:{pkg}"
+        elif "SOP" in pkg or "SOIC" in pkg:
+            candidate = f"Package_SO:{pkg}"
+        elif "BGA" in pkg:
+            candidate = f"Package_BGA:{pkg}"
+    elif category == "switches":
+        candidate = f"Button_Switch_SMD:SW_{pkg}"
+    elif category == "accelerometers" or category in ("gyroscopes", "magnetometers", "barometers"):
+        if "LGA" in pkg:
+            candidate = f"Package_LGA:{pkg}"
+        elif "QFN" in pkg:
+            candidate = f"Package_DFN_QFN:{pkg}"
+        else:
+            candidate = f"Sensor:Sensor_{pkg}"
+    elif category == "connectors":
+        # Try to extract pin count, e.g. "1x04" or just assume a fallback based on hints
+        import re
+        m = re.search(r"(\d+)", pkg)
+        pins = int(m.group(1)) if m else 4
         if "2.54" in pkg:
-            return "Connector_PinHeader_2.54mm:PinHeader_1x04_P2.54mm_Vertical"
-        if "1.27" in pkg:
-            return "Connector_PinHeader_1.27mm:PinHeader_2x05_P1.27mm_Vertical"
-        return f"Connector:Connector_{pkg}" if pkg else "Connector_Generic:Conn_01x04"
+            candidate = f"Connector_PinHeader_2.54mm:PinHeader_1x{pins:02d}_P2.54mm_Vertical"
+        elif "1.27" in pkg:
+            candidate = f"Connector_PinHeader_1.27mm:PinHeader_1x{pins:02d}_P1.27mm_Vertical"
+        elif "USB-C" in pkg or "USBC" in pkg:
+            candidate = "Connector_USB:USB_C_Receptacle_HRO_TYPE-C-31-M-12"
+        else:
+            candidate = f"Connector:Connector_{pkg}"
+    elif category == "flash":
+        if "SOIC" in pkg or "SOP" in pkg:
+            candidate = f"Package_SO:{pkg}"
+        elif "WSON" in pkg:
+            candidate = f"Package_SON:{pkg}"
+    elif category == "buck_converters":
+        if "SOT" in pkg:
+            candidate = f"Package_TO_SOT_SMD:{pkg}"
+        elif "QFN" in pkg:
+            candidate = f"Package_DFN_QFN:{pkg}"
 
+    if candidate:
+        # 2. Introspection
+        res = try_resolve(candidate)
+        if res:
+            return res
+
+    # 3. EasyEDA Fallback
+    if lcsc:
+        from openhac.database.easyeda_integration import generate_footprint_from_lcsc
+        res = generate_footprint_from_lcsc(lcsc)
+        if res:
+            return res
+
+    # 4. Generic Fallback
+    logger.warning("Unknown package %r for category %r, using generic fallback. Add to overlay or footprint_map.json if needed.", pkg, category)
+    if category == "microcontrollers":
+        return "Package_QFP:Generic_QFP"
+    if category == "connectors":
+        return "Connector_Generic:Conn_01x02"
     if category == "flash":
-        if "SOIC" in pkg:
-            return "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"
-        if "WSON" in pkg:
-            return "Package_SON:WSON-8_6x5mm"
-        return f"Package_SO:SOIC-{pkg}" if pkg else "Package_SO:SOIC-8"
-
-    if category in ("gyroscopes", "magnetometers", "barometers"):
-        if pkg == "LGA-14":
-            return "Package_LGA:LGA-14_3x5mm_P0.8mm"
-        if pkg == "QFN-24":
-            return "Package_DFN_QFN:QFN-24_4x4mm_P0.5mm"
-        return f"Sensor:Sensor_{pkg}" if pkg else "Sensor:Sensor_Generic"
-
-    if category == "buck_converters":
-        if "SOT-23" in pkg:
-            return "Package_TO_SOT_SMD:SOT-23-6"
-        if "QFN" in pkg:
-            return f"Package_DFN_QFN:QFN-{pkg}"
-        return f"Package_TO_SOT_SMD:{pkg}" if pkg else "Package_TO_SOT_SMD:SOT-23-6"
+        return "Package_SO:SOIC-8"
+    if category == "switches":
+        return "Button_Switch_SMD:SW_Push"
 
     return pkg
 
@@ -406,7 +414,7 @@ def sync_catalog(categories: list[str] = None, verbose: bool = True) -> int:
             component = {
                 "generic_name":    generic_name,
                 "kicad_symbol":    kicad_symbol,
-                "kicad_footprint": _package_to_footprint(category, package),
+                "kicad_footprint": _package_to_footprint(category, package, lcsc=supplier_sku),
                 "manufacturer":    "",
                 "mpn":             mpn,
                 "supplier_sku":    supplier_sku,
@@ -480,7 +488,7 @@ def search_and_add_components(queries: list[str], verbose: bool = True) -> int:
 
             kicad_footprint = item.get("kicad_footprint", "")
             if not kicad_footprint:
-                kicad_footprint = _package_to_footprint(category, item.get("package", ""))
+                kicad_footprint = _package_to_footprint(category, item.get("package", ""), lcsc=lcsc)
 
             component = {
                 "generic_name": generic_name,
@@ -734,7 +742,7 @@ def verify_footprints_in_db(*, apply_fixes: bool = True, limit: int = 0, verbose
     with sqlite3.connect(db.db_path) as conn:
         conn.row_factory = sqlite3.Row
         cur = conn.cursor()
-        q = "SELECT generic_name, kicad_footprint FROM components WHERE kicad_footprint IS NOT NULL AND TRIM(kicad_footprint) != ''"
+        q = "SELECT generic_name, kicad_footprint, supplier_sku FROM components WHERE kicad_footprint IS NOT NULL AND TRIM(kicad_footprint) != ''"
         if limit and limit > 0:
             q += " LIMIT ?"
             cur.execute(q, (int(limit),))
@@ -751,7 +759,17 @@ def verify_footprints_in_db(*, apply_fixes: bool = True, limit: int = 0, verbose
     for r in rows:
         gn = str(r.get("generic_name") or "").strip()
         fp = str(r.get("kicad_footprint") or "").strip()
+        lcsc = str(r.get("supplier_sku") or "").strip()
         chosen, ok, res, notes = _verify_and_resolve_kicad_footprint(fp)
+        if not ok and lcsc:
+            from openhac.database.easyeda_integration import generate_footprint_from_lcsc
+            e_res = generate_footprint_from_lcsc(lcsc)
+            if e_res:
+                chosen = e_res
+                ok = 1
+                res = e_res
+                notes = "Generated via easyeda2kicad"
+        
         if ok:
             verified += 1
         else:
@@ -1069,6 +1087,15 @@ if __name__ == "__main__":
         logging.getLogger().setLevel(logging.WARNING)
     elif getattr(args, "verbose", False):
         logging.getLogger().setLevel(logging.INFO)
+
+    # Show which vendor API keys are configured
+    if not getattr(args, "quiet", False):
+        print("\nAPI Keys configured:")
+        print(f"  DIGIKEY_CLIENT_ID: {bool(os.environ.get('DIGIKEY_CLIENT_ID'))}")
+        print(f"  MOUSER_API_KEY: {bool(os.environ.get('MOUSER_API_KEY'))}")
+        print(f"  TME_API_TOKEN: {bool(os.environ.get('TME_API_TOKEN'))}")
+        print(f"  JLCPCB_API_KEY: {bool(os.environ.get('JLCPCB_API_KEY'))}")
+        print()
 
     if args.full:
         logger.info("Starting full sync (max_per_category=%s).", int(args.max_per_category))

@@ -34,7 +34,7 @@ This document (**STR-001**) states what the toolchain aims to do today versus wh
 - **Multi-rail power trees** with full converter efficiency modeling (partial rail ERC exists; see **PWR-002**).
 - **Automated fab DFM** beyond what **KiCad** / **`kicad-cli`** exports provide.
 - **Guarantee** of production-ready **high-speed** or **RF** layouts from **autoroute alone** (**PCB-007**): FreeRouting is **routing assistance**, not USB HS/PCIe-grade constraint solving. **`Board.route_differential_pair()`** records intent but **does not** drive impedance-controlled geometry in the exporter (**SIG-002**); finish pair rules in KiCad.
-- **Stackup / SI handoff** — use a human-edited stackup file (see **`docs/stackup_template.yaml`**, **SIG-001**); OpenHaC does not solve impedance from geometry alone.
+- **Stackup / SI handoff** — use a human-edited stackup file (see **`../stackup_template.yaml`**, **SIG-001**); OpenHaC does not solve impedance from geometry alone.
 - **Mains / reinforced isolation** — not a certified mains or creepage tool; IEC spacing needs expert review (**REL-002**).
 - **BGA / dense fanout** — no automated escape routing; plan fanout manually or in external CAD (**PCB-008**).
 

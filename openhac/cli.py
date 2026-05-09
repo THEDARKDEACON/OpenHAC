@@ -45,15 +45,9 @@ import json
 
 from openhac.core.dotenv_load import apply_kicad_env_aliases, load_repo_dotenv
 
-# Repo .env + KiCad paths must load before SKiDL import (it probes KICAD*_SYMBOL_DIR at import).
+# Repo .env + KiCad paths must load before component libraries.
 load_repo_dotenv(quiet=True)
 apply_kicad_env_aliases()
-
-# Pre-import skidl to avoid logger initialization conflicts
-try:
-    import skidl  # noqa: F401
-except ImportError:
-    pass
 
 logger = logging.getLogger("openhac")
 
@@ -141,6 +135,7 @@ def cmd_compile(args):
     _prev_db_path = os.environ.get("OPENHAC_DB_PATH")
     _prev_symbol_dirs = os.environ.get("OPENHAC_KICAD_SYMBOL_DIRS")
     _prev_compile_goal = os.environ.get("OPENHAC_COMPILE_GOAL")
+    _prev_schematic_strict = os.environ.get("OPENHAC_SCHEMATIC_STRICT")
     _kicad_sym_keys = ("KICAD9_SYMBOL_DIR", "KICAD8_SYMBOL_DIR", "KICAD7_SYMBOL_DIR", "KICAD6_SYMBOL_DIR")
     _kicad_fp_keys = ("KICAD9_FOOTPRINT_DIR", "KICAD8_FOOTPRINT_DIR", "KICAD_FOOTPRINT_DIR")
     _prev_kicad_sym = {k: os.environ.get(k) for k in _kicad_sym_keys}
@@ -189,6 +184,9 @@ def cmd_compile(args):
         v = str(getattr(args, "kicad_footprint_dir"))
         for k in _kicad_fp_keys:
             os.environ[k] = v
+
+    if getattr(args, "schematic_strict", False):
+        os.environ["OPENHAC_SCHEMATIC_STRICT"] = "1"
 
     try:
         logger.info("Compiling: %s", args.script)
@@ -265,6 +263,13 @@ def cmd_compile(args):
                         quiet=False,
                     )
                     logger.info("Auto-enrich-board: attempted=%s updated=%s", attempted, updated)
+                    
+                    # Refresh components to pull in newly downloaded 3D model paths
+                    if updated:
+                        for mod in board._get_all_modules():
+                            for comp in getattr(mod, "components", []):
+                                if hasattr(comp, "refresh_from_db"):
+                                    comp.refresh_from_db()
 
         name = args.name or _default_project_name(args.script)
         export_schematic = not args.no_schematic
@@ -324,7 +329,7 @@ def cmd_compile(args):
             kicad_sch_erc=kicad_erc,
             kicad_sch_erc_format=erc_fmt,
             source_script_path=os.path.abspath(args.script),
-            output_dir=getattr(args, "output_dir", None),
+            output_dir=getattr(args, "output_dir", None) or os.path.join(os.path.dirname(os.path.abspath(args.script)), name),
             release_zip_path=zip_path,
             bbox_padding_mm=float(getattr(args, "bbox_padding_mm", 0.5) or 0.5),
             module_clearance_mm=float(getattr(args, "module_gap_mm", 0.0) or 0.0),
@@ -358,6 +363,10 @@ def cmd_compile(args):
             os.environ.pop("OPENHAC_KICAD_SYMBOL_DIRS", None)
         else:
             os.environ["OPENHAC_KICAD_SYMBOL_DIRS"] = _prev_symbol_dirs
+        if _prev_schematic_strict is None:
+            os.environ.pop("OPENHAC_SCHEMATIC_STRICT", None)
+        else:
+            os.environ["OPENHAC_SCHEMATIC_STRICT"] = _prev_schematic_strict
         if _prev_compile_goal is None:
             os.environ.pop("OPENHAC_COMPILE_GOAL", None)
         else:
@@ -521,18 +530,7 @@ def cmd_doctor(args):
         pcbnew_import_ok = False
         pcbnew_import_error = str(e)
 
-    skidl_import_ok = None
-    skidl_version = None
-    skidl_import_error = None
-    try:
-        import importlib
 
-        sm = importlib.import_module("skidl")
-        skidl_import_ok = True
-        skidl_version = str(getattr(sm, "__version__", "") or "") or None
-    except Exception as e:
-        skidl_import_ok = False
-        skidl_import_error = str(e)
     java = shutil.which("java")
     freerouting_jar = os.environ.get("FREEROUTING_JAR")
     freerouting_jar_exists = bool((freerouting_jar or "").strip() and os.path.isfile(freerouting_jar or ""))
@@ -584,9 +582,7 @@ def cmd_doctor(args):
         "pcbnew_import_ok": pcbnew_import_ok,
         "pcbnew_version": pcbnew_version,
         "pcbnew_import_error": pcbnew_import_error,
-        "skidl_import_ok": skidl_import_ok,
-        "skidl_version": skidl_version,
-        "skidl_import_error": skidl_import_error,
+
         "java_path": java,
         "java_present": bool(java),
         "freerouting_jar": freerouting_jar,
@@ -903,6 +899,11 @@ def main():
         "--no-schematic",
         action="store_true",
         help="Skip schematic and .kicad_pro export",
+    )
+    p_compile.add_argument(
+        "--schematic-strict",
+        action="store_true",
+        help="Documentation-grade schematics: forbid implicit pins (sets OPENHAC_SCHEMATIC_STRICT=1).",
     )
     p_compile.add_argument(
         "--bbox-padding-mm",

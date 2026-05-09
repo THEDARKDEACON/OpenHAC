@@ -715,3 +715,45 @@ def apply_net_tie_intents(pcb, board, pcbnew_mod) -> int:
         logger.info("Added %s net-tie footprint(s) from intents.", added)
     return added
 
+
+def inject_kicad_stackup(pcb_path: str, layers: int) -> None:
+    """Inject a physical layer stackup into the generated KiCad PCB."""
+    try:
+        layers = int(layers)
+    except Exception:
+        return
+    if layers <= 2:
+        return
+    try:
+        with open(pcb_path, "r", encoding="utf-8") as f:
+            content = f.read()
+    except Exception:
+        return
+
+    # If it already has a stackup, do nothing
+    if "(stackup" in content:
+        return
+
+    copper_layers = ["F.Cu"]
+    for i in range(1, layers - 1):
+        copper_layers.append(f"In{i}.Cu")
+    copper_layers.append("B.Cu")
+
+    stackup_lines = ["    (stackup"]
+    for i, layer in enumerate(copper_layers):
+        stackup_lines.append(f'      (layer "{layer}" (type "copper") (thickness 0.035))')
+        if i < len(copper_layers) - 1:
+            stackup_lines.append(f'      (layer "dielectric {i+1}" (type "core") (thickness 0.2) (material "FR4") (epsilon_r 4.5) (loss_tangent 0.02))')
+    stackup_lines.append("    )")
+
+    stackup_block = "\n".join(stackup_lines)
+    
+    if "(setup" in content:
+        content = content.replace("(setup", "(setup\n" + stackup_block, 1)
+        try:
+            with open(pcb_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            logger.info("Successfully injected %d-layer physical stackup definition.", layers)
+        except Exception:
+            pass
+

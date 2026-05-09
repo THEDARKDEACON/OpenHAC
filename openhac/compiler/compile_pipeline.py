@@ -139,6 +139,12 @@ def phase_enrich_parts(state: CompileState) -> None:
             bool(allow_net),
         )
 
+        # Sync metadata (including 3D models) back to Component instances
+        for mod in modules:
+            for comp in getattr(mod, "components", []):
+                if hasattr(comp, "refresh_from_db"):
+                    comp.refresh_from_db()
+
 
 def phase_post_layout_checks(state: CompileState) -> None:
     """Post-layout checks gated by compile goal.
@@ -314,12 +320,18 @@ def phase_layout(state: CompileState) -> None:
             "(headless CI / logic-only builds; SW-006)."
         )
         return
-    logger.info(
-        "Applying geometric layout constraints. Target: %sx%smm, %s layers",
-        state.board.size_mm[0],
-        state.board.size_mm[1],
-        state.board.layers,
-    )
+    if not bool(getattr(state.board, "_size_mm_unspecified", False)):
+        logger.info(
+            "Applying geometric layout constraints. Target: %sx%smm, %s layers",
+            state.board.size_mm[0],
+            state.board.size_mm[1],
+            state.board.layers,
+        )
+    else:
+        logger.info(
+            "Applying geometric layout constraints. Target: <unspecified>, %s layers",
+            state.board.layers,
+        )
 
     # Auto-calculate module bounding boxes from component footprints
     for mod in state.board._get_all_modules():
@@ -352,6 +364,14 @@ def phase_layout(state: CompileState) -> None:
             logger.info("Module bbox refinement (pcbnew footprint pack): %s module(s) enlarged.", n_pack)
     except Exception as e:
         logger.debug("pcbnew module bbox pack skipped: %s", e)
+
+    # If the user left board size unspecified, auto-size now that module bboxes are refined.
+    try:
+        from openhac.compiler.autosize_board import maybe_autosize_board
+
+        maybe_autosize_board(state.board)
+    except Exception as e:
+        logger.debug("Auto board sizing skipped: %s", e)
 
     from openhac.compiler.layout_gen import generate_layout
 
@@ -490,6 +510,7 @@ def phase_schematic(state: CompileState) -> None:
         sym_lib_path=sym_path,
         sym_lib_nick="OpenHaC",
         footprint_libs=footprint_library_names_from_board(state.board),
+        board=state.board,
     )
 
     if not state.kicad_sch_erc:

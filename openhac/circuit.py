@@ -1,19 +1,17 @@
-"""Single access point for the active SKiDL default circuit."""
-
 from __future__ import annotations
 
 import builtins
+from openhac.core.circuit import default_circuit as native_default_circuit
 
 
 def get_default_circuit():
-    """Return the current SKiDL default circuit (same object as ``skidl`` uses)."""
-    try:
+    """Return the current default circuit (Native OpenHaC Circuit)."""
+    # Prefer builtins.default_circuit if it exists (legacy compatibility)
+    if hasattr(builtins, "default_circuit"):
         return builtins.default_circuit
-    except AttributeError as e:
-        raise RuntimeError(
-            "SKiDL default circuit is not initialized. Import skidl (or openhac.core) before "
-            "generating netlists or schematics."
-        ) from e
+    
+    # Fallback to native default circuit
+    return native_default_circuit
 
 
 def get_circuit():

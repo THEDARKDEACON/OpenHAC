@@ -453,6 +453,41 @@ def enrich_component_in_db(
 
     existing_po = _pinout_list_from_raw(row.get("pinout_json"))
     row_d = dict(row)
+    
+    # Step: EasyEDA Footprint & 3D Model Generation (PCB-008)
+    # Moved before pinout check to ensure 3D models are generated even if pinout is sufficient.
+    try:
+        from openhac.database.sync_jlc import _verify_and_resolve_kicad_footprint
+        chosen = str(row.get("kicad_footprint") or "").strip()
+        resolved = row.get("footprint_resolved")
+        current_m3d = row.get("model_3d_local")
+        m3d_exists = current_m3d and os.path.isfile(current_m3d)
+        
+        if not resolved or "easyeda_generated" not in str(chosen) or not m3d_exists:
+            mpn_eff = str(mpn or row.get("mpn") or "").strip() or None
+            sku_eff = str(jlcpcb_sku or row.get("supplier_sku") or "").strip() or None
+            jlc_eff = sku_eff if (sku_eff and sku_eff.upper().startswith("C") and sku_eff[1:].isdigit()) else None
+            sku_to_gen = jlc_eff or sku_eff or mpn_eff
+            
+            if sku_to_gen and sku_to_gen.startswith("C"):
+                from openhac.database.easyeda_integration import generate_footprint_from_lcsc
+                new_fp = generate_footprint_from_lcsc(sku_to_gen)
+                if new_fp:
+                    logger.info("Generated EasyEDA footprint for %s: %s", gn, new_fp)
+                    db.update_component_fields(gn, {"kicad_footprint": new_fp, "footprint_resolved": 1})
+                    # Also update the 3D model path if it was generated
+                    from openhac.database.easyeda_integration import get_easyeda_3d_library_dir
+                    safe_name = new_fp.split(":", 1)[1]
+                    model_path = get_easyeda_3d_library_dir() / f"{safe_name}.step"
+                    if model_path.exists():
+                        db.update_component_fields(gn, {"model_3d_local": str(model_path)})
+                        logger.info("Updated 3D model path for %s: %s", gn, model_path)
+                        # Refresh row_d so pinout check uses updated data if needed
+                        row = db.get_component(gn)
+                        row_d = dict(row)
+    except Exception as e:
+        logger.debug("EasyEDA pre-enrichment skipped for %s: %s", gn, e)
+
     if _pinout_is_sufficient(existing_po, row_d):
         return EnrichResult(attempted=False, updated=False, vendor=None, reason="already_has_pinout")
 

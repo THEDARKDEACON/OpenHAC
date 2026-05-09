@@ -31,7 +31,7 @@ def _normalize_compile_goal(v: str | None) -> str:
 class Board:
     def __init__(
         self,
-        size_mm: tuple,
+        size_mm: tuple[float, float] | None,
         layers: int = 2,
         *,
         board_class: str | None = None,
@@ -73,7 +73,13 @@ class Board:
             require_passive_voltage_ratings = True
             strict_passive_catalog_fields = True
             strict_passive_attributes_json = True
-        self.size_mm = size_mm
+        # Board outline size. If unspecified (None), compile may auto-size later
+        # once module bboxes are refined (before Z3 placement / pcbnew layout).
+        self._size_mm_unspecified: bool = size_mm is None
+        self.size_mm: tuple[float, float] = (
+            # Use a tiny positive placeholder to avoid early DRC failures before autosize runs.
+            (1.0, 1.0) if size_mm is None else (float(size_mm[0]), float(size_mm[1]))
+        )
         self.layers = layers
         #: Target board class/profile (future: drives placement/routing policies and strict gates).
         #: Examples: ``digital_2layer``, ``power_motor``, ``highspeed``, ``rf``, ``mixedsignal``.
@@ -253,6 +259,9 @@ class Board:
                 self._propagate_board_ref(c)
 
     def connect(self, intf1, intf2):
+        from openhac.core.base import InterfaceNotFoundError
+        if intf1 is None or intf2 is None:
+            raise InterfaceNotFoundError("Cannot connect a missing or None interface. Ensure both interfaces exist on the modules.")
         if hasattr(intf1, 'connect') and hasattr(intf2, 'connect'):
             intf1.connect(intf2)
         else:

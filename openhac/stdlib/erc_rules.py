@@ -1,6 +1,11 @@
 """Example ERC hooks for :meth:`openhac.core.board.Board.register_erc_hook` (SCH-005).
 
 These are **illustrative** checks only; tune or replace for your design rules.
+
+The :func:`pullup_erc_hook` factory generates a ``fn(board) -> list[str]`` that
+checks whether a given net has a resistor path to a supply-named rail.  All the
+protocol-specific helpers (``i2c_pullup_erc_hook``, ``uart_rx_pullup_erc_hook``,
+etc.) are thin wrappers around this factory.
 """
 
 from __future__ import annotations
@@ -57,474 +62,167 @@ def net_has_resistor_pullup_to_rail(net) -> bool:
     return False
 
 
-def one_wire_pullup_erc_hook(dq_net):
-    """Build ``fn(board)`` that requires a pull-up resistor from *dq_net* to a supply-named net (1-Wire, SCH-005)."""
+# ---------------------------------------------------------------------------
+# Generic pull-up hook factory
+# ---------------------------------------------------------------------------
 
+def pullup_erc_hook(net, label: str = "signal"):
+    """Build ``fn(board) -> list[str]`` that expects *net* to have a pull-up to a supply rail (SCH-005).
+
+    Args:
+        net: The net object to check.
+        label: Human-readable description for error messages (e.g. "I2C SDA", "UART RX").
+    """
     def _hook(board):
         _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(dq_net):
-            msgs.append(
-                f"1-Wire DQ net {getattr(dq_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
-
-def uart_rx_pullup_erc_hook(rx_net):
-    """Build ``fn(board)`` that expects *rx_net* to have a pull-up to a supply-named net (idle-high UART RX, SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(rx_net):
-            msgs.append(
-                f"UART RX net {getattr(rx_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
-
-def swd_swdio_pullup_erc_hook(swdio_net):
-    """Build ``fn(board)`` expecting **SWDIO** to have a pull-up (many debug connectors leave SWDIO open-drain, SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(swdio_net):
-            msgs.append(
-                f"SWDIO net {getattr(swdio_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
-
-def jtag_tms_pullup_erc_hook(tms_net):
-    """Build ``fn(board)`` expecting **TMS** to have a pull-up (idle-high / shared JTAG buses, SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(tms_net):
-            msgs.append(
-                f"JTAG TMS net {getattr(tms_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
-
-def jtag_tck_pullup_erc_hook(tck_net):
-    """Build ``fn(board)`` expecting **TCK** to have a pull-up to a supply rail (idle strapping, SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(tck_net):
-            msgs.append(
-                f"JTAG TCK net {getattr(tck_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
-
-def can_rx_pullup_erc_hook(rx_net):
-    """Build ``fn(board)`` expecting **CAN RX** (post-transceiver MCU side, open-drain / shared) to have a pull-up (SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(rx_net):
-            msgs.append(
-                f"CAN RX net {getattr(rx_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
-
-def sd_cmd_pullup_erc_hook(cmd_net):
-    """Build ``fn(board)`` expecting **CMD** to have a pull-up (SD/eMMC open-drain command line, SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(cmd_net):
-            msgs.append(
-                f"SD/MMC CMD net {getattr(cmd_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
-
-def spi_miso_pullup_erc_hook(miso_net):
-    """Build ``fn(board)`` expecting **MISO** to have a pull-up (multi-slave SPI / bus-hold, SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(miso_net):
-            msgs.append(
-                f"SPI MISO net {getattr(miso_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
+        if not net_has_resistor_pullup_to_rail(net):
+            return [
+                f"{label} net {getattr(net, 'name', '?')!r}: expected a pull-up "
+                f"resistor to a supply rail (SCH-005)."
+            ]
+        return []
     return _hook
 
 
 def i2c_pullup_erc_hook(sda_net, scl_net):
     """Build ``fn(board)`` that requires pull-up resistors from *sda_net* / *scl_net* to a supply-named net."""
-
     def _hook(board):
         _ = board
         msgs = []
         if not net_has_resistor_pullup_to_rail(sda_net):
             msgs.append(
-                f"I2C SDA net {getattr(sda_net, 'name', '?')!r}: expected a resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
+                f"I2C SDA net {getattr(sda_net, 'name', '?')!r}: expected a resistor "
+                f"to a supply rail (SCH-005)."
             )
         if not net_has_resistor_pullup_to_rail(scl_net):
             msgs.append(
-                f"I2C SCL net {getattr(scl_net, 'name', '?')!r}: expected a resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
+                f"I2C SCL net {getattr(scl_net, 'name', '?')!r}: expected a resistor "
+                f"to a supply rail (SCH-005)."
             )
         return msgs
-
     return _hook
 
 
-def reset_pullup_erc_hook(rst_n_net):
-    """Build ``fn(board)`` for active-low reset: resistor to a supply rail (SCH-005)."""
+# ---------------------------------------------------------------------------
+# Protocol / signal-specific aliases (backward compat)
+# ---------------------------------------------------------------------------
 
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(rst_n_net):
-            msgs.append(
-                f"Reset net {getattr(rst_n_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
+def one_wire_pullup_erc_hook(dq_net):
+    """1-Wire DQ pull-up check."""
+    return pullup_erc_hook(dq_net, "1-Wire DQ")
 
-    return _hook
+def uart_rx_pullup_erc_hook(rx_net):
+    """UART RX idle-high pull-up check."""
+    return pullup_erc_hook(rx_net, "UART RX")
 
+def swd_swdio_pullup_erc_hook(swdio_net):
+    """SWD SWDIO pull-up check."""
+    return pullup_erc_hook(swdio_net, "SWDIO")
 
-def mdio_pullup_erc_hook(mdio_net):
-    """Build ``fn(board)`` expecting MDIO to have a pull-up to a supply-looking rail (SCH-005)."""
+def jtag_tms_pullup_erc_hook(tms_net):
+    """JTAG TMS pull-up check."""
+    return pullup_erc_hook(tms_net, "JTAG TMS")
 
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(mdio_net):
-            msgs.append(
-                f"MDIO net {getattr(mdio_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
+def jtag_tck_pullup_erc_hook(tck_net):
+    """JTAG TCK pull-up check."""
+    return pullup_erc_hook(tck_net, "JTAG TCK")
 
-    return _hook
+def can_rx_pullup_erc_hook(rx_net):
+    """CAN RX pull-up check."""
+    return pullup_erc_hook(rx_net, "CAN RX")
 
+def sd_cmd_pullup_erc_hook(cmd_net):
+    """SD/eMMC CMD pull-up check."""
+    return pullup_erc_hook(cmd_net, "SD/MMC CMD")
+
+def spi_miso_pullup_erc_hook(miso_net):
+    """SPI MISO pull-up check (multi-slave bus hold)."""
+    return pullup_erc_hook(miso_net, "SPI MISO")
 
 def spi_cs_pullup_erc_hook(cs_n_net):
-    """Build ``fn(board)`` that expects an active-low CS net to have a resistor to a supply-looking rail (SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(cs_n_net):
-            msgs.append(
-                f"SPI CS net {getattr(cs_n_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
+    """SPI CS# active-low pull-up check."""
+    return pullup_erc_hook(cs_n_net, "SPI CS")
 
 def spi_hold_n_pullup_erc_hook(hold_n_net):
-    """Build ``fn(board)`` expecting **SPI HOLD#** (active-low, often shared on flash) to have a pull-up (SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(hold_n_net):
-            msgs.append(
-                f"SPI HOLD# net {getattr(hold_n_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
+    """SPI HOLD# pull-up check."""
+    return pullup_erc_hook(hold_n_net, "SPI HOLD#")
 
 def spi_wp_n_pullup_erc_hook(wp_n_net):
-    """Build ``fn(board)`` expecting **SPI WP#** (write-protect, active-low on NOR flash) to have a pull-up (SCH-005)."""
+    """SPI WP# (write-protect) pull-up check."""
+    return pullup_erc_hook(wp_n_net, "SPI WP#")
 
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(wp_n_net):
-            msgs.append(
-                f"SPI WP# net {getattr(wp_n_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
+def reset_pullup_erc_hook(rst_n_net):
+    """Active-low reset pull-up check."""
+    return pullup_erc_hook(rst_n_net, "Reset")
 
-    return _hook
-
+def mdio_pullup_erc_hook(mdio_net):
+    """MDIO pull-up check."""
+    return pullup_erc_hook(mdio_net, "MDIO")
 
 def eth_phy_int_n_pullup_erc_hook(int_n_net):
-    """Build ``fn(board)`` expecting **Ethernet PHY INT#** (open-drain) to have a pull-up to a rail (SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(int_n_net):
-            msgs.append(
-                f"Ethernet PHY INT# net {getattr(int_n_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
+    """Ethernet PHY INT# open-drain pull-up check."""
+    return pullup_erc_hook(int_n_net, "Ethernet PHY INT#")
 
 def rs485_re_n_pullup_erc_hook(re_n_net):
-    """Build ``fn(board)`` expecting **RS485 RE#** (receiver enable, active-low) to have a defined idle level via pull-up (SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(re_n_net):
-            msgs.append(
-                f"RS485 RE# net {getattr(re_n_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
+    """RS485 RE# pull-up check."""
+    return pullup_erc_hook(re_n_net, "RS485 RE#")
 
 def usb_vbus_sense_pullup_erc_hook(vbus_sense_net):
-    """Build ``fn(board)`` expecting a **USB VBUS sense** (open-drain / divider tap) net to have a pull-up (SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(vbus_sense_net):
-            msgs.append(
-                f"USB VBUS sense net {getattr(vbus_sense_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
+    """USB VBUS sense pull-up check."""
+    return pullup_erc_hook(vbus_sense_net, "USB VBUS sense")
 
 def pcie_wake_n_pullup_erc_hook(wake_n_net):
-    """Build ``fn(board)`` expecting **PCIe WAKE#** (open-drain) to have a pull-up to a rail (SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(wake_n_net):
-            msgs.append(
-                f"PCIe WAKE# net {getattr(wake_n_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
+    """PCIe WAKE# open-drain pull-up check."""
+    return pullup_erc_hook(wake_n_net, "PCIe WAKE#")
 
 def rtc_int_n_pullup_erc_hook(int_n_net):
-    """Build ``fn(board)`` expecting **RTC INT#** (open-drain alarm / tick) to have a pull-up to a rail (SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(int_n_net):
-            msgs.append(
-                f"RTC INT# net {getattr(int_n_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
+    """RTC INT# pull-up check."""
+    return pullup_erc_hook(int_n_net, "RTC INT#")
 
 def lin_bus_pullup_erc_hook(lin_net):
-    """Build ``fn(board)`` expecting **LIN** (single-wire) to have a pull-up to a rail (idle-recessive, SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(lin_net):
-            msgs.append(
-                f"LIN bus net {getattr(lin_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
+    """LIN bus idle-recessive pull-up check."""
+    return pullup_erc_hook(lin_net, "LIN bus")
 
 def power_good_pullup_erc_hook(pgood_net):
-    """Build ``fn(board)`` expecting a **power-good** / open-drain status net to have a pull-up (SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(pgood_net):
-            msgs.append(
-                f"Power-good net {getattr(pgood_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(open-drain output; SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
+    """Power-good open-drain status pull-up check."""
+    return pullup_erc_hook(pgood_net, "Power-good")
 
 def i2s_ws_pullup_erc_hook(ws_net):
-    """Build ``fn(board)`` expecting **I2S WS** (word select / LRCLK) to have a pull-up when multi-slave / idle (SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(ws_net):
-            msgs.append(
-                f"I2S WS net {getattr(ws_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
+    """I2S WS (word select / LRCLK) pull-up check."""
+    return pullup_erc_hook(ws_net, "I2S WS")
 
 def hdmi_cec_pullup_erc_hook(cec_net):
-    """Build ``fn(board)`` expecting **HDMI CEC** (open-drain) to have a pull-up to a rail (SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(cec_net):
-            msgs.append(
-                f"HDMI CEC net {getattr(cec_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
+    """HDMI CEC open-drain pull-up check."""
+    return pullup_erc_hook(cec_net, "HDMI CEC")
 
 def hdmi_hpd_pullup_erc_hook(hpd_net):
-    """Build ``fn(board)`` expecting **HDMI HPD** (hot-plug detect, open-drain) to have a pull-up to a rail (SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(hpd_net):
-            msgs.append(
-                f"HDMI HPD net {getattr(hpd_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
+    """HDMI HPD open-drain pull-up check."""
+    return pullup_erc_hook(hpd_net, "HDMI HPD")
 
 def sd_cd_pullup_erc_hook(cd_net):
-    """Build ``fn(board)`` expecting **SD card CD#** (card detect, often open-drain) to have a pull-up (SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(cd_net):
-            msgs.append(
-                f"SD card CD net {getattr(cd_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
+    """SD card CD# pull-up check."""
+    return pullup_erc_hook(cd_net, "SD card CD")
 
 def stepper_dir_pullup_erc_hook(dir_net):
-    """Build ``fn(board)`` expecting a **stepper DIR** (direction) input to have a defined idle level via pull-up (SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(dir_net):
-            msgs.append(
-                f"Stepper DIR net {getattr(dir_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
+    """Stepper DIR idle level pull-up check."""
+    return pullup_erc_hook(dir_net, "Stepper DIR")
 
 def usb_otg_id_pullup_erc_hook(id_net):
-    """Build ``fn(board)`` expecting **USB OTG ID** to have a pull-up when host/device strapping matters (SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(id_net):
-            msgs.append(
-                f"USB OTG ID net {getattr(id_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
+    """USB OTG ID pull-up check."""
+    return pullup_erc_hook(id_net, "USB OTG ID")
 
 def smbus_alert_pullup_erc_hook(alert_net):
-    """Build ``fn(board)`` expecting **SMBus / PMBus ALERT#** (open-drain) to have a pull-up to a rail (SCH-005)."""
-
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(alert_net):
-            msgs.append(
-                f"SMBus ALERT net {getattr(alert_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
-
-    return _hook
-
+    """SMBus / PMBus ALERT# pull-up check."""
+    return pullup_erc_hook(alert_net, "SMBus ALERT")
 
 def sensor_interrupt_pullup_erc_hook(irq_net):
-    """Build ``fn(board)`` expecting an **open-drain interrupt** (DRDY / INT) to have a pull-up to a rail (SCH-005)."""
+    """Open-drain sensor interrupt (DRDY / INT) pull-up check."""
+    return pullup_erc_hook(irq_net, "Sensor interrupt")
 
-    def _hook(board):
-        _ = board
-        msgs = []
-        if not net_has_resistor_pullup_to_rail(irq_net):
-            msgs.append(
-                f"Sensor interrupt net {getattr(irq_net, 'name', '?')!r}: expected a pull-up resistor to a supply rail "
-                f"(open-drain output; SCH-005 example rule; see openhac.stdlib.erc_rules)."
-            )
-        return msgs
 
-    return _hook
-
+# ---------------------------------------------------------------------------
+# Structural checks (not pull-up based)
+# ---------------------------------------------------------------------------
 
 def missing_footprint_erc_hook(board):
     """``fn(board)`` that flags SKiDL parts with an empty footprint (SCH-005 example).

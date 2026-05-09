@@ -1,0 +1,195 @@
+[
+  {
+    "generic_name": "BUCK_TPS63001DRCR",
+    "kicad_symbol": "Device:Q",
+    "kicad_footprint": "Package_TO_SOT_SMD:SOT-23",
+    "manufacturer": "TI",
+    "mpn": "TPS63001DRCR",
+    "supplier_sku": "C132150",
+    "description": "Buck-boost regulator (demo seed)",
+    "category": "ic",
+    "attributes_json": "{}",
+    "pinout": [
+      { "num": "1", "name": "VIN", "type": "power" },
+      { "num": "2", "name": "GND", "type": "power" },
+      { "num": "3", "name": "L1", "type": "bidirectional" },
+      { "num": "4", "name": "FB", "type": "input" }
+    ]
+  },
+  {
+    "generic_name": "LDO_LDL1117S33R",
+    "kicad_symbol": "Device:Q",
+    "kicad_footprint": "Package_TO_SOT_SMD:SOT-23",
+    "manufacturer": "ST",
+    "mpn": "LDL1117S33R",
+    "supplier_sku": "C130026",
+    "description": "3.3V LDO regulator (demo seed)",
+    "category": "ic",
+    "attributes_json": "{}",
+    "pinout": [
+      { "num": "1", "name": "IN", "type": "power" },
+      { "num": "2", "name": "OUT", "type": "power" },
+      { "num": "3", "name": "GND", "type": "power" }
+    ]
+  },
+  {
+    "generic_name": "INDUCTOR_2R2_2520",
+    "kicad_symbol": "Device:L",
+    "kicad_footprint": "Inductor_SMD:L_2520",
+    "manufacturer": "",
+    "mpn": "INDUCTOR_2R2_2520",
+    "supplier_sku": "C167240",
+    "description": "2.2uH inductor (demo seed)",
+    "category": "inductors",
+    "attributes_json": "{}"
+  },
+  {
+    "generic_name": "C_10UF_0805",
+    "kicad_symbol": "Device:C",
+    "kicad_footprint": "Capacitor_SMD:C_0805_2012Metric",
+    "manufacturer": "",
+    "mpn": "C_10UF_0805",
+    "supplier_sku": "C440198",
+    "description": "10uF capacitor (demo seed)",
+    "category": "capacitors",
+    "attributes_json": "{}"
+  },
+  {
+    "generic_name": "C_22UF_0805",
+    "kicad_symbol": "Device:C",
+    "kicad_footprint": "Capacitor_SMD:C_0805_2012Metric",
+    "manufacturer": "",
+    "mpn": "C_22UF_0805",
+    "supplier_sku": "C59461",
+    "description": "22uF capacitor (demo seed)",
+    "category": "capacitors",
+    "attributes_json": "{}"
+  },
+  {
+    "generic_name": "C_100NF_0603",
+    "kicad_symbol": "Device:C",
+    "kicad_footprint": "Capacitor_SMD:C_0603_1608Metric",
+    "manufacturer": "",
+    "mpn": "C_100NF_0603",
+    "supplier_sku": "C14663",
+    "description": "100nF capacitor (demo seed)",
+    "category": "capacitors",
+    "attributes_json": "{}"
+  },
+  {
+    "generic_name": "C_100NF_0402",
+    "kicad_symbol": "Device:C",
+    "kicad_footprint": "Capacitor_SMD:C_0402_1005Metric",
+    "manufacturer": "",
+    "mpn": "C_100NF_0402",
+    "supplier_sku": "C1525",
+    "description": "100nF capacitor (demo seed)",
+    "category": "capacitors",
+    "attributes_json": "{}"
+  },
+  {
+    "generic_name": "R_100K_0603",
+    "kicad_symbol": "Device:R",
+    "kicad_footprint": "Resistor_SMD:R_0603_1608Metric",
+    "manufacturer": "",
+    "mpn": "R_100K_0603",
+    "supplier_sku": "C25804",
+    "description": "100k resistor (demo seed)",
+    "category": "resistors",
+    "attributes_json": "{}"
+  },
+  {
+    "generic_name": "R_32K4_0603",
+    "kicad_symbol": "Device:R",
+    "kicad_footprint": "Resistor_SMD:R_0603_1608Metric",
+    "manufacturer": "",
+    "mpn": "R_32K4_0603",
+    "supplier_sku": "C25818",
+    "description": "32.4k resistor (demo seed)",
+    "category": "resistors",
+    "attributes_json": "{}"
+  },
+  {
+    "generic_name": "R_1K_0603",
+    "kicad_symbol": "Device:R",
+    "kicad_footprint": "Resistor_SMD:R_0603_1608Metric",
+    "manufacturer": "",
+    "mpn": "R_1K_0603",
+    "supplier_sku": "C21190",
+    "description": "1k resistor (demo seed)",
+    "category": "resistors",
+    "attributes_json": "{}"
+  },
+  {
+    "generic_name": "LED_GREEN_0603",
+    "kicad_symbol": "Device:LED",
+    "kicad_footprint": "LED_SMD:LED_0603_1608Metric",
+    "manufacturer": "",
+    "mpn": "LED_GREEN_0603",
+    "supplier_sku": "C125093",
+    "description": "Green LED (demo seed)",
+    "category": "leds",
+    "attributes_json": "{}",
+    "pinout": [
+      { "num": "1", "name": "A", "type": "passive" },
+      { "num": "2", "name": "K", "type": "passive" }
+    ]
+  },
+  {
+    "generic_name": "LED_BLUE_0603",
+    "kicad_symbol": "Device:LED",
+    "kicad_footprint": "LED_SMD:LED_0603_1608Metric",
+    "manufacturer": "",
+    "mpn": "LED_BLUE_0603",
+    "supplier_sku": "C125088",
+    "description": "Blue LED (demo seed)",
+    "category": "leds",
+    "attributes_json": "{}",
+    "pinout": [
+      { "num": "1", "name": "A", "type": "passive" },
+      { "num": "2", "name": "K", "type": "passive" }
+    ]
+  },
+  {
+    "generic_name": "MCU_EDGE_STUB_SOIC8",
+    "kicad_symbol": "Device:Q",
+    "kicad_footprint": "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm",
+    "manufacturer": "",
+    "mpn": "MCU_EDGE_STUB_SOIC8",
+    "supplier_sku": "",
+    "description": "Host stub used by examples/complex_iot_edge_node_jlc_only.py",
+    "category": "ic",
+    "attributes_json": "{}",
+    "pinout": [
+      { "num": "1", "name": "VDD", "type": "power" },
+      { "num": "2", "name": "VSS", "type": "power" },
+      { "num": "3", "name": "CAN_TX", "type": "bidirectional" },
+      { "num": "4", "name": "CAN_RX", "type": "bidirectional" },
+      { "num": "5", "name": "NRST", "type": "input" },
+      { "num": "6", "name": "NC", "type": "no_connect" },
+      { "num": "7", "name": "NC", "type": "no_connect" },
+      { "num": "8", "name": "NC", "type": "no_connect" }
+    ]
+  },
+  {
+    "generic_name": "CAN_TJA1051",
+    "kicad_symbol": "Device:Q",
+    "kicad_footprint": "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm",
+    "manufacturer": "NXP",
+    "mpn": "TJA1051T/3",
+    "supplier_sku": "C132146",
+    "description": "CAN transceiver (demo seed)",
+    "category": "ic",
+    "attributes_json": "{}",
+    "pinout": [
+      { "num": "1", "name": "TXD", "type": "bidirectional" },
+      { "num": "2", "name": "GND", "type": "power" },
+      { "num": "3", "name": "VCC", "type": "power" },
+      { "num": "4", "name": "RXD", "type": "bidirectional" },
+      { "num": "5", "name": "NC", "type": "no_connect" },
+      { "num": "6", "name": "CANL", "type": "bidirectional" },
+      { "num": "7", "name": "CANH", "type": "bidirectional" },
+      { "num": "8", "name": "S", "type": "input" }
+    ]
+  }
+]

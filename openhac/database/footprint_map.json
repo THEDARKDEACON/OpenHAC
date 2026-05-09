@@ -1,0 +1,76 @@
+{
+  "resistors": {
+    "0201": "Resistor_SMD:R_0201_0603Metric",
+    "0402": "Resistor_SMD:R_0402_1005Metric",
+    "0603": "Resistor_SMD:R_0603_1608Metric",
+    "0805": "Resistor_SMD:R_0805_2012Metric",
+    "1206": "Resistor_SMD:R_1206_3216Metric",
+    "1210": "Resistor_SMD:R_1210_3225Metric",
+    "1812": "Resistor_SMD:R_1812_4532Metric",
+    "2010": "Resistor_SMD:R_2010_5025Metric",
+    "2512": "Resistor_SMD:R_2512_6332Metric"
+  },
+  "capacitors": {
+    "0201": "Capacitor_SMD:C_0201_0603Metric",
+    "0402": "Capacitor_SMD:C_0402_1005Metric",
+    "0603": "Capacitor_SMD:C_0603_1608Metric",
+    "0805": "Capacitor_SMD:C_0805_2012Metric",
+    "1206": "Capacitor_SMD:C_1206_3216Metric",
+    "1210": "Capacitor_SMD:C_1210_3225Metric",
+    "1812": "Capacitor_SMD:C_1812_4532Metric",
+    "SMA": "Capacitor_Tantalum_SMD:CP_EIA-3216-18_Kemet-A",
+    "SMB": "Capacitor_Tantalum_SMD:CP_EIA-3528-21_Kemet-B",
+    "SMC": "Capacitor_Tantalum_SMD:CP_EIA-6032-28_Kemet-C",
+    "SMD": "Capacitor_Tantalum_SMD:CP_EIA-7343-31_Kemet-D"
+  },
+  "inductors": {
+    "0402": "Inductor_SMD:L_0402_1005Metric",
+    "0603": "Inductor_SMD:L_0603_1608Metric",
+    "0805": "Inductor_SMD:L_0805_2012Metric",
+    "1206": "Inductor_SMD:L_1206_3216Metric",
+    "1210": "Inductor_SMD:L_1210_3225Metric"
+  },
+  "leds": {
+    "0402": "LED_SMD:LED_0402_1005Metric",
+    "0603": "LED_SMD:LED_0603_1608Metric",
+    "0805": "LED_SMD:LED_0805_2012Metric",
+    "1206": "LED_SMD:LED_1206_3216Metric",
+    "WS2812B": "LED_SMD:LED_WS2812B_PLCC4_5.0x5.0mm_P3.2mm"
+  },
+  "mosfets": {
+    "SOT-23":   "Package_TO_SOT_SMD:SOT-23",
+    "SOT-23-3": "Package_TO_SOT_SMD:SOT-23",
+    "SOT-23-5": "Package_TO_SOT_SMD:SOT-23-5",
+    "SOT-23-6": "Package_TO_SOT_SMD:SOT-23-6",
+    "SOT-89":   "Package_TO_SOT_SMD:SOT-89-3",
+    "SOT-223":  "Package_TO_SOT_SMD:SOT-223-3_TabPin2",
+    "TO-252":   "Package_TO_SOT_SMD:TO-252-2",
+    "TO-263":   "Package_TO_SOT_SMD:TO-263-2"
+  },
+  "voltage_regulators": {
+    "SOT-23":   "Package_TO_SOT_SMD:SOT-23",
+    "SOT-23-5": "Package_TO_SOT_SMD:SOT-23-5",
+    "SOT-89":   "Package_TO_SOT_SMD:SOT-89-3",
+    "SOT-223":  "Package_TO_SOT_SMD:SOT-223-3_TabPin2",
+    "TO-252":   "Package_TO_SOT_SMD:TO-252-2",
+    "TO-263":   "Package_TO_SOT_SMD:TO-263-3_TabPin2"
+  },
+  "diodes": {
+    "SOD-123": "Diode_SMD:D_SOD-123",
+    "SOD-323": "Diode_SMD:D_SOD-323",
+    "SOD-523": "Diode_SMD:D_SOD-523",
+    "SOT-23":  "Diode_SMD:D_SOT-23",
+    "SMA":     "Diode_SMD:D_SMA",
+    "SMB":     "Diode_SMD:D_SMB",
+    "SMC":     "Diode_SMD:D_SMC",
+    "MELF":    "Diode_SMD:D_MELF",
+    "MiniMELF": "Diode_SMD:D_MiniMELF"
+  },
+  "crystals": {
+    "HC-49S": "Crystal:Crystal_HC49-4H_Vertical",
+    "3215": "Crystal:Crystal_SMD_3215-2Pin_3.2x1.5mm",
+    "3225": "Crystal:Crystal_SMD_3225-4Pin_3.2x2.5mm",
+    "5032": "Crystal:Crystal_SMD_5032-2Pin_5.0x3.2mm",
+    "7050": "Crystal:Crystal_SMD_7050-4Pin_7.0x5.0mm"
+  }
+}

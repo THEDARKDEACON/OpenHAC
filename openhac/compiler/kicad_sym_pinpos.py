@@ -269,12 +269,13 @@ def load_symbol_pin_positions(lib_file: Path, symbol_name: str) -> dict[str, tup
 
 def part_library_name(part) -> str:
     """KiCad library nick (e.g. ``Device``) for *part*; SKiDL stores a ``SchLib`` on ``part.lib``."""
-    # For SKiDL-native parts (tool=SKIDL) we can emit a project-local library and use a stable nick.
+    # Native OpenHaC parts don't have a 'tool' or 'lib' attribute, they are dynamically generated.
+    if type(part).__name__ == "Part" and type(part).__module__ == "openhac.core.part":
+        return "OpenHaC"
+        
     try:
         tool = getattr(part, "tool", None)
-        import skidl  # local import to avoid hard dependency during docs builds
-
-        if tool == getattr(skidl, "SKIDL", None):
+        if tool == "OpenHaC":
             return "OpenHaC"
     except Exception:
         pass
@@ -301,26 +302,44 @@ class EmptySymbolPinResolver:
 class SymbolPinResolver:
     """Resolve SKiDL part + pin to schematic-local offset (mm) from symbol library files."""
 
-    __slots__ = ("_cache",)
+    __slots__ = ("_cache", "_explicit_libs")
 
     def __init__(self) -> None:
         self._cache: dict[tuple[str, str], Optional[dict[str, tuple[float, float]]]] = {}
+        self._explicit_libs: dict[str, Path] = {}
+
+    def add_explicit_library(self, lib_name: str, path: str | Path) -> None:
+        self._explicit_libs[str(lib_name).strip()] = Path(path)
 
     def offset_for_pin(self, part, pin) -> tuple[float, float] | None:
         """Return (dx, dy) relative to the symbol instance origin, or None to use stub layout."""
         lib = part_library_name(part)
         name = (getattr(part, "name", None) or "").strip()
+        if not name or name == "?":
+            name = (getattr(part, "ref", None) or getattr(part, "refdes", None) or "").strip()
+        if not name or name == "?":
+            name = "PART"
+            
         if not lib or not name:
+            logger.debug(f"Resolver skip: lib='{lib}' name='{name}' for part {part}")
             return None
         key = (lib, name)
         if key not in self._cache:
-            path = find_symbol_library_file(lib)
+            if lib in self._explicit_libs:
+                path = self._explicit_libs[lib]
+            else:
+                path = find_symbol_library_file(lib)
             if path is None:
+                logger.debug(f"Resolver miss: No library found for {lib}")
                 self._cache[key] = None
             else:
+                logger.debug(f"Resolver loading: {path} for {name}")
                 self._cache[key] = load_symbol_pin_positions(path, name)
         pmap = self._cache[key]
         if not pmap:
+            logger.debug(f"Resolver fail: No pin map for {key}")
             return None
         pnum = str(getattr(pin, "num", "") or "").strip()
+        if pnum not in pmap:
+            logger.debug(f"Resolver fail: Pin {pnum} not in pmap {list(pmap.keys())} for {name}")
         return pmap.get(pnum)

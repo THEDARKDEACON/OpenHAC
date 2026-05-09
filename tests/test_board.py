@@ -3,7 +3,7 @@
 from unittest.mock import patch, MagicMock
 
 import pytest
-from skidl import Net
+from openhac.core.net import Net
 
 from openhac.core.base import (
     Module,

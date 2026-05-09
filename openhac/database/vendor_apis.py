@@ -226,6 +226,7 @@ class PartInfo:
     pinout: Optional[list] = None  # [{"num": "1", "name": "VIN", "type": "power"}, ...]
     alternative_mpns: Optional[list] = None  # ["MPN1", "MPN2"]
     manufacturer_info: Optional[dict] = None  # {"location": "CN", "certs": ["ISO9001"]}
+    model_3d_url: Optional[str] = None  # Remote URL or UUID for 3D model
 
 
 class RateLimiter:

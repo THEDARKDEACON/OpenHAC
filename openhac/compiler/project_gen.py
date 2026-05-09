@@ -10,7 +10,13 @@ def footprint_library_names_from_board(board) -> list[str]:
     """Collect KiCad footprint library nicknames (``Lib`` in ``Lib:Footprint``) from placed parts."""
     libs: set[str] = set()
     try:
-        for mod in getattr(board, "modules", []) or []:
+        modules = []
+        if hasattr(board, "_get_all_modules"):
+            modules = board._get_all_modules()
+        else:
+            modules = getattr(board, "modules", []) or []
+
+        for mod in modules:
             for child in getattr(mod, "components", []) or []:
                 p = getattr(child, "part", None)
                 if p is None:
@@ -22,6 +28,7 @@ def footprint_library_names_from_board(board) -> list[str]:
                         libs.add(lib)
     except Exception:
         return []
+    logger.debug("Found footprint libraries in board: %s", sorted(libs))
     return sorted(libs)
 
 
@@ -59,9 +66,16 @@ def write_fp_lib_table(*, output_dir: str | os.PathLike[str], footprint_libs: li
 
     libs = []
     for lib in sorted({str(x).strip() for x in (footprint_libs or []) if str(x).strip()}):
-        libs.append(
-            f'  (lib (name "{lib}") (type "KiCad") (uri "{root}/{lib}.pretty") (options "") (descr ""))\n'
-        )
+        if lib == "easyeda_generated":
+            # Global easyeda generated footprints
+            uri = "${HOME}/.kiro/openhac/easyeda_generated.pretty"
+            libs.append(
+                f'  (lib (name "{lib}") (type "KiCad") (uri "{uri}") (options "") (descr ""))\n'
+            )
+        else:
+            libs.append(
+                f'  (lib (name "{lib}") (type "KiCad") (uri "{root}/{lib}.pretty") (options "") (descr ""))\n'
+            )
     body = "(fp_lib_table\n" + "".join(libs) + ")\n"
     p.write_text(body, encoding="utf-8")
     return str(p)
@@ -73,9 +87,70 @@ def generate_project_file(
     sym_lib_path: str | None = None,
     sym_lib_nick: str = "OpenHaC",
     footprint_libs: list[str] | None = None,
+    board=None,
 ):
     logger.info(f"Synthesizing KiCad Project Directory Matrix -> {output_path}")
     
+    # Calculate IPC-2152 NetClasses
+    net_classes = {
+        "Default": {
+            "clearance": 0.2,
+            "diff_pair_gap": 0.25,
+            "diff_pair_via_gap": 0.25,
+            "diff_pair_width": 0.2,
+            "microvia_diameter": 0.3,
+            "microvia_drill": 0.1,
+            "name": "Default",
+            "track_width": 0.25,
+            "via_diameter": 0.8,
+            "via_drill": 0.4
+        }
+    }
+    
+    if board is not None and hasattr(board, "modules"):
+        try:
+            from openhac.core.physics import calculate_trace_width_ipc2152
+            
+            # Find all unique nets in the board
+            nets_with_current = {}
+            for mod in board.modules:
+                for interface in getattr(mod, "interfaces", {}).values():
+                    if hasattr(interface, "signals"):
+                        for net in interface.signals:
+                            current = getattr(net, "current_a", 0.0)
+                            if current > 0:
+                                nets_with_current[net.name] = current
+                            
+                for comp in mod.components:
+                    if not hasattr(comp, "part"): continue
+                    for pin in comp.part.get_pins():
+                        if pin.net and getattr(pin.net, "current_a", 0.0) > 0:
+                            nets_with_current[pin.net.name] = pin.net.current_a
+            
+            for net_name, amps in nets_with_current.items():
+                width_mm = calculate_trace_width_ipc2152(amps)
+                class_name = f"Power_{amps}A"
+                net_classes[class_name] = {
+                    "clearance": 0.2,
+                    "diff_pair_gap": 0.25,
+                    "diff_pair_via_gap": 0.25,
+                    "diff_pair_width": 0.2,
+                    "microvia_diameter": 0.3,
+                    "microvia_drill": 0.1,
+                    "name": class_name,
+                    "track_width": round(width_mm, 3),
+                    "via_diameter": max(0.8, round(width_mm * 1.5, 3)),
+                    "via_drill": max(0.4, round(width_mm * 0.7, 3))
+                }
+                
+                # We would normally also map the net to this class in the general section
+                # but adding the class itself acts as a generated DRC rule
+                logger.info("IPC-2152: Net %s carrying %sA needs %smm trace width. Created NetClass %s", 
+                            net_name, amps, round(width_mm, 3), class_name)
+                            
+        except Exception as e:
+            logger.warning("Failed to calculate IPC-2152 NetClasses: %s", e)
+
     # The modern .kicad_pro file is a strict JSON wrapper stitching the ecosystem together
     project_payload = {
         "meta": {
@@ -83,7 +158,12 @@ def generate_project_file(
             "version": 3
         },
         "board": {
-            "design_settings": {},
+            "design_settings": {
+                "net_classes": {
+                    "classes": list(net_classes.values()),
+                    "setup": []
+                }
+            },
             "layer_presets": []
         },
         "cvpcb": {

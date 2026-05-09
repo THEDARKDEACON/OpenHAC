@@ -30,7 +30,7 @@ def buck_input_current_ma(
 
 from openhac.core.base import Component, Module
 from openhac.stdlib.passives import _ParametricMixin
-from skidl import Net
+from openhac.core.net import Net
 
 
 class VoltageRegulator(Module, _ParametricMixin):
@@ -207,3 +207,142 @@ class LDO_5V(Module):
 
         self.v_in = self.declare_interface("v_in", self.vin, self.gnd)
         self.v_out = self.declare_interface("v_out", self.vout, self.gnd)
+
+
+class VoltageReference(Module, _ParametricMixin):
+    """Parametric precision voltage reference.
+
+    Args:
+        v_out: Target output voltage (V).
+        accuracy: Maximum initial accuracy (%) - e.g. 0.1 for 0.1%.
+        package: SMD package code (e.g. "SOT-23", "SOIC-8").
+    """
+
+    def __init__(self, v_out: float, accuracy: float = 0.5,
+                 package: str = "SOT-23", **kwargs):
+        super().__init__(f"VREF_{v_out}V")
+
+        from openhac.database.db_manager import DatabaseManager
+        db = DatabaseManager()
+
+        desc = f"VoltageReference(v_out={v_out}V, accuracy={accuracy}%)"
+
+        comp_data, was_fallback = db.parametric_search(
+            "voltage_references",
+            v_out=v_out,
+            accuracy=accuracy,
+            package=package
+        )
+
+        if comp_data is None:
+            # Common part: TL431 (shunt), REF30xx (series)
+            generic_name = f"VREF_{v_out}V"
+            comp_data = db.get_component(generic_name)
+            if comp_data is None:
+                comp_data = Component._live_lookup(generic_name)
+            if comp_data is None:
+                self._raise_not_found(desc)
+            was_fallback = True
+
+        if was_fallback:
+            self._warn_soft_fallback(desc, comp_data)
+
+        self.ic = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
+        self.ic.lib = "Reference_Voltage"
+
+        self.vout = Net("VOUT")
+        self.gnd = Net("GND")
+        
+        self.ic["VOUT"] += self.vout
+        self.ic["GND"] += self.gnd
+
+        self.output = self.declare_interface("output", self.vout, self.gnd)
+
+
+class PMIC(Module, _ParametricMixin):
+    """Parametric Power Management IC (PMIC).
+
+    Args:
+        mcu_family: Target MCU family (e.g. "STM32", "i.MX").
+        rails: Number of buck/LDO rails required.
+    """
+
+    def __init__(self, mcu_family: str = None, rails: int = 3, **kwargs):
+        super().__init__(f"PMIC_{mcu_family or 'Generic'}")
+
+        from openhac.database.db_manager import DatabaseManager
+        db = DatabaseManager()
+
+        desc = f"PMIC(mcu_family={mcu_family}, rails={rails})"
+
+        comp_data, was_fallback = db.parametric_search(
+            "pmics",
+            mcu_family=mcu_family,
+            rails=rails
+        )
+
+        if comp_data is None:
+            generic_name = "TPS65217" # common example
+            comp_data = db.get_component(generic_name)
+            if comp_data is None:
+                comp_data = Component._live_lookup(generic_name)
+            if comp_data is None:
+                self._raise_not_found(desc)
+            was_fallback = True
+
+        if was_fallback:
+            self._warn_soft_fallback(desc, comp_data)
+
+        self.ic = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
+        self.ic.lib = "Power_Management"
+
+        self.v_in = self.declare_interface("v_in", self.ic["VIN"], self.ic["GND"])
+
+
+class BatteryGauge(Module, _ParametricMixin):
+    """Parametric Battery Fuel Gauge.
+
+    Args:
+        chemistry: "LiPo", "LiFePO4", etc.
+        interface: "I2C" or "SPI".
+    """
+
+    def __init__(self, chemistry: str = "LiPo", interface: str = "I2C", **kwargs):
+        super().__init__(f"Gauge_{chemistry}")
+
+        from openhac.database.db_manager import DatabaseManager
+        db = DatabaseManager()
+
+        desc = f"BatteryGauge(chemistry={chemistry}, interface={interface})"
+
+        comp_data, was_fallback = db.parametric_search(
+            "battery_gauges",
+            chemistry=chemistry,
+            interface=interface
+        )
+
+        if comp_data is None:
+            # Common part: MAX17048
+            generic_name = "MAX17048"
+            comp_data = db.get_component(generic_name)
+            if comp_data is None:
+                comp_data = Component._live_lookup(generic_name)
+            if comp_data is None:
+                self._raise_not_found(desc)
+            was_fallback = True
+
+        if was_fallback:
+            self._warn_soft_fallback(desc, comp_data)
+
+        self.ic = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
+        self.ic.lib = "Power_Management"
+
+        self.v_batt = Net("VBATT")
+        self.gnd = Net("GND")
+        
+        self.ic["CELL"] += self.v_batt
+        self.ic["GND"] += self.gnd
+
+        self.sense = self.declare_interface("sense", self.v_batt, self.gnd)
+        if interface == "I2C":
+            self.i2c = self.declare_interface("i2c", self.ic["SCL"], self.ic["SDA"])

@@ -39,6 +39,13 @@ def parse_footprint_id(footprint: str | None) -> tuple[str, str] | None:
 def footprint_search_roots() -> list[str]:
     """Ordered KiCad footprint root directories (contain ``*.pretty`` folders)."""
     roots: list[str] = []
+    
+    # Add openhac global directory for generated footprints (e.g. easyeda_generated.pretty)
+    from pathlib import Path
+    openhac_root = Path.home() / ".kiro" / "openhac"
+    if openhac_root.is_dir():
+        roots.append(str(openhac_root))
+        
     for key in ("KICAD9_FOOTPRINT_DIR", "KICAD8_FOOTPRINT_DIR", "KICAD_FOOTPRINT_DIR"):
         v = os.environ.get(key)
         if v and os.path.isdir(v):
@@ -91,7 +98,14 @@ def circuit_parts_from_board(board) -> list[object]:
     """SKiDL parts attached under ``board.modules`` (same iteration as PCB placement)."""
     parts: list[object] = []
     seen: set[int] = set()
-    for mod in getattr(board, "modules", []) or []:
+    
+    modules = []
+    if hasattr(board, "_get_all_modules"):
+        modules = board._get_all_modules()
+    else:
+        modules = getattr(board, "modules", []) or []
+
+    for mod in modules:
         for child in getattr(mod, "components", []) or []:
             part = getattr(child, "part", None)
             if part is None:
@@ -117,7 +131,7 @@ def pin_pad_coverage_warnings_for_board(board) -> list[str]:
 def pin_pad_mismatch_records(board) -> list[dict]:
     """Structured pad↔pin mismatches for reports (ref, footprint, pins, sample pads from ``.kicad_mod``)."""
     try:
-        from skidl import NC as SKIDL_NC
+        from openhac.core.net import NC as SKIDL_NC
     except Exception:
         SKIDL_NC = None
     out: list[dict] = []
@@ -169,7 +183,7 @@ def pin_pad_coverage_warnings(circuit) -> list[str]:
     Pass a circuit with ``.parts`` (e.g. from :func:`circuit_view_from_board`).
     """
     try:
-        from skidl import NC as SKIDL_NC
+        from openhac.core.net import NC as SKIDL_NC
     except Exception:
         SKIDL_NC = None
 
@@ -613,7 +627,7 @@ def _to_board_vec(pcbnew, x_mm: float, y_mm: float):
 def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
     """Add footprints for every part in the default SKiDL circuit and assign nets."""
     try:
-        from skidl import NC as SKIDL_NC
+        from openhac.core.net import NC as SKIDL_NC
     except Exception:
         SKIDL_NC = None
 
@@ -649,18 +663,39 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
             logger.warning("%s; skipping part %s in PCB placement (handoff/dev).", msg, getattr(part, "ref", "?"))
             continue
 
-        fp = plugin.FootprintLoad(pretty_dir, fp_name)
+        lib, fp_name = fpid
+        pretty_path = resolve_pretty_directory(lib)
+        if pretty_path:
+            fp = plugin.FootprintLoad(pretty_path, fp_name)
+        else:
+            fp = pcbnew_mod.FootprintLoad(lib, fp_name)
         if fp is None:
-            msg = f"Failed to load footprint '{fp_name}' from {pretty_dir} for part {getattr(part, 'ref', '?')}."
+            msg = f"Failed to load footprint '{fp_name}' from {pretty_path or lib} for part {getattr(part, 'ref', '?')}."
             if fabrication:
                 raise LayoutGenerationError(msg)
             logger.warning("%s Skipping part in PCB placement (handoff/dev).", msg)
             continue
-
+        
         pcb.Add(fp)
         fp.SetReference(part.ref)
         val = getattr(part, "value", None) or part.name
         fp.SetValue(str(val))
+        
+        # Attach 3D model if metadata exists (PCB-008)
+        fields = getattr(part, "fields", {}) or {}
+        m3d = fields.get("Model_3D_Local")
+        if m3d and os.path.isfile(str(m3d)):
+            try:
+                m = pcbnew_mod.FP_3DMODEL()
+                m.m_Filename = str(m3d)
+                # Some versions use push_back, others AddModel
+                if hasattr(fp, "Models"):
+                    fp.Models().push_back(m)
+                elif hasattr(fp, "AddModel"):
+                    fp.AddModel(m)
+                logger.info("Attached 3D model to %s: %s", part.ref, m3d)
+            except Exception as e:
+                logger.warning("Failed to attach 3D model to %s: %s", part.ref, e)
 
         if part in part_positions:
             x_mm, y_mm = part_positions[part]

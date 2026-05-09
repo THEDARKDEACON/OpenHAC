@@ -107,9 +107,20 @@ _SYMBOL_MAP = {
 }
 
 
-def _resolve_footprint(category: str, package: str) -> str:
+def _resolve_footprint(category: str, package: str, generic_name: str = "") -> str:
     """Map raw package string to KiCad footprint."""
-    cat_map = _FOOTPRINT_MAP.get(category, {})
+    cat = category.lower()
+    gn = generic_name.upper()
+    if not cat or cat == "components" or cat == "smd components":
+        if gn.startswith("C_"): cat = "capacitors"
+        elif gn.startswith("R_"): cat = "resistors"
+        elif gn.startswith("L_") or gn.startswith("INDUCTOR_"): cat = "inductors"
+        elif gn.startswith("LED_"): cat = "leds"
+        elif gn.startswith("D_") or gn.startswith("ESD_"): cat = "diodes"
+        elif gn.startswith("XTAL_"): cat = "crystals"
+        elif gn.startswith("CONN_"): cat = "connectors"
+
+    cat_map = _FOOTPRINT_MAP.get(cat, {})
     if package in cat_map:
         return cat_map[package]
     # Fuzzy: try stripping whitespace / case
@@ -280,7 +291,7 @@ def fetch_and_map_part(query_params: dict) -> dict | None:
     package = best.get("package") or ""
     description = best.get("description") or ""
 
-    footprint = _resolve_footprint(category, package)
+    footprint = _resolve_footprint(category, package, generic_name=search_query)
     symbol = _resolve_symbol(category, description)
 
     # Build generic_name from query

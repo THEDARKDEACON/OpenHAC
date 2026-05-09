@@ -54,9 +54,9 @@ def load_repo_dotenv(*, quiet: bool = True) -> None:
 
 
 def apply_kicad_env_aliases() -> None:
-    """Mirror ``KICAD9_*`` into legacy env names SKiDL / KiCad 6–8 bindings probe at import time.
+    """Mirror ``KICAD9_*`` into legacy env names that component libraries probe at import time.
 
-    Call this immediately after :func:`load_repo_dotenv` and **before** ``import skidl``.
+    Call this immediately after :func:`load_repo_dotenv`.
     """
     sym = (os.environ.get("KICAD9_SYMBOL_DIR") or "").strip()
     if sym:

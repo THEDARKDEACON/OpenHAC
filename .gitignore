@@ -13,6 +13,9 @@ build/
 .venv/
 venv/
 env/
+.python-version
+.direnv/
+node_modules/
 
 # =============================================================================
 # Environment files / Secrets
@@ -40,6 +43,11 @@ secrets.json
 *.openhac-*.json
 *.openhac-*.md
 *.openhac-*.txt
+# EasyEDA / LCSC automation outputs (generated in repo root or project folders)
+**/easyeda_generated.pretty/
+**/easyeda_generated.3dshapes/
+**/*.step
+**/*.wrl
 # KiCad CLI schematic ERC (SCH-003) and default *.rpt naming
 *.kicad_sch.erc.txt
 *-erc.rpt
@@ -95,6 +103,14 @@ openhac/database/.cache/
 .skidl/
 
 # =============================================================================
+# Root-level build artifacts (should never be tracked)
+# =============================================================================
+Y.db
+*_sklib.py
+*.tar.gz
+out/
+
+# =============================================================================
 # Non-production board bring-up / local experiments (not shipped with the library)
 # =============================================================================
 /flight_controller_jlc_only.py
@@ -120,11 +136,22 @@ build_sklib.py
 *.swp
 .DS_Store
 Thumbs.db
+.directory
+Desktop.ini
+ehthumbs.db
+**/.~lock.*#
+**/*.odt#
+**/*.png
+**/*.jpg
+**/*.jpeg
+**/*.pdf
+**/*.odt
 
 # =============================================================================
 # LaTeX report build outputs
 # =============================================================================
-docs/report/build/
+# LaTeX report build outputs
+docs/internal/report/build/
 *.aux
 *.out
 *.toc
@@ -235,4 +262,16 @@ components.txt
 # =============================================================================
 .cursor/
 .windsurf/
-kicad-symbols*
+**/kicad-symbols*
+
+# =============================================================================
+# Local stress-test outputs (repo root convenience)
+# =============================================================================
+stress_*.kicad_*
+stress_*.net
+stress_*.csv
+stress_*.openhac-*
+fc_ms_test*.kicad_*
+fc_ms_test*.net
+fc_ms_test*.csv
+fc_ms_test*.openhac-*

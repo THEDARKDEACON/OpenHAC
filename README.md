@@ -10,7 +10,8 @@ Python compiler that turns declarative hardware code into **netlists**, **BOMs**
 - Generated symbol stubs (`*.openhac-generated.kicad_sym`) and manifest / handoff JSON when configured
 - `.cir` — SPICE from `Board.simulate()`
 
-**Docs:** [docs/SCOPE.md](docs/SCOPE.md) (capabilities and limits), [docs/IMPLEMENTATION_STATUS.md](docs/IMPLEMENTATION_STATUS.md), [docs/RELEASE_CHECKLIST.md](docs/RELEASE_CHECKLIST.md).
+**Docs:** [USER_GUIDE.md](docs/USER_GUIDE.md), [API_REFERENCE.md](docs/API_REFERENCE.md), [3D_MODELS_AND_FOOTPRINTS.md](docs/3D_MODELS_AND_FOOTPRINTS.md).
+**Internal/Spec:** [SCOPE.md](docs/internal/SCOPE.md), [IMPLEMENTATION_STATUS.md](docs/internal/IMPLEMENTATION_STATUS.md).
 
 Autorouting is **assistive** (not a substitute for HS/EMC review). See SCOPE for **PCB-007** / differential-pair notes.
 
@@ -102,6 +103,31 @@ Example (sync + enrich in one compile):
 openhac compile my_design.py -o build --sync-jlc-before --auto-enrich-board
 ```
 
+### 3D Model & Footprint Automation
+
+OpenHaC can automatically download 3D models and generate footprints for LCSC parts that lack them in the local database.
+
+- **Trigger**: Run with `--auto-enrich-board`. If a part has a JLC SKU (e.g., `C6396158`) but no verified footprint or missing 3D model, OpenHaC will:
+    1.  Fetch the footprint and 3D model from EasyEDA.
+    2.  Convert them to KiCad formats (`.kicad_mod`, `.step`).
+    3.  Store them in `~/.kiro/openhac/easyeda_generated.pretty/` and `~/.kiro/openhac/easyeda_generated.3dshapes/`.
+    4.  Update the project's `fp-lib-table` to include the `easyeda_generated` library.
+    5.  Link the absolute path of the `.step` model to the component in the `.kicad_pcb`.
+
+- **Persistence**: Assets are cached in your home directory (`~/.kiro/openhac/`) and reused across projects. If a cached 3D model file is deleted, OpenHaC will re-download it on the next compile.
+
+Detailed documentation: [docs/3D_MODELS_AND_FOOTPRINTS.md](docs/3D_MODELS_AND_FOOTPRINTS.md).
+
+### Offline demo (no vendor APIs required)
+
+If JLC/vendor APIs are blocked/rejected, you can still compile a “presentable” design by **seeding** the SQLite catalog from a JSON file and compiling with layout disabled.
+
+```bash
+OPENHAC_SKIP_LAYOUT=1 openhac compile examples/complex_iot_edge_node_jlc_only.py \
+  -o build --name iot_edge --no-route --no-schematic \
+  --pre-seed-file seeds/demo_components.json
+```
+
 **Schematic appearance:** Auto-generated schematics can look crowded (overlapping text, `C?`/`U?` until you run **Tools → Annotate Schematic** in KiCad). That is mostly layout and annotation in KiCad, not the same problem as footprint pad mismatches. The steps above address **correctness** (nets ↔ pads ↔ DB); cleaning the drawing is a separate KiCad editing step.
 
 ---
@@ -118,6 +144,7 @@ Run `openhac compile --help` for the full list. Common flags:
 | `--no-route`, `--no-autoroute`, `--skip-autoroute` | Same behavior: skip FreeRouting / autorouter (PCB placement still runs unless layout is skipped). |
 | `--skip-layout` | Skip `pcbnew` PCB generation and autoroute (sets `OPENHAC_SKIP_LAYOUT=1` for the run). |
 | `--no-schematic` | Skip `.kicad_sch` / `.kicad_pro` export. |
+| `--schematic-strict` | Documentation-grade schematics: forbid implicit pins (sets `OPENHAC_SCHEMATIC_STRICT=1`). |
 | `--compile-goal` | `handoff` or `fabrication` (stricter gates). |
 | `--bbox-padding-mm` | Extra mm around footprint bboxes for clamp, de-overlap, and fit checks (default `0.5`). |
 | `--deoverlap-iters`, `--deoverlap-step-mm` | De-overlap post-process knobs (defaults `200` and `0.75`). |
@@ -140,6 +167,21 @@ Run `openhac compile --help` for the full list. Common flags:
 | `--auto-enrich-board`, `--auto-enrich-vendor`, `--auto-enrich-limit` | Discover missing DB metadata and enrich after loading the board. |
 
 **Environment (not on the CLI):** placement (`OPENHAC_PLACEMENT_*`), PCB overlap checks (`OPENHAC_PCB_CHECK_FP_OVERLAP`, `OPENHAC_FP_OVERLAP_CLEARANCE_MM`), strict pin↔pad (`OPENHAC_STRICT_FOOTPRINT_PIN_PAD`), schematic spacing / embed (`OPENHAC_SCHEMATIC_*`), FreeRouting timeout (`OPENHAC_FREEROUTING_TIMEOUT_S`). See **`.env.example`**. Compile also writes **`*.openhac-pin-pad-report.json`** (preflight pin keys vs `.kicad_mod` pads) when layout runs.
+
+Schematic readability defaults:
+
+- **Multi-sheet**: auto-enabled when part count ≥ `OPENHAC_SCHEMATIC_MULTI_SHEET_MIN_PARTS` (default 25). Force on with `OPENHAC_SCHEMATIC_MULTI_SHEET=1`, or force single-sheet with `OPENHAC_SCHEMATIC_SINGLE_SHEET=1`.
+- **Strict schematic pinout**: set `OPENHAC_SCHEMATIC_STRICT=1` (or `--schematic-strict`) to block implicit pins (recommended for documentation builds).
+
+Auto board sizing (when `Board(size_mm=None)`):
+
+- OpenHaC will attempt a **tight deterministic pack** using pcbnew footprint bounding boxes, then set the board outline to the packed extents plus margin.
+- If pcbnew/footprints are unavailable, it falls back to a conservative module-area heuristic.
+- Knobs:
+  - `OPENHAC_AUTO_BOARD_PACK_COLS`: optional fixed column count for packing (default: `ceil(sqrt(N_parts))`)
+  - `OPENHAC_AUTO_BOARD_MARGIN_FACTOR`: default `1.15`
+  - `OPENHAC_AUTO_BOARD_MIN_EDGE_MARGIN_MM`: default `5.0`
+  - `OPENHAC_PLACEMENT_FP_GAP_MM`: gap between packed footprints (default `1.0`)
 
 ### Examples
 
@@ -199,6 +241,11 @@ Preflight: `openhac doctor --json` (add `--strict-layout`, `--strict-routing`, e
 
 ---
 
+## LaTeX report
+
+Long-form write-up: `docs/internal/report/`. Build PDF: `python3 scripts/build_latex_report.py` (needs a LaTeX engine).
+
+---
 
 ## Errors
 

@@ -2,7 +2,7 @@
 OpenHaC Environment Bootstrapper.
 
 Automatically detects the host OS, locates the default KiCad 8 symbol
-library installation, and injects the path into SKiDL's search registry.
+library installation, and injects the path into the environment.
 
 This module is imported automatically via ``openhac.core.__init__`` so
 that end-users never need to manually set KICAD8_SYMBOL_DIR or any other
@@ -82,9 +82,8 @@ def _resolve_symbol_path() -> str:
 def bootstrap_environment() -> None:
     """Detect KiCad 8 and inject symbol paths into SKiDL.
 
-    This function is idempotent.  It silently succeeds on repeat calls
-    and only warns (never crashes) if SKiDL itself cannot be configured,
-    so that test environments without KiCad can still import OpenHaC.
+    This function is idempotent. It silently succeeds on repeat calls
+    and configures KICAD_SYMBOL_DIR and KICAD_FOOTPRINT_DIR.
     """
     global _bootstrapped
     if _bootstrapped:
@@ -119,25 +118,5 @@ def bootstrap_environment() -> None:
                 for k in ("KICAD9_FOOTPRINT_DIR", "KICAD8_FOOTPRINT_DIR", "KICAD_FOOTPRINT_DIR"):
                     os.environ.setdefault(k, _fp)
                 break
-
-    try:
-        from skidl import KICAD8, lib_search_paths, set_default_tool
-
-        set_default_tool(KICAD8)
-        if sym_path not in lib_search_paths[KICAD8]:
-            lib_search_paths[KICAD8].append(sym_path)
-    except ImportError:
-        warnings.warn(
-            "OpenHaC Environment Bootstrapper: SKiDL is not installed. "
-            "Component creation will fail.",
-            UserWarning,
-            stacklevel=2,
-        )
-    except Exception as e:
-        warnings.warn(
-            f"OpenHaC Environment Bootstrapper: Failed to configure SKiDL: {e}",
-            UserWarning,
-            stacklevel=2,
-        )
 
     _bootstrapped = True
