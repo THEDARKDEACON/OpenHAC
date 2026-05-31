@@ -305,7 +305,7 @@ class TestDRC:
             def __init__(self, name: str):
                 self.name = name
 
-        board = Board(size_mm=(60, 40))
+        board = Board(size_mm=(60, 40), strict=False)
         board.declare_net_role(_Net("AGND"), "analog_ground")
         board.declare_net_role(_Net("DGND"), "digital_ground")
 

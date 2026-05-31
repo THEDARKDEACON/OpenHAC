@@ -19,12 +19,38 @@ class Pin:
     Similar to SKiDL's Pin but simplified for native implementation.
     """
     
-    def __init__(self, number: str, name: str, pin_type: str = "passive"):
+    def __init__(
+        self,
+        number: str,
+        name: str,
+        pin_type: str = "passive",
+        logic_level: Optional[float] = None,
+        voltage_rating: Optional[float] = None,
+        current_limit: Optional[float] = None,
+    ):
         self.number = number
         self.name = name
         self.pin_type = pin_type  # input, output, bidirectional, power, passive
+        self.logic_level = logic_level        # Expected typical logic voltage (e.g., 3.3, 5.0)
+        self.voltage_rating = voltage_rating  # Max absolute voltage for safety validation
+        self.current_limit = current_limit    # Max continuous current draw/source for power budgets
         self.net: Optional[Net] = None
         self.part: Optional[Part] = None
+
+    def set_semantics(
+        self,
+        logic_level: Optional[float] = None,
+        voltage_rating: Optional[float] = None,
+        current_limit: Optional[float] = None,
+    ) -> Pin:
+        """Chainable method to set electrical semantic properties for DRC."""
+        if logic_level is not None:
+            self.logic_level = logic_level
+        if voltage_rating is not None:
+            self.voltage_rating = voltage_rating
+        if current_limit is not None:
+            self.current_limit = current_limit
+        return self
 
     @property
     def num(self) -> str:
@@ -32,9 +58,21 @@ class Pin:
         return self.number
         
     def __add__(self, other) -> Pin:
-        """Connect this pin to a net or another pin using + operator."""
+        """Connect this pin to a net or another pin using + operator.
+
+        Accepts both native ``openhac.core.net.Net`` objects and any duck-typed
+        net-like object (e.g. ``skidl.net.Net``) that exposes a ``.pins`` list
+        and an ``add_pin(pin)`` method.  This keeps the native Part/Pin API
+        compatible with legacy SKiDL-based test fixtures during the migration.
+        """
         from openhac.core.net import Net
-        
+
+        def _is_net_like(obj) -> bool:
+            """True if *obj* looks like a Net (native or SKiDL duck-typed)."""
+            return isinstance(obj, Net) or (
+                hasattr(obj, "pins") and (hasattr(obj, "add_pin") or hasattr(obj, "connect"))
+            )
+
         if isinstance(other, Pin):
             # Connecting pin-to-pin: use or create a net
             if self.net and other.net:
@@ -53,24 +91,31 @@ class Pin:
                 new_net.add_pin(self)
                 new_net.add_pin(other)
             return self
-        elif isinstance(other, Net) or type(other).__name__ == "Net":
-            # Connecting pin to net (allow SKiDL Net too during migration)
+        elif _is_net_like(other):
+            # Connecting pin to a net (native Net or any duck-typed net-like object).
+            # Support both native .add_pin() and SKiDL-style .connect().
             if self.net:
-                # Already connected to a net, merge nets
-                if type(other).__name__ == "Net" and type(self.net).__name__ != "Net":
-                    # Cannot easily merge SKiDL and native net, just inject
-                    if hasattr(other, "pins"):
-                        other.pins.extend(self.net.pins)
-                else:
+                # Already on a net — merge the incoming net into ours if possible.
+                try:
                     self.net += other
+                except Exception:
+                    # Fallback: register self on the foreign net via whatever API is available
+                    try:
+                        other.add_pin(self)
+                    except AttributeError:
+                        try:
+                            other.connect(self)
+                        except Exception:
+                            pass
             else:
-                self.net = other
-                if hasattr(other, "add_pin"):
+                self.net = other  # type: ignore[assignment]
+                try:
                     other.add_pin(self)
-                elif hasattr(other, "pins") and isinstance(other.pins, list):
-                    other.pins.append(self)
-                else:
-                    other += self
+                except AttributeError:
+                    try:
+                        other.connect(self)
+                    except Exception:
+                        pass
             return self
         else:
             raise TypeError(f"Cannot connect Pin to {type(other)}")
@@ -94,6 +139,8 @@ class Part:
     All pin information comes from the component database.
     """
     
+    _id_counter = 0
+    
     def __init__(
         self,
         refdes: str,
@@ -102,6 +149,8 @@ class Part:
         pins: list[Pin],
         value: str = "",
     ):
+        Part._id_counter += 1
+        self._part_id = Part._id_counter
         self.refdes = refdes  # Reference designator: "R1", "C2", "U3"
         self.footprint = footprint  # KiCad footprint: "Resistor_SMD:R_0603"
         self.fields = fields  # Manufacturer, MPN, Supplier_SKU, etc.
@@ -116,10 +165,21 @@ class Part:
             if pin.name != pin.number:
                 self.pins[pin.name] = pin
 
+
     @property
     def ref(self) -> str:
         """Compatibility alias for SKiDL-like APIs."""
         return self.refdes
+
+    @ref.setter
+    def ref(self, value: str):
+        """Allow setting the reference designator via the 'ref' alias."""
+        self.refdes = value
+
+    @property
+    def name(self) -> str:
+        """Alias for value, used by ERC and other tooling."""
+        return self.value
 
     def add_pin(self, pin: Pin) -> None:
         """Add one pin at runtime (used for implicit pins in handoff/dev mode)."""

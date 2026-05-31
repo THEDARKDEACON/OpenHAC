@@ -10,6 +10,7 @@ Workflow:
 
 import logging
 import os
+import shlex
 import shutil
 import subprocess
 import time
@@ -276,11 +277,14 @@ def run_freerouting(pcb_path: str, freerouting_jar_path: str = None) -> None:
     # --- 9.3: Invoke FreeRouting with real-time stdout streaming ---
     if backend_kind == "jar":
         logger.info("Starting FreeRouting: java -jar %s ...", backend_val)
-        cmd = ["java", "-jar", str(backend_val), "-de", str(dsn_path), "-do", str(ses_path)]
+        full_cmd = f"java -jar {shlex.quote(str(backend_val))} -de {shlex.quote(str(dsn_path))} -do {shlex.quote(str(ses_path))}"
+        cmd = ["bash", "-c", full_cmd]
     elif backend_kind == "cli":
         # Best-effort: most wrappers forward to the jar and accept -de/-do.
-        cmd = list(backend_val) + ["-de", str(dsn_path), "-do", str(ses_path)]
-        logger.info("Starting FreeRouting via CLI: %s ...", " ".join(cmd))
+        cli_base = " ".join(shlex.quote(x) for x in backend_val)
+        full_cmd = f"{cli_base} -de {shlex.quote(str(dsn_path))} -do {shlex.quote(str(ses_path))}"
+        cmd = ["bash", "-c", full_cmd]
+        logger.info("Starting FreeRouting via CLI: %s ...", full_cmd)
     elif backend_kind == "api":
         # Cloud API routing via freerouting-client package.
         try:
@@ -317,7 +321,7 @@ def run_freerouting(pcb_path: str, freerouting_jar_path: str = None) -> None:
     else:
         # User provided a template.
         tpl = str(backend_val)
-        rendered = tpl.format(dsn=str(dsn_path), ses=str(ses_path))
+        rendered = tpl.format(dsn=shlex.quote(str(dsn_path)), ses=shlex.quote(str(ses_path)))
         cmd = ["bash", "-lc", rendered]
         logger.info("Starting FreeRouting via OPENHAC_FREEROUTING_CMD ...")
 

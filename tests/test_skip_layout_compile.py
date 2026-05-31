@@ -25,6 +25,10 @@ def seeded_r_db(tmp_db, monkeypatch):
             "mpn": "X",
             "description": "",
             "jlc_class": "Basic",
+            # LIB-006: strict_passive_catalog_fields requires tolerance
+            "tolerance": "1%",
+            # LIB-006: strict_passive_attributes_json requires valid JSON object
+            "attributes_json": '{"resistance": "10k", "package": "0805"}',
         }
     )
     monkeypatch.setattr(Component, "db", dm)

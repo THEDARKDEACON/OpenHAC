@@ -6,15 +6,18 @@ from openhac.util.sort_keys import natural_key
 logger = logging.getLogger("openhac.spice")
 
 
+import re
+
 def _resolve_spice_id(part) -> str:
-    """Resolve the SPICE reference designator for a part using Part.ref_prefix."""
-    prefix = part.ref_prefix or "X"
-    if not part.ref_prefix:
+    """Resolve the SPICE reference designator for a part."""
+    ref = str(getattr(part, "refdes", None) or getattr(part, "ref", "X"))
+    m = re.match(r"^([A-Za-z]+)", ref)
+    prefix = m.group(1) if m else "X"
+    if not m:
         warnings.warn(
-            f"Part {part.ref} has no ref_prefix, defaulting to 'X'",
+            f"Part {ref} has no ref_prefix, defaulting to 'X'",
             UserWarning,
         )
-    ref = part.ref
     if ref.upper().startswith(prefix.upper()):
         return ref
     return prefix + ref
@@ -78,7 +81,7 @@ def generate_spice(
                     continue
 
                 nodes_with_num: list[tuple[str, str]] = []
-                for p in part.pins:
+                for p in part.pins.values():
                     if p.net is not None:
                         net_name = _sanitize_net_name(str(p.net.name))
                         nodes_with_num.append((str(getattr(p, "num", "") or ""), net_name))
@@ -111,7 +114,9 @@ def spice_model_coverage_summary(circuit) -> dict[str, int]:
     have = 0
     for part in parts:
         # Passives and explicit sources are allowed to use value-based lines.
-        pref = (getattr(part, "ref_prefix", None) or "").strip().upper()
+        ref = str(getattr(part, "refdes", None) or getattr(part, "ref", "X"))
+        m = re.match(r"^([A-Za-z]+)", ref)
+        pref = (m.group(1) if m else "").strip().upper()
         if pref in ("R", "C", "L", "V", "I"):
             continue
         need += 1

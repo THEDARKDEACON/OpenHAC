@@ -908,7 +908,7 @@ def main():
     p_compile.add_argument(
         "--bbox-padding-mm",
         type=float,
-        default=0.5,
+        default=0.05,
         help="Extra padding (mm) applied to footprint bounding boxes for PCB fit / keepout checks and "
         "post-process clamping/de-overlap. Default: 0.5",
     )
@@ -927,7 +927,7 @@ def main():
     p_compile.add_argument(
         "--module-gap-mm",
         type=float,
-        default=0.0,
+        default=5.0,
         help="Minimum edge-to-edge gap (mm) between module bounding boxes in the Z3 placer "
         "(reduces footprint spill-over between regions). Default: 0. Also: OPENHAC_MODULE_CLEARANCE_MM.",
     )

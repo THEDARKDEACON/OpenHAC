@@ -137,9 +137,66 @@ class PressureSensor(Module, _ParametricMixin):
         super().__init__("PRESSURE")
         from openhac.database.db_manager import DatabaseManager
         db = DatabaseManager()
-        comp_data = db.get_component("BMP280") # example
+        
+        # Default to BMP280 as it is extremely common
+        comp_data = db.get_component("BMP280")
+        if not comp_data:
+            comp_data = Component._live_lookup("BMP280")
+            
+        if not comp_data:
+            self._raise_not_found("PressureSensor(BMP280)")
+
         self.ic = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
         self.ic.lib = "Sensor_Pressure"
+        
+        self.vcc = Net("VCC")
+        self.gnd = Net("GND")
+        
+        # BMP280 Pinout
+        try:
+            self.ic["VCC"] += self.vcc; self.ic["VDDIO"] += self.vcc
+            self.ic["GND"] += self.gnd
+            self.i2c = self.declare_interface("i2c", scl=self.ic["SCL"], sda=self.ic["SDA"])
+        except:
+            pass
+
+        self.power = self.declare_interface("power", self.vcc, self.gnd)
+
+
+class BNO055_IMU(Module):
+    """BNO055 9-DOF Intelligent 9-axis Absolute Orientation Sensor."""
+    def __init__(self):
+        super().__init__("BNO055")
+        self.ic = self.add(Component("BNO055"))
+        self.vcc = Net("3V3")
+        self.gnd = Net("GND")
+        
+        # Data-driven mapping
+        self.ic["VCC"] += self.vcc
+        self.ic["GND"] += self.gnd
+        
+        self.power = self.declare_interface("power", self.vcc, self.gnd)
+        self.i2c = self.declare_interface("i2c", scl=self.ic["SCL"], sda=self.ic["SDA"])
+
+
+class GPS_Module(Module):
+    """GPS/GNSS Module (U-blox Neo-6M/8M compatible)."""
+    def __init__(self, mpn: str = "NEO-6M"):
+        super().__init__(f"GPS_{mpn}")
+        self.gps = self.add(Component(mpn))
+        self.vcc = Net("VCC")
+        self.gnd = Net("GND")
+        self.tx = Net("TX")
+        self.rx = Net("RX")
+
+        # Data-driven mapping: resolves VCC/GND/TX/RX via semantic logic
+        self.gps["VCC"] += self.vcc
+        self.gps["GND"] += self.gnd
+        self.gps["TX"] += self.tx
+        self.gps["RX"] += self.rx
+
+        self.power = self.declare_interface("power", self.vcc, self.gnd)
+        self.uart = self.declare_interface("uart", tx=self.tx, rx=self.rx)
 
 
 class HumiditySensor(Module, _ParametricMixin):

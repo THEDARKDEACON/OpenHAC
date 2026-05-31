@@ -687,9 +687,27 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
         if m3d and os.path.isfile(str(m3d)):
             try:
                 m = pcbnew_mod.FP_3DMODEL()
-                m.m_Filename = str(m3d)
-                # Some versions use push_back, others AddModel
+                m.m_Filename = str(os.path.abspath(m3d))
+                
+                # Set explicit defaults (KiCad 8+ requires these to be set or they may default to 0)
+                try:
+                    # Try direct attribute assignment (common in KiCad 8/9 Python)
+                    for attr, val in [("m_Scale", 1.0), ("m_Offset", 0.0), ("m_Rotation", 0.0)]:
+                        vec = getattr(m, attr)
+                        if hasattr(vec, "x"):
+                            vec.x, vec.y, vec.z = val, val, val
+                        elif hasattr(pcbnew_mod, "VECTOR3D"):
+                            setattr(m, attr, pcbnew_mod.VECTOR3D(val, val, val))
+                except Exception as e:
+                    logger.debug("Minor: 3D model property init partial for %s: %s", part.ref, e)
+
+                # Clear existing models to prevent duplicates (KiCad 8+)
                 if hasattr(fp, "Models"):
+                    try:
+                        # Only clear if we actually have a replacement model to add
+                        fp.Models().clear()
+                    except Exception:
+                        pass
                     fp.Models().push_back(m)
                 elif hasattr(fp, "AddModel"):
                     fp.AddModel(m)

@@ -14,13 +14,65 @@ _RAIL_NAME_HINTS = ("vcc", "3v3", "5v", "1v8", "2v5", "vdd", "vin", "vbat", "vbu
 
 
 def _pins_on_net(net):
+    """Return all pins connected to *net*, spanning both SKiDL and native OpenHaC worlds.
+
+    When a native ``Component`` pin is connected to a SKiDL ``Net`` (cross-world
+    connection made via ``Pin.__add__``), the SKiDL Net's internal pin list does
+    not record the native pin.  We compensate by also walking native circuit parts
+    (from ``openhac.core.circuit.default_circuit``) and collecting any pin whose
+    ``.net`` attribute is the *same object* as *net*.
+    """
+    # Primary: ask the net for its own pin list (works for both SKiDL and native nets)
     try:
-        return list(net.get_pins())
+        primary = list(net.get_pins())
     except Exception:
         try:
-            return list(getattr(net, "pins", ()) or ())
+            primary = list(getattr(net, "pins", ()) or ())
         except Exception:
-            return []
+            primary = []
+
+    # Secondary: scan both the SKiDL circuit and the native core circuit for cross-world pins.
+    # Native Components register their Parts in openhac.core.circuit.default_circuit, which is
+    # SEPARATE from builtins.default_circuit (the SKiDL global circuit).
+    seen_ids = {id(p) for p in primary}
+    extra = []
+
+    def _scan_parts(parts_iterable):
+        for part in parts_iterable:
+            pin_iter = []
+            try:
+                pin_iter = list(part.get_pins())
+            except Exception:
+                try:
+                    raw = part.pins
+                    if isinstance(raw, dict):
+                        pin_iter = list(raw.values())
+                    else:
+                        pin_iter = list(raw or [])
+                except Exception:
+                    pass
+            for pin in pin_iter:
+                if id(pin) in seen_ids:
+                    continue
+                if getattr(pin, "net", None) is net:
+                    extra.append(pin)
+                    seen_ids.add(id(pin))
+
+    # Scan SKiDL global circuit
+    try:
+        from openhac.circuit import get_default_circuit
+        _scan_parts(getattr(get_default_circuit(), "parts", []))
+    except Exception:
+        pass
+
+    # Scan native OpenHaC core circuit (always present; separate from SKiDL global)
+    try:
+        from openhac.core.circuit import default_circuit as _native_circuit
+        _scan_parts(getattr(_native_circuit, "parts", []))
+    except Exception:
+        pass
+
+    return primary + extra
 
 
 def _net_name_lower(net) -> str:
@@ -33,10 +85,22 @@ def _looks_like_supply_net(net) -> bool:
 
 
 def _part_is_resistor_symbol(part) -> bool:
-    """KiCad ``Device:R`` is a resistor even when SKiDL uses ref_prefix ``U`` (synthetic symbol)."""
+    """True if *part* is a resistor — works for both SKiDL and native OpenHaC parts."""
+    # SKiDL Part: ref_prefix is "R" for resistors
     if str(getattr(part, "ref_prefix", "") or "").upper() == "R":
         return True
-    return (getattr(part, "name", None) or "").strip().upper() == "R"
+    # SKiDL Part: name is "R" (Device:R symbol)
+    if (getattr(part, "name", None) or "").strip().upper() == "R":
+        return True
+    # Native OpenHaC Part: refdes starts with "R"
+    refdes = str(getattr(part, "refdes", None) or getattr(part, "ref", "") or "")
+    if refdes.upper().startswith("R"):
+        return True
+    # Native OpenHaC Part: generic_name starts with "R_" (e.g. R_10k_0805)
+    gname = str(getattr(part, "generic_name", None) or getattr(part, "value", "") or "")
+    if gname.upper().startswith("R_") or gname.upper().startswith("R "):
+        return True
+    return False
 
 
 def net_has_resistor_pullup_to_rail(net) -> bool:
@@ -48,7 +112,11 @@ def net_has_resistor_pullup_to_rail(net) -> bool:
         if not _part_is_resistor_symbol(part):
             continue
         try:
-            part_pins = list(part.pins)
+            raw_pins = part.pins
+            if isinstance(raw_pins, dict):
+                part_pins = list(raw_pins.values())
+            else:
+                part_pins = list(raw_pins)
         except Exception:
             continue
         for pp in part_pins:

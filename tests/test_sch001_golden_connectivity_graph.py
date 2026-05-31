@@ -54,16 +54,62 @@ def test_exported_schematic_wires_match_expected_pin_edges(tmp_path: Path, monke
     for part, (px, py) in placements.items():
         ref = str(getattr(part, "ref", "") or "?")
         for pin in getattr(part, "pins", []) or []:
-            x, y = _pin_world_xy(pin, part, (px, py), None)
+            x, y, _rot = _pin_world_xy(pin, part, (px, py), None)
             pt_to_pin[_pt_key(x, y)] = (ref, str(getattr(pin, "num", "?")))
 
-    got: set[frozenset[tuple[str, str]]] = set()
+    # Build a graph of wire segments to find connected components.
+    from collections import defaultdict
+    adj = defaultdict(set)
     for x1, y1, x2, y2 in parse_kicad_sch_wire_segments(text):
-        a = pt_to_pin.get(_pt_key(x1, y1))
-        b2 = pt_to_pin.get(_pt_key(x2, y2))
-        if a is None or b2 is None:
-            pytest.fail(f"Wire endpoint did not resolve to a pin: ({x1},{y1}) -> {a}, ({x2},{y2}) -> {b2}")
-        got.add(frozenset({a, b2}))
+        p1, p2 = _pt_key(x1, y1), _pt_key(x2, y2)
+        adj[p1].add(p2)
+        adj[p2].add(p1)
 
-    assert got == expected
+    seen = set()
+    got_components = set()
+    for node in adj:
+        if node in seen:
+            continue
+        comp = set()
+        q = [node]
+        while q:
+            curr = q.pop()
+            if curr in comp:
+                continue
+            comp.add(curr)
+            seen.add(curr)
+            q.extend(adj[curr])
+        # Find all logical pins attached to this physical wire cluster.
+        comp_pins = frozenset(pt_to_pin[pt] for pt in comp if pt in pt_to_pin)
+        if len(comp_pins) > 1:
+            got_components.add(comp_pins)
+
+    # Convert the expected (pairwise) edges into connected components for comparison.
+    exp_adj = defaultdict(set)
+    for edge in expected:
+        # edge is a frozenset of two (ref, pin) tuples
+        edge_list = list(edge)
+        if len(edge_list) == 2:
+            u, v = edge_list
+            exp_adj[u].add(v)
+            exp_adj[v].add(u)
+    
+    exp_seen = set()
+    expected_components = set()
+    for node in exp_adj:
+        if node in exp_seen:
+            continue
+        comp = set()
+        q = [node]
+        while q:
+            curr = q.pop()
+            if curr in comp:
+                continue
+            comp.add(curr)
+            exp_seen.add(curr)
+            q.extend(exp_adj[curr])
+        if len(comp) > 1:
+            expected_components.add(frozenset(comp))
+
+    assert got_components == expected_components
 

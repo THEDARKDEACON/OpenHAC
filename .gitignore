@@ -275,3 +275,11 @@ fc_ms_test*.kicad_*
 fc_ms_test*.net
 fc_ms_test*.csv
 fc_ms_test*.openhac-*
+scratch/
+scripts/
+seeds/
+examples/
+CHANGELOG.md
+CONTRIBUTING.md
+CODE_AUTHORS.md
+OPENHAC_AUTHORS.md

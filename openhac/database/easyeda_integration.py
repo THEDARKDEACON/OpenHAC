@@ -104,8 +104,8 @@ def generate_footprint_from_lcsc(lcsc_id: str) -> str | None:
         
         logger.info("Successfully generated footprint %s for %s via EasyEDA (3D: %s)", 
                     safe_name, lcsc_id, "yes" if model_3d_path else "no")
-        return f"easyeda_generated:{safe_name}"
+        return f"easyeda_generated:{safe_name}", model_3d_path
         
     except Exception as e:
         logger.warning("Error generating EasyEDA footprint for %s: %s", lcsc_id, e)
-        return None
+        return None, None

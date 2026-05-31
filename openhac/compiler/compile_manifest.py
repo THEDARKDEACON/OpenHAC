@@ -453,6 +453,57 @@ def _write_mixed_signal_constraints_json(base: Path, project_name: str, board) -
     logger.info("Wrote %s", out)
 
 
+def _write_layout_intent_json(base: Path, project_name: str, board) -> None:
+    """Write Phase 5 generative RF and precision analog layout constraints."""
+    try:
+        from openhac.core.circuit import default_circuit
+    except ImportError:
+        return
+        
+    zones: list[dict] = []
+    star_grounds: list[dict] = []
+    guard_rings: list[dict] = []
+    
+    # Extract zones (usually attached to modules or components, but we'll collect from default_circuit parts)
+    seen_zones = set()
+    for part in getattr(default_circuit, "parts", []) or []:
+        # Need to back-trace to the OpenHaC Component/Module if attached, 
+        # but for the prototype schema emission we will just emit empty arrays 
+        # unless properly populated on the board object itself.
+        pass
+        
+    for n in getattr(default_circuit, "nets", []) or []:
+        if getattr(n, "guard_net", None):
+            guard_rings.append({
+                "sensitive_net": n.name,
+                "guard_net": n.guard_net.name
+            })
+            
+    # For now, rely on board properties if the user appended them
+    layout_zones = getattr(board, "layout_zones", [])
+    for z in layout_zones:
+        if hasattr(z, "to_manifest_dict"):
+            zones.append(z.to_manifest_dict())
+            
+    star_gs = getattr(board, "star_grounds", [])
+    for sg in star_gs:
+        if hasattr(sg, "to_manifest_dict"):
+            star_grounds.append(sg.to_manifest_dict())
+
+    if not zones and not star_grounds and not guard_rings:
+        return
+        
+    payload = {
+        "schema": "openhac.layout_intent.v1",
+        "layout_zones": zones,
+        "star_grounds": star_grounds,
+        "guard_rings": guard_rings
+    }
+    out = base / f"{project_name}.openhac-layout-intent.json"
+    out.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    logger.info("Wrote %s", out)
+
+
 def _write_bom_alternates_json(base: Path, project_name: str, board) -> None:
     """LIB-002: machine-readable alternate rows from DB per BOM generic (Value)."""
     from openhac.core.base import Component
@@ -677,10 +728,23 @@ def _unverified_parts_from_circuit() -> list[dict]:
     of medium or low on the generated BOM line.
     """
     from openhac.circuit import get_default_circuit
+    import openhac.core.circuit as _core_circuit
 
-    circuit = get_default_circuit()
+    # Collect parts from both the active default circuit (may be SKiDL's) and
+    # the native openhac circuit, which is where Component() always registers.
+    all_parts: list = []
+    for circuit in (get_default_circuit(), _core_circuit.default_circuit):
+        if circuit is None:
+            continue
+        all_parts.extend(getattr(circuit, "parts", []) or [])
+
     out: list[dict] = []
-    for part in getattr(circuit, "parts", []) or []:
+    seen_ids: set[int] = set()
+    for part in all_parts:
+        pid = id(part)
+        if pid in seen_ids:
+            continue
+        seen_ids.add(pid)
         fields = getattr(part, "fields", None)
         if not isinstance(fields, dict):
             continue
@@ -689,7 +753,7 @@ def _unverified_parts_from_circuit() -> list[dict]:
             continue
         out.append(
             {
-                "ref": getattr(part, "ref", None),
+                "ref": getattr(part, "refdes", None) or getattr(part, "ref", None),
                 "value": getattr(part, "value", None),
                 "footprint": getattr(part, "footprint", None),
                 "kicad_symbol": getattr(part, "name", None),
@@ -1045,6 +1109,7 @@ def write_compile_manifest(
     _write_length_match_constraints_json(base, project_name, board)
     _write_mixed_signal_hint_md(base, project_name, board)
     _write_mixed_signal_constraints_json(base, project_name, board)
+    _write_layout_intent_json(base, project_name, board)
     _write_si_stackup_reminder_md(base, project_name, board, diff_pairs_early)
     _write_diff_pair_constraints_json(base, project_name, diff_pairs_early)
     _write_no_autoroute_constraints_json(base, project_name, board)
@@ -1106,6 +1171,7 @@ def write_compile_manifest(
     add_if_exists(f"{project_name}.openhac-mixed-signal-hint.md")
     add_if_exists(f"{project_name}.openhac-mixed-signal-constraints.json")
     add_if_exists(f"{project_name}.openhac-pcb-routing-handoff.json")
+    add_if_exists(f"{project_name}.openhac-layout-intent.json")
     add_if_exists(f"{project_name}.openhac-sipi-handoff.json")
     add_if_exists(f"{project_name}.openhac-bom-alternates.json")
     add_if_exists(f"{project_name}.openhac-si-stackup-reminder.md")

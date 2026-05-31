@@ -92,18 +92,60 @@ class MCU(Module, _ParametricMixin):
         self.power = self.declare_interface("power", self.vcc, self.gnd)
 
 
-# Backward-compatible pre-wired ESP32 module
+# --- Specialized MCU Modules (Hard-wired for safety) ---
+
 class ESP32_WROOM(Module):
-    def __init__(self):
-        super().__init__()
-        self.mcu = self.add(Component("ESP32_WROOM"))
+    """Standard ESP32-WROOM-32E module wrapper."""
+    def __init__(self, **kwargs):
+        super().__init__("ESP32_WROOM")
+        self.mcu = self.add(Component("ESP32-WROOM-32E", **kwargs))
 
-        self.vcc = Net("3V3_VCC")
+        self.vcc = Net("3V3")
         self.gnd = Net("GND")
+        self.en = Net("EN")
+        self.io0 = Net("IO0")
 
-        self.mcu["2"] += self.vcc
-        self.mcu["1"] += self.gnd
-        self.mcu["15"] += self.gnd
-        self.mcu["38"] += self.gnd
+        # Data-driven mapping: resolves VCC/GND via semantic logic
+        self.mcu["VCC"] += self.vcc
+        self.mcu["GND"] += self.gnd
+        self.mcu["EN"] += self.en
+        self.mcu["IO0"] += self.io0
 
         self.power = self.declare_interface("power", self.vcc, self.gnd)
+
+
+class ESP32S3_WROOM(Module):
+    """ESP32-S3-WROOM-1/1U module wrapper with AI acceleration."""
+    def __init__(self, **kwargs):
+        super().__init__("ESP32_S3_WROOM")
+        self.mcu = self.add(Component("ESP32-S3-WROOM-1", **kwargs))
+
+        self.vcc = Net("3V3")
+        self.gnd = Net("GND")
+        self.en = Net("EN")
+
+        # Data-driven mapping: resolves VCC/GND/EN via semantic logic
+        self.mcu["VCC"] += self.vcc
+        self.mcu["GND"] += self.gnd
+        self.mcu["EN"] += self.en
+
+        self.power = self.declare_interface("power", self.vcc, self.gnd)
+
+
+class Teensy41(Module):
+    """Teensy 4.1 Development Board wrapper."""
+    def __init__(self, **kwargs):
+        super().__init__("Teensy41")
+        self.board = self.add(Component("Teensy 4.1", **kwargs))
+
+        self.vin = Net("VIN")
+        self.v33 = Net("3V3")
+        self.gnd = Net("GND")
+
+        # Teensy 4.1 Pinout (Data-driven lookup)
+        self.board["VIN"] += self.vin
+        self.board["3V3"] += self.v33
+        self.board["GND"] += self.gnd
+
+        self.power_in = self.declare_interface("power_in", self.vin, self.gnd)
+        self.power_out = self.declare_interface("power_3v3", self.v33, self.gnd)

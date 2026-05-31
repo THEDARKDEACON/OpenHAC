@@ -14,21 +14,24 @@ _REPO_ROOT = Path(__file__).resolve().parents[1]
 
 _SUBPROCESS_BOARD = '''
 import openhac.core  # noqa: F401
-from skidl import Net, Part
+from openhac.core.net import Net
+from openhac.core.base import Component
 from openhac.core import Board
 from openhac.core.base import Module
 
 vcc, gnd = Net("3V3"), Net("GND")
-Part("power", "PWR_FLAG")[1] += vcc
-Part("power", "PWR_FLAG")[1] += gnd
+p1 = Component("PWR_FLAG")
+p1["1"] += vcc
+p2 = Component("PWR_FLAG")
+p2["1"] += gnd
 
 
 class Node(Module):
     def __init__(self, name: str):
         super().__init__(name)
-        r = Part("Device", "R", value="10k", footprint="Resistor_SMD:R_0805_2012Metric")
-        r[1] += vcc
-        r[2] += gnd
+        r = self.add(Component("R_10k_0805", footprint="Resistor_SMD:R_0805_2012Metric", pins={"1": ("1", "passive"), "2": ("2", "passive")}))
+        r["1"] += vcc
+        r["2"] += gnd
         self.declare_interface("power", vcc, gnd)
 
 
@@ -91,15 +94,16 @@ def test_openhac_cli_subprocess_compile_logic_only(tmp_path):
         env=env,
     )
     assert r.returncode == 0, (r.stdout, r.stderr)
-    assert (tmp_path / "sub_e2e.net").is_file()
-    assert (tmp_path / "sub_e2e.csv").is_file()
-    mf = tmp_path / "sub_e2e.openhac-manifest.json"
+    out_dir = tmp_path / "sub_e2e"
+    assert (out_dir / "sub_e2e.net").is_file()
+    assert (out_dir / "sub_e2e.csv").is_file()
+    mf = out_dir / "sub_e2e.openhac-manifest.json"
     assert mf.is_file()
     data = json.loads(mf.read_text(encoding="utf-8"))
     assert data["project_name"] == "sub_e2e"
     paths = {o["path"] for o in data["outputs"]}
-    assert "sub_e2e.net" in paths
-    assert "sub_e2e.csv" in paths
+    assert "sub_e2e/sub_e2e.net" in paths
+    assert "sub_e2e/sub_e2e.csv" in paths
 
 
 def test_openhac_cli_subprocess_simulate_spice_preset(tmp_path):

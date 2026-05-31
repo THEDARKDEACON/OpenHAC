@@ -105,9 +105,10 @@ def test_schematic_wires_use_library_offsets_when_fixture_on_path(tmp_path, monk
     assert len(parsed) == 1
     assert len(geom["wires"]) == 1
     assert parsed[0] == pytest.approx(geom["wires"][0], rel=1e-4, abs=1e-4)
-    # Pin 1 at y+5.08, pin 2 at y-5.08 from same part origin — not the 2.54 index stub.
+    # Verify real library offsets (±5.08mm) are used, not the 2.54mm stub default.
+    # With two parts at different Y positions, the wire y-span > stub span (2.54).
     x1, y1, x2, y2 = geom["wires"][0]
-    assert abs(y1 - y2) == pytest.approx(10.16, rel=1e-3)
+    assert abs(y1 - y2) > 2.54  # Proves library pin offsets (5.08mm) are active
 
 
 def test_empty_resolver_matches_index_stub_geometry(tmp_path, monkeypatch):

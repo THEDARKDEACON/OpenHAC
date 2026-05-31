@@ -50,7 +50,10 @@ def sample_component_data():
         "manufacturer": "Yageo",
         "mpn": "RC0805FR-0710KL",
         "supplier_sku": "C17513",
-        "description": "10k 1% 0805 Resistor",
+        "description": "10k 1% 0805",
+        "category": "Resistor",
+        "jlc_class": "Extended",
+        "pinout_json": '[{"num": "1", "name": "~", "type": "passive"}, {"num": "2", "name": "~", "type": "passive"}]'
     }
 
 
@@ -60,31 +63,30 @@ def _reset_skidl_circuit():
 
     SKiDL accumulates parts/nets into a global circuit object.
     Without reset, tests bleed state into each other.
+
+    Also resets the native OpenHaC core circuit which tracks Component parts.
     """
-    try:
-        import skidl
-        skidl.reset()
-    except Exception:
-        pass
-    try:
-        from openhac.core.base import Component
+    def _do_reset():
+        try:
+            import skidl
+            skidl.reset()
+        except Exception:
+            pass
+        try:
+            from openhac.core.base import Component
 
-        Component.allow_risky_part_lookups = False
-        Component.require_kicad_symbols = False
-        Component.strict_jit_lookups = False
-    except Exception:
-        pass
+            Component.allow_risky_part_lookups = False
+            Component.require_kicad_symbols = False
+            Component.strict_jit_lookups = False
+        except Exception:
+            pass
+        # Reset the native OpenHaC core circuit so Component parts don't bleed across tests.
+        try:
+            from openhac.core.circuit import reset_default_circuit
+            reset_default_circuit()
+        except Exception:
+            pass
+
+    _do_reset()
     yield
-    try:
-        import skidl
-        skidl.reset()
-    except Exception:
-        pass
-    try:
-        from openhac.core.base import Component
-
-        Component.allow_risky_part_lookups = False
-        Component.require_kicad_symbols = False
-        Component.strict_jit_lookups = False
-    except Exception:
-        pass
+    _do_reset()

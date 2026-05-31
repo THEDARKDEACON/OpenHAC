@@ -400,6 +400,49 @@ class DatabaseManager:
             )
             return [dict(row) for row in cursor.fetchall()]
 
+    def audit_data_integrity(self, generic_names: list[str]) -> list[str]:
+        """Audit existing database records for a list of components.
+        
+        Checks for:
+        1. Missing local 3D model files (if a path is set).
+        2. 'Poisoned' footprints (e.g. complex modules mapped to generic resistors).
+        3. Missing critical pinout metadata.
+        
+        Returns:
+            List of generic_names that failed the audit and should be re-enriched.
+        """
+        failed = []
+        for gn in generic_names:
+            row = self.get_component(gn)
+            if not row:
+                continue
+            
+            # Check 1: 3D Model Existence
+            m3d = row.get("model_3d_local")
+            if m3d and not os.path.isfile(m3d):
+                logger.warning("Audit: 3D model for %s missing on disk: %s", gn, m3d)
+                failed.append(gn)
+                continue
+            
+            # Check 2: Footprint Sanity (Heuristic)
+            fp = str(row.get("kicad_footprint") or "").lower()
+            cat = str(row.get("category") or "").lower()
+            
+            # If a Pi/Teensy/Module is mapped to a tiny resistor, it's poisoned
+            poison_keywords = ["raspberry", "teensy", "compute", "module", "esp32", "stm32"]
+            if any(k in gn.lower() for k in poison_keywords) or cat in ("ic", "module"):
+                if "0805" in fp or "0603" in fp or "0402" in fp or "resistor" in fp:
+                    logger.warning("Audit: Component %s has suspicious footprint: %s", gn, fp)
+                    failed.append(gn)
+                    continue
+            
+            # Check 3: Pinout coverage if strictly required
+            if not row.get("pinout_json") and cat in ("ic", "module", "connector"):
+                # Basic connectors might be okay, but complex ones need pinouts
+                pass 
+
+        return list(set(failed))
+
     def update_component_from_vendor(self, generic_name: str, part_info) -> bool:
         """Update component with enriched data from vendor APIs.
         

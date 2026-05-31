@@ -120,7 +120,7 @@ def maybe_autosize_board(board) -> bool:
     except Exception:
         packed = False
 
-    margin = _env_float("OPENHAC_AUTO_BOARD_MARGIN_FACTOR", 1.15)
+    margin = _env_float("OPENHAC_AUTO_BOARD_MARGIN_FACTOR", 1.25)
     margin = min(max(margin, 1.0), 3.0)
     pad_mm = _env_float("OPENHAC_AUTO_BOARD_MIN_EDGE_MARGIN_MM", 5.0)
     if packed:

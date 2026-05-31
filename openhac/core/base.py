@@ -12,7 +12,7 @@ import urllib.parse
 
 from openhac.core.part import Part, Pin
 from openhac.core.net import Net, Bus
-from openhac.core.circuit import default_circuit
+import openhac.core.circuit
 from openhac.database.db_manager import DatabaseManager
 from openhac.core.compile_context import get_compile_context
 
@@ -224,22 +224,31 @@ class Component:
             generic_name=generic_name,
             mpn=comp_data.get("mpn"),
         )
-        refdes = kwargs.get('refdes') or default_circuit.auto_generate_refdes(ref_prefix)
+        import openhac.core.circuit
+        refdes = kwargs.get('refdes') or openhac.core.circuit.default_circuit.auto_generate_refdes(ref_prefix)
+        print("DEBUG refdes:", refdes)
         
         footprint = kwargs.get("footprint") or comp_data.get('kicad_footprint')
         
-        self.part = Part(
-            refdes=refdes,
-            footprint=footprint,
-            fields={},
-            pins=pins,
-            value=generic_name,
-        )
+        try:
+            self.part = Part(
+                refdes=refdes,
+                footprint=footprint,
+                fields={},
+                pins=pins,
+                value=generic_name,
+            )
+        except Exception as e:
+            if self._effective_require_kicad_symbols():
+                raise KicadLibraryLoadError(f"strict KiCad check failed: {e}") from e
+            raise
         
         # Add part to the default circuit
-        default_circuit.add_part(self.part)
+        openhac.core.circuit.default_circuit.add_part(self.part)
 
         self.refresh_from_db()
+
+        self.layout_zone = None
 
         si = comp_data.get("spice_include")
         self.part.fields["Spice_Include"] = str(si).strip() if si else ""
@@ -365,10 +374,9 @@ class Component:
             stacklevel=4,
         )
         try:
-            cls.db.safe_insert_component(
+            cls.db.insert_component(
                 comp_data,
                 ignore_duplicate=True,
-                warn_prefix=f"Could not store JIT-resolved component {generic_name!r} in the local database",
             )
         except Exception as e:
             # strict mode
@@ -713,6 +721,29 @@ class Component:
         # Default: 8 pins
         return [Pin(str(i), str(i), "bidirectional") for i in range(1, 9)]
 
+    def assign_to(self, zone) -> "Component":
+        """Assign this component to a specific LayoutZone."""
+        self.layout_zone = zone
+        zone.add_member(self)
+        return self
+
+    def nc_unused_pins(self) -> None:
+        """Connect all unconnected pins to the __NOCONNECT net."""
+        import openhac.core.circuit
+        from openhac.core.net import Net
+        
+        nc_net = None
+        for n in getattr(openhac.core.circuit.default_circuit, "nets", []):
+            if str(getattr(n, "name", "")).upper() == "NC":
+                nc_net = n
+                break
+        if not nc_net:
+            nc_net = Net("NC")
+            
+        for pin in self.part.pins.values():
+            if not pin.is_connected():
+                pin += nc_net
+
     def refresh_from_db(self):
         """Re-read component metadata from the database and update Part fields.
         
@@ -728,6 +759,7 @@ class Component:
             self._comp_data = dict(comp_data)
             
             # Update Part fields
+            self.part.fields['Value'] = self.generic_name
             self.part.fields['Manufacturer'] = comp_data.get('manufacturer') or ""
             self.part.fields['MPN'] = comp_data.get('mpn') or ""
             self.part.fields['Supplier_SKU'] = comp_data.get('supplier_sku') or ""
@@ -758,6 +790,26 @@ class Component:
     ) -> str:
         """Delegate to :func:`openhac.core.refdes.get_refdes_prefix`."""
         return get_refdes_prefix(category, generic_name=generic_name, mpn=mpn)
+
+    def nc_unused_pins(self) -> None:
+        """Connect all currently unconnected pins of this component to the NC (No Connect) net."""
+        import openhac.core.circuit
+        from openhac.core.net import Net
+        
+        nc_net = None
+        for n in getattr(openhac.core.circuit.default_circuit, "nets", []):
+            if str(getattr(n, "name", "")).upper() == "NC":
+                nc_net = n
+                break
+        if not nc_net:
+            nc_net = Net("NC")
+            
+        pins = self.part.get_pins() if hasattr(self.part, "get_pins") else []
+        for pin in pins:
+            if hasattr(pin, "is_connected") and not pin.is_connected():
+                pin += nc_net
+            elif getattr(pin, "net", None) is None:
+                pin += nc_net
 
 # Interface and Module classes are now in their own submodules.
 # They are re-exported at the top of this file for backward compatibility.

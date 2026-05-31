@@ -38,12 +38,14 @@ import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timedelta, timezone
 from typing import Optional
+from openhac.version_info import user_agent
 
 logger = logging.getLogger("openhac.vendor_apis")
 
-# Cache TTL in seconds (default: 1 hour for API responses)
-DEFAULT_CACHE_TTL = 3600
-CACHE_DB_PATH = os.environ.get("OPENHAC_CACHE_DB", ":memory:")
+# Cache TTL in seconds (default: 24 hours for API responses)
+DEFAULT_CACHE_TTL = 86400
+_default_cache_db = os.path.join(os.path.dirname(__file__), "api_cache.db")
+CACHE_DB_PATH = os.environ.get("OPENHAC_CACHE_DB", _default_cache_db)
 
 
 class APICache:
@@ -56,8 +58,10 @@ class APICache:
     """
 
     def __init__(self, db_path: Optional[str] = None, ttl_seconds: int = DEFAULT_CACHE_TTL):
+        import threading
         self.db_path = db_path or CACHE_DB_PATH
         self.ttl = ttl_seconds
+        self._lock = threading.Lock()
         self._init_db()
         self._hits = 0
         self._misses = 0
@@ -66,24 +70,24 @@ class APICache:
         """Initialize cache table."""
         import sqlite3
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
-        self.conn.execute("""
-            CREATE TABLE IF NOT EXISTS api_cache (
-                cache_key TEXT PRIMARY KEY,
-                vendor TEXT NOT NULL,
-                mpn TEXT NOT NULL,
-                response_json TEXT NOT NULL,
-                cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                expires_at TIMESTAMP NOT NULL
-            )
-        """)
-        self.conn.execute("""
-            CREATE INDEX IF NOT EXISTS idx_cache_expires ON api_cache(expires_at)
-        """)
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute("""
+                CREATE TABLE IF NOT EXISTS api_cache (
+                    cache_key TEXT PRIMARY KEY,
+                    vendor TEXT NOT NULL,
+                    mpn TEXT NOT NULL,
+                    response_json TEXT NOT NULL,
+                    cached_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                    expires_at TIMESTAMP NOT NULL
+                )
+            """)
+            self.conn.execute("""
+                CREATE INDEX IF NOT EXISTS idx_cache_expires ON api_cache(expires_at)
+            """)
+            self.conn.commit()
 
     def _make_key(self, vendor: str, mpn: str) -> str:
         """Create cache key from vendor + MPN."""
-        import hashlib
         key = f"{vendor}:{mpn.upper().strip()}"
         return hashlib.sha256(key.encode()).hexdigest()[:32]
 
@@ -95,11 +99,12 @@ class APICache:
         """
         key = self._make_key(f"{vendor}:pinout", mpn)
         
-        cursor = self.conn.execute(
-            "SELECT response_json FROM api_cache WHERE cache_key = ? AND expires_at > datetime('now')",
-            (key,)
-        )
-        row = cursor.fetchone()
+        with self._lock:
+            cursor = self.conn.execute(
+                "SELECT response_json FROM api_cache WHERE cache_key = ? AND expires_at > datetime('now')",
+                (key,)
+            )
+            row = cursor.fetchone()
         
         if row:
             try:
@@ -114,26 +119,28 @@ class APICache:
         key = self._make_key(f"{vendor}:pinout", mpn)
         
         # Default TTL: 30 days for pinout (doesn't change often)
-        expires = datetime.now() + timedelta(days=30)
+        expires = datetime.now(timezone.utc) + timedelta(days=30)
         
-        self.conn.execute(
-            """INSERT OR REPLACE INTO api_cache 
-               (cache_key, vendor, mpn, response_json, expires_at)
-               VALUES (?, ?, ?, ?, ?)""",
-            (key, f"{vendor}:pinout", mpn, json.dumps(pinout), expires)
-        )
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO api_cache 
+                   (cache_key, vendor, mpn, response_json, expires_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (key, f"{vendor}:pinout", mpn, json.dumps(pinout), expires)
+            )
+            self.conn.commit()
 
     def get(self, vendor: str, mpn: str) -> Optional[dict]:
         """Get cached response if not expired."""
         import sqlite3
         key = self._make_key(vendor, mpn)
 
-        cursor = self.conn.execute(
-            "SELECT response_json FROM api_cache WHERE cache_key = ? AND expires_at > datetime('now')",
-            (key,)
-        )
-        row = cursor.fetchone()
+        with self._lock:
+            cursor = self.conn.execute(
+                "SELECT response_json FROM api_cache WHERE cache_key = ? AND expires_at > datetime('now')",
+                (key,)
+            )
+            row = cursor.fetchone()
 
         if row:
             self._hits += 1
@@ -144,39 +151,68 @@ class APICache:
         logger.debug(f"Cache MISS for {vendor}:{mpn}")
         return None
 
-    def set(self, vendor: str, mpn: str, response: dict, ttl_seconds: Optional[int] = None):
+    def set(self, vendor: str, mpn: str, response: dict, ttl: Optional[int] = None):
         """Cache an API response."""
         import sqlite3
-        key = self._make_key(vendor, mpn)
-        ttl = ttl_seconds or self.ttl
+        if ttl is None:
+            ttl = self.ttl
 
-        self.conn.execute(
-            """INSERT OR REPLACE INTO api_cache
-               (cache_key, vendor, mpn, response_json, expires_at)
-               VALUES (?, ?, ?, ?, datetime('now', '+' || ? || ' seconds'))""",
-            (key, vendor, mpn.upper().strip(), json.dumps(response), ttl)
-        )
-        self.conn.commit()
+        key = self._make_key(vendor, mpn)
+        with self._lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO api_cache
+                   (cache_key, vendor, mpn, response_json, expires_at)
+                   VALUES (?, ?, ?, ?, datetime('now', '+' || ? || ' seconds'))""",
+                (key, vendor, mpn.upper().strip(), json.dumps(response), ttl)
+            )
+            self.conn.commit()
         logger.debug(f"Cached {vendor}:{mpn} (TTL={ttl}s)")
 
     def clear_expired(self):
         """Remove expired cache entries."""
-        cursor = self.conn.execute("DELETE FROM api_cache WHERE expires_at < datetime('now')")
-        self.conn.commit()
-        return cursor.rowcount
+        with self._lock:
+            cursor = self.conn.execute("DELETE FROM api_cache WHERE expires_at < datetime('now')")
+            self.conn.commit()
+            return cursor.rowcount
+
+    def set_blocked(self, vendor: str, duration_seconds: int = 900):
+        """Mark a vendor as blocked (e.g. after a 429 or 403)."""
+        key = f"BLOCK:{vendor}"
+        expires = datetime.now(timezone.utc) + timedelta(seconds=duration_seconds)
+        with self._lock:
+            self.conn.execute(
+                """INSERT OR REPLACE INTO api_cache 
+                   (cache_key, vendor, mpn, response_json, expires_at)
+                   VALUES (?, ?, ?, ?, ?)""",
+                (key, "SYSTEM", vendor, json.dumps({"status": "blocked"}), expires)
+            )
+            self.conn.commit()
+        logger.warning(f"Vendor {vendor} is now BLOCKED for {duration_seconds}s to prevent further rate limiting.")
+
+    def is_blocked(self, vendor: str) -> bool:
+        """Check if a vendor is currently in a cool-off period."""
+        key = f"BLOCK:{vendor}"
+        with self._lock:
+            cursor = self.conn.execute(
+                "SELECT 1 FROM api_cache WHERE cache_key = ? AND expires_at > datetime('now')",
+                (key,)
+            )
+            return cursor.fetchone() is not None
 
     def clear_all(self):
         """Clear entire cache."""
-        self.conn.execute("DELETE FROM api_cache")
-        self.conn.commit()
+        with self._lock:
+            self.conn.execute("DELETE FROM api_cache")
+            self.conn.commit()
 
     def get_stats(self) -> dict:
         """Return cache statistics."""
-        cursor = self.conn.execute("SELECT COUNT(*) FROM api_cache WHERE expires_at > datetime('now')")
-        valid_entries = cursor.fetchone()[0]
+        with self._lock:
+            cursor = self.conn.execute("SELECT COUNT(*) FROM api_cache WHERE expires_at > datetime('now')")
+            valid_entries = cursor.fetchone()[0]
 
-        cursor = self.conn.execute("SELECT COUNT(*) FROM api_cache")
-        total_entries = cursor.fetchone()[0]
+            cursor = self.conn.execute("SELECT COUNT(*) FROM api_cache")
+            total_entries = cursor.fetchone()[0]
 
         total_requests = self._hits + self._misses
         hit_rate = (self._hits / total_requests * 100) if total_requests > 0 else 0
@@ -233,28 +269,31 @@ class RateLimiter:
     """Simple rate limiter for API calls."""
 
     def __init__(self, max_calls: int, period_seconds: int):
+        import threading
         self.max_calls = max_calls
         self.period = period_seconds
         self.calls: list[float] = []
+        self._lock = threading.Lock()
 
     def acquire(self):
         """Block until a call slot is available."""
-        now = time.time()
-
-        # Remove old calls outside the window
-        cutoff = now - self.period
-        self.calls = [c for c in self.calls if c > cutoff]
-
-        # Check if we're at the limit
-        if len(self.calls) >= self.max_calls:
-            # Calculate wait time
-            oldest = min(self.calls)
-            wait = (oldest + self.period) - now
-            if wait > 0:
-                logger.debug(f"Rate limit hit, waiting {wait:.1f}s")
-                time.sleep(wait)
-
-        self.calls.append(time.time())
+        with self._lock:
+            now = time.time()
+    
+            # Remove old calls outside the window
+            cutoff = now - self.period
+            self.calls = [c for c in self.calls if c > cutoff]
+    
+            # Check if we're at the limit
+            if len(self.calls) >= self.max_calls:
+                # Calculate wait time
+                oldest = min(self.calls)
+                wait = (oldest + self.period) - now
+                if wait > 0:
+                    logger.debug(f"Rate limit hit, waiting {wait:.1f}s")
+                    time.sleep(wait)
+    
+            self.calls.append(time.time())
 
 
 def _mouser_search_results_parts(data: Optional[dict]) -> list:
@@ -321,7 +360,7 @@ class DigiKeyAPI:
 
     def _get_token(self) -> str:
         """Get or refresh OAuth2 access token."""
-        if self._access_token and self._token_expires and datetime.now() < self._token_expires:
+        if self._access_token and self._token_expires and datetime.now(timezone.utc) < self._token_expires:
             return self._access_token
 
         import urllib.request
@@ -338,7 +377,8 @@ class DigiKeyAPI:
         }).encode()
 
         req = urllib.request.Request(url, data=data, headers={
-            "Content-Type": "application/x-www-form-urlencoded"
+            "Content-Type": "application/x-www-form-urlencoded",
+            "User-Agent": user_agent(),
         })
 
         try:
@@ -346,7 +386,7 @@ class DigiKeyAPI:
                 token_data = json.loads(resp.read().decode())
                 self._access_token = token_data["access_token"]
                 expires_in = token_data.get("expires_in", 3600)
-                self._token_expires = datetime.now() + timedelta(seconds=expires_in - 60)
+                self._token_expires = datetime.now(timezone.utc) + timedelta(seconds=expires_in - 60)
                 return self._access_token
         except Exception as e:
             logger.error(f"Failed to get Digi-Key access token: {e}")
@@ -362,9 +402,14 @@ class DigiKeyAPI:
         """
         import urllib.request
 
+        # Check block status
+        cache = get_api_cache()
+        if cache.is_blocked("digikey"):
+            logger.debug("Digi-Key is in cool-off period, skipping search.")
+            return []
+
         # Check cache first
         if use_cache:
-            cache = get_api_cache()
             cached = cache.get("digikey", keyword)
             if cached:
                 products = cached.get("products", [])
@@ -384,6 +429,7 @@ class DigiKeyAPI:
             "Authorization": f"Bearer {token}",
             "Content-Type": "application/json",
             "X-DIGIKEY-Client-Id": self.client_id,
+            "User-Agent": user_agent(),
         })
 
         try:
@@ -398,6 +444,11 @@ class DigiKeyAPI:
                     logger.debug(f"Cached Digi-Key response for {keyword}")
 
                 return [self._parse_product(p) for p in products]
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 429):
+                get_api_cache().set_blocked("digikey")
+            logger.warning(f"Digi-Key search failed: {e}")
+            return []
         except Exception as e:
             logger.warning(f"Digi-Key search failed: {e}")
             return []
@@ -420,6 +471,7 @@ class DigiKeyAPI:
         req = urllib.request.Request(url, headers={
             "Authorization": f"Bearer {token}",
             "X-DIGIKEY-Client-Id": self.client_id,
+            "User-Agent": user_agent(),
         })
 
         try:
@@ -493,7 +545,7 @@ class DigiKeyAPI:
             package=product.get("package_type", {}).get("name", ""),
             rohs=product.get("rohs_status") == "RoHS Compliant",
             lead_time_days=product.get("factory_stock_lead_days"),
-            last_updated=datetime.now(),
+            last_updated=datetime.now(timezone.utc),
             # V7 fields
             thermal_data=thermal,
             package_dimensions=pkg_dims,
@@ -529,9 +581,14 @@ class MouserAPI:
         """
         import urllib.request
 
+        # Check block status
+        cache = get_api_cache()
+        if cache.is_blocked("mouser"):
+            logger.debug("Mouser is in cool-off period, skipping search.")
+            return []
+
         # Check cache first
         if use_cache:
-            cache = get_api_cache()
             cached = cache.get("mouser", keyword)
             if cached:
                 parts = _mouser_search_results_parts(cached)
@@ -553,6 +610,7 @@ class MouserAPI:
 
         req = urllib.request.Request(url, data=payload, headers={
             "Content-Type": "application/json",
+            "User-Agent": user_agent(),
         })
 
         try:
@@ -567,6 +625,11 @@ class MouserAPI:
                     logger.debug(f"Cached Mouser response for {keyword}")
 
                 return [self._parse_part(p) for p in parts[:limit]]
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 429):
+                get_api_cache().set_blocked("mouser")
+            logger.warning(f"Mouser search failed: {e}")
+            return []
         except Exception as e:
             logger.warning(f"Mouser search failed: {e}")
             return []
@@ -606,6 +669,7 @@ class MouserAPI:
 
         req = urllib.request.Request(url, data=payload, headers={
             "Content-Type": "application/json",
+            "User-Agent": user_agent(),
         })
 
         try:
@@ -678,7 +742,7 @@ class MouserAPI:
             package="",  # Mouser doesn't consistently provide this
             rohs="RoHS" in part.get("ROHSStatus", ""),
             lead_time_days=None,
-            last_updated=datetime.now(),
+            last_updated=datetime.now(timezone.utc),
             # V7 fields - Mouser provides limited data
             thermal_data=None,  # Not available from Mouser
             package_dimensions=None,  # Not available from Mouser
@@ -1036,7 +1100,7 @@ class JLCPCBAPI:
             package=product.get("package", ""),
             rohs=product.get("isRoHS", False),
             lead_time_days=None,  # Not directly provided
-            last_updated=datetime.now(),
+            last_updated=datetime.now(timezone.utc),
             # V7 fields
             thermal_data=None,  # Not directly provided
             package_dimensions=None,  # Would need to parse from specs
@@ -1190,7 +1254,7 @@ def _merge_part_info(results: dict[str, PartInfo], mpn: str) -> Optional[PartInf
         package=base.package,
         rohs=base.rohs,
         lead_time_days=base.lead_time_days,
-        last_updated=datetime.now(),
+        last_updated=datetime.now(timezone.utc),
     )
     
     # Merge V7 fields with priority
@@ -1343,6 +1407,7 @@ class TMEAPI:
             headers={
                 "Content-Type": "application/x-www-form-urlencoded",
                 "Accept": "application/json",
+                "User-Agent": user_agent(),
             },
         )
         with urllib.request.urlopen(req, timeout=30) as resp:
@@ -1364,9 +1429,14 @@ class TMEAPI:
         if not self.api_token or not self.api_secret:
             raise ValueError("TME API credentials not configured. Set TME_API_TOKEN and TME_API_SECRET")
 
+        # Check block status
+        cache = get_api_cache()
+        if cache.is_blocked("tme"):
+            logger.debug("TME is in cool-off period, skipping search.")
+            return []
+
         # Check cache
         if use_cache:
-            cache = get_api_cache()
             cached = cache.get("tme_search", keyword)
             if cached:
                 products = _tme_response_product_list(cached)
@@ -1392,6 +1462,11 @@ class TMEAPI:
                 logger.debug(f"Cached TME search for {keyword} ({len(products)} products)")
 
             return [self._parse_product(p) for p in products]
+        except urllib.error.HTTPError as e:
+            if e.code in (403, 429):
+                get_api_cache().set_blocked("tme")
+            logger.warning(f"TME search failed: {e}")
+            return []
         except Exception as e:
             logger.warning(f"TME search failed: {e}")
             return []
@@ -1522,7 +1597,7 @@ class TMEAPI:
             package=str(pkg or ""),
             rohs=product.get("RoHS", "false").lower() == "true",
             lead_time_days=None,
-            last_updated=datetime.now(),
+            last_updated=datetime.now(timezone.utc),
         )
 
 

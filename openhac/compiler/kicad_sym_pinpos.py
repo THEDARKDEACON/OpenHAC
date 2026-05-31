@@ -19,6 +19,12 @@ logger = logging.getLogger("openhac.kicad_sym")
 def symbol_library_search_paths() -> list[Path]:
     """Ordered search paths for ``*.kicad_sym`` (env first, then common installs)."""
     paths: list[Path] = []
+    
+    # Add standard JLC2KiCAD output directory
+    jlc_dir = Path.home() / ".kiro" / "openhac" / "jlc2kicad_generated"
+    if jlc_dir.is_dir():
+        paths.append(jlc_dir)
+        
     extra = os.environ.get("OPENHAC_KICAD_SYMBOL_DIRS", "")
     for p in extra.split(os.pathsep):
         p = p.strip()
@@ -103,6 +109,7 @@ _AT_RE = re.compile(r"\(at\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\)")
 # line; do not require the closing ``)`` immediately after the opening quoted token.
 _NUMBER_RE = re.compile(r'\(number\s+"([^"]*)"')
 _NAME_RE = re.compile(r'\(name\s+"([^"]*)"')
+_LENGTH_RE = re.compile(r"\(length\s+([-\d.]+)\)")
 _EXTENDS_RE = re.compile(r'\(extends\s+"([^"]+)"\s*\)')
 
 
@@ -218,9 +225,9 @@ def pinout_from_kicad_symbol_id(kicad_symbol: str) -> list[dict] | None:
     return po if po else None
 
 
-def parse_pin_positions_from_symbol_tree(symbol_tree: str) -> dict[str, tuple[float, float]]:
-    """Map pin number string → (x, y) in symbol-local mm (first ``(at ...)`` in each pin block)."""
-    pos: dict[str, tuple[float, float]] = {}
+def parse_pin_positions_from_symbol_tree(symbol_tree: str) -> dict[str, tuple[float, float, float, float]]:
+    """Map pin number string -> (x, y, rot, len) in symbol-local mm."""
+    pos: dict[str, tuple[float, float, float, float]] = {}
     for blk in _iter_pin_blocks(symbol_tree):
         nm = _NUMBER_RE.search(blk)
         if not nm:
@@ -229,15 +236,19 @@ def parse_pin_positions_from_symbol_tree(symbol_tree: str) -> dict[str, tuple[fl
         am = _AT_RE.search(blk)
         if not am:
             continue
-        x, y = float(am.group(1)), float(am.group(2))
+        x, y, rot = float(am.group(1)), float(am.group(2)), float(am.group(3))
+        
+        lm = _LENGTH_RE.search(blk)
+        plen = float(lm.group(1)) if lm else 2.54 # KiCad default
+        
         # Later pin blocks for same number should not overwrite; keep first.
         if pin_num not in pos:
-            pos[pin_num] = (x, y)
+            pos[pin_num] = (x, y, rot, plen)
     return pos
 
 
 @lru_cache(maxsize=64)
-def _cached_pin_map(path: str, symbol_name: str, mtime_ns: int) -> dict[str, tuple[float, float]] | None:
+def _cached_pin_map(path: str, symbol_name: str, mtime_ns: int) -> dict[str, tuple[float, float, float, float]] | None:
     """Load and parse symbol; cache key includes mtime for dev edits."""
     p = Path(path)
     try:
@@ -257,7 +268,7 @@ def clear_symbol_pin_cache() -> None:
     _cached_pin_map.cache_clear()
 
 
-def load_symbol_pin_positions(lib_file: Path, symbol_name: str) -> dict[str, tuple[float, float]] | None:
+def load_symbol_pin_positions(lib_file: Path, symbol_name: str) -> dict[str, tuple[float, float, float, float]] | None:
     """Return pin map for *symbol_name* in *lib_file*, or None if missing."""
     try:
         st = lib_file.stat()
@@ -269,8 +280,11 @@ def load_symbol_pin_positions(lib_file: Path, symbol_name: str) -> dict[str, tup
 
 def part_library_name(part) -> str:
     """KiCad library nick (e.g. ``Device``) for *part*; SKiDL stores a ``SchLib`` on ``part.lib``."""
-    # Native OpenHaC parts don't have a 'tool' or 'lib' attribute, they are dynamically generated.
+    # Native OpenHaC parts may have a custom symbol override from the database (e.g. jlc2kicad_generated:C1234)
     if type(part).__name__ == "Part" and type(part).__module__ == "openhac.core.part":
+        sym = getattr(part, "kicad_symbol", "") or ""
+        if ":" in str(sym):
+            return str(sym).split(":")[0]
         return "OpenHaC"
         
     try:
@@ -295,7 +309,7 @@ class EmptySymbolPinResolver:
 
     __slots__ = ()
 
-    def offset_for_pin(self, part, pin) -> tuple[float, float] | None:
+    def offset_for_pin(self, part, pin, symbol_name: str | None = None) -> tuple[float, float, float] | None:
         return None
 
 
@@ -305,20 +319,25 @@ class SymbolPinResolver:
     __slots__ = ("_cache", "_explicit_libs")
 
     def __init__(self) -> None:
-        self._cache: dict[tuple[str, str], Optional[dict[str, tuple[float, float]]]] = {}
+        self._cache: dict[tuple[str, str], Optional[dict[str, tuple[float, float, float, float]]]] = {}
         self._explicit_libs: dict[str, Path] = {}
 
     def add_explicit_library(self, lib_name: str, path: str | Path) -> None:
         self._explicit_libs[str(lib_name).strip()] = Path(path)
 
-    def offset_for_pin(self, part, pin) -> tuple[float, float] | None:
+    def offset_for_pin(self, part, pin, symbol_name: str | None = None) -> tuple[float, float, float] | None:
         """Return (dx, dy) relative to the symbol instance origin, or None to use stub layout."""
         lib = part_library_name(part)
-        name = (getattr(part, "name", None) or "").strip()
-        if not name or name == "?":
-            name = (getattr(part, "ref", None) or getattr(part, "refdes", None) or "").strip()
-        if not name or name == "?":
-            name = "PART"
+        if symbol_name:
+            name = symbol_name
+        else:
+            name = (getattr(part, "name", None) or "").strip()
+            if not name or name == "?":
+                name = (getattr(part, "value", None) or "").strip()
+            if not name or name == "?":
+                name = (getattr(part, "ref", None) or getattr(part, "refdes", None) or "").strip()
+            if not name or name == "?":
+                name = "PART"
             
         if not lib or not name:
             logger.debug(f"Resolver skip: lib='{lib}' name='{name}' for part {part}")
@@ -340,6 +359,21 @@ class SymbolPinResolver:
             logger.debug(f"Resolver fail: No pin map for {key}")
             return None
         pnum = str(getattr(pin, "num", "") or "").strip()
-        if pnum not in pmap:
-            logger.debug(f"Resolver fail: Pin {pnum} not in pmap {list(pmap.keys())} for {name}")
-        return pmap.get(pnum)
+        pdata = pmap.get(pnum)
+        if pdata is None:
+            # Try numeric if string fails (sometimes libs use ints)
+            try:
+                pdata = pmap.get(str(int(pnum)))
+            except (ValueError, TypeError):
+                pass
+                
+        if pdata is None:
+            return None
+            
+        x, y, rot, plen = pdata
+        
+        # KiCad's (at x y rotation) in a pin definition IS the electrical connection point (the tip).
+        # We should return these raw coordinates.  The previous attempt to translate from base to tip
+        # was based on a misunderstanding of the KiCad format spec.
+        # Returning raw x, y ensures that wire endpoints land EXACTLY where KiCad expects them.
+        return x, y, rot

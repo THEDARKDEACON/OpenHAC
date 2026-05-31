@@ -23,7 +23,6 @@ class Circuit:
     Replaces SKiDL's Circuit class. Manages the complete circuit state
     and generates output files.
     """
-    
     def __init__(self, name: str = "circuit"):
         self.name = name
         self.parts: list[Part] = []

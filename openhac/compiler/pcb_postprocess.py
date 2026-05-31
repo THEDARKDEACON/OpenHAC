@@ -162,6 +162,97 @@ def apply_copper_pour_intents(pcb, board, pcbnew_mod) -> int:
     return added
 
 
+def apply_high_current_polygons(pcb, board, pcbnew_mod) -> int:
+    """Enterprise Phase D: Post-Route Copper Reinforcement.
+
+    For any net tagged as high-current (>10A), we create a copper zone (polygon)
+    that covers the bounding box of all pads on that net. This ensures 60A+ 
+    capacity without relying on thin tracks.
+    """
+    nets = getattr(board, "_high_current_nets", {})
+    if not nets:
+        return 0
+
+    added = 0
+    zone_cls = getattr(pcbnew_mod, "ZONE", None) or getattr(pcbnew_mod, "ZONE_CONTAINER", None)
+    if zone_cls is None:
+        return 0
+
+    for net_name, info in nets.items():
+        ni = _netinfo_for_name(pcb, net_name)
+        if ni is None:
+            continue
+            
+        # Find all pads for this net to determine the zone's bounding box
+        pads = []
+        for fp in pcb.GetFootprints():
+            for pad in fp.Pads():
+                if int(pad.GetNetCode()) == int(ni.GetNetCode()):
+                    pads.append(pad)
+        
+        if len(pads) < 2:
+            continue
+            
+        # Calculate bounding box of pads
+        min_x = min(p.GetPosition().x for p in pads)
+        max_x = max(p.GetPosition().x for p in pads)
+        min_y = min(p.GetPosition().y for p in pads)
+        max_y = max(p.GetPosition().y for p in pads)
+        
+        # Inflate by 1mm for safety
+        margin = int(pcbnew_mod.FromMM(1.0))
+        min_x, max_x = min_x - margin, max_x + margin
+        min_y, max_y = min_y - margin, max_y + margin
+        
+        for layer in ["F.Cu", "B.Cu"]:
+            lid = _layer_id(pcb, pcbnew_mod, layer)
+            if lid is None: continue
+            
+            z = zone_cls(pcb)
+            try:
+                z.SetNet(ni)
+                z.SetLayer(lid)
+            except Exception:
+                continue
+                
+            def _pt(x, y):
+                try: return pcbnew_mod.VECTOR2I(int(x), int(y))
+                except AttributeError: return pcbnew_mod.wxPoint(int(x), int(y))
+                
+            pts = [
+                _pt(min_x, min_y),
+                _pt(max_x, min_y),
+                _pt(max_x, max_y),
+                _pt(min_x, max_y),
+            ]
+            chain = None
+            try:
+                chain = pcbnew_mod.SHAPE_LINE_CHAIN()
+                for p in pts: chain.Append(p)
+                chain.SetClosed(True)
+                z.AddPolygon(chain)
+            except Exception:
+                pass
+            
+            try:
+                pcb.Add(z)
+                added += 1
+            except Exception:
+                if chain is not None:
+                    try:
+                        pcb.AddArea(z, lid, ni.GetNetCode(), chain, True)
+                        added += 1
+                    except Exception as e:
+                        logger.debug("Failed to add high-current zone for %s: %s", net_name, e)
+                        continue
+                else:
+                    continue
+                
+    if added:
+        logger.info("Added %d high-current copper zone(s) for nets: %s", added, list(nets.keys()))
+    return added
+
+
 @dataclass(frozen=True)
 class MountingHoleFootprintChoice:
     lib_name: str
@@ -355,12 +446,12 @@ def clamp_footprints_inside_edge_cuts(pcb, pcbnew_mod, *, margin_mm: float = 0.2
             continue
         try:
             pos = fp.GetPosition()
-            fp.SetPosition(type(pos)(int(pos.x + dx), int(pos.y + dy)))
+            new_pos = pcbnew_mod.VECTOR2I(int(pos.x + dx), int(pos.y + dy))
+            fp.SetPosition(new_pos)
             moved += 1
         except Exception:
-            # Older pcbnew types may not support constructor on VECTOR2I; fall back to Move().
             try:
-                fp.Move(type(fp.GetPosition())(dx, dy))
+                fp.Move(pcbnew_mod.VECTOR2I(int(dx), int(dy)))
                 moved += 1
             except Exception:
                 continue
@@ -479,20 +570,29 @@ def spread_footprints_no_overlap(
             # Push fp away from the other footprint’s bbox center.
             il, itop, ir, ibot = bb_i
             jl, jtop, jr, jbot = bb_j
+            
+            # Proportional repulsion: move by a fraction of the overlap to ensure convergence.
+            overlap_x = min(ir, jr) - max(il, jl)
+            overlap_y = min(ibot, jbot) - max(itop, jtop)
+            
+            # Ensure move is at least 0.1mm if there is an overlap.
+            min_push_iu = int(pcbnew_mod.FromMM(0.1))
+            
             icx = (il + ir) // 2
             icy = (itop + ibot) // 2
             jcx = (jl + jr) // 2
             jcy = (jtop + jbot) // 2
-            dx = step_iu if icx >= jcx else -step_iu
-            dy = step_iu if icy >= jcy else -step_iu
-
-            # Bias to the axis of greater overlap.
-            overlap_x = min(ir, jr) - max(il, jl)
-            overlap_y = min(ibot, jbot) - max(itop, jtop)
+            
+            dx = 0
+            dy = 0
             if overlap_x > overlap_y:
-                dy = 0
+                # Vertical overlap is smaller, push vertically
+                push = max(overlap_y // 2 + 1, min_push_iu)
+                dy = push if icy >= jcy else -push
             else:
-                dx = 0
+                # Horizontal overlap is smaller, push horizontally
+                push = max(overlap_x // 2 + 1, min_push_iu)
+                dx = push if icx >= jcx else -push
 
             # Apply move.
             try:

@@ -151,6 +151,22 @@ def generate_project_file(
         except Exception as e:
             logger.warning("Failed to calculate IPC-2152 NetClasses: %s", e)
 
+    # Collect net-to-class mappings
+    net_class_assignments = {}
+    if board is not None:
+        try:
+            modules = board._get_all_modules()
+        except Exception:
+            modules = getattr(board, "modules", []) or []
+
+        for mod in modules:
+            for comp in getattr(mod, "components", []) or []:
+                if not hasattr(comp, "part"): continue
+                for pin in comp.part.get_pins():
+                    if pin.net and getattr(pin.net, "current_a", 0.0) > 0:
+                        amps = pin.net.current_a
+                        net_class_assignments[pin.net.name] = f"Power_{amps}A"
+
     # The modern .kicad_pro file is a strict JSON wrapper stitching the ecosystem together
     project_payload = {
         "meta": {
@@ -161,7 +177,10 @@ def generate_project_file(
             "design_settings": {
                 "net_classes": {
                     "classes": list(net_classes.values()),
-                    "setup": []
+                    "setup": [
+                        {"class": cls_name, "net": net_name}
+                        for net_name, cls_name in net_class_assignments.items()
+                    ]
                 }
             },
             "layer_presets": []

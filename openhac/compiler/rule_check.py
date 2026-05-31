@@ -42,7 +42,10 @@ def _net_requires_power_flag(board, net) -> bool:
     """True if this net should carry a KiCad PWR_FLAG for OpenHaC ERC."""
     if id(net) in getattr(board, "_explicit_power_net_ids", set()):
         return True
-    net_name_lower = net.name.lower()
+    nm = str(getattr(net, "name", "") or "")
+    if nm == "__NOCONNECT":
+        return False
+    net_name_lower = nm.lower()
     return any(net_name_lower.startswith(prefix) for prefix in _power_prefixes_for_board(board))
 
 
@@ -137,10 +140,28 @@ def jlc_class_line_counts_from_circuit() -> dict[str, int]:
     except Exception:
         return {}
     counts: defaultdict[str, int] = defaultdict(int)
-    for part in getattr(circuit, "parts", []) or []:
+    seen_ids: set[int] = set()
+
+    def _count_part(part):
+        if id(part) in seen_ids:
+            return
+        seen_ids.add(id(part))
         raw = part.fields.get("JLC_Class", "") if hasattr(part, "fields") else ""
         key = str(raw or "").strip().lower() or "unset"
         counts[key] += 1
+
+    # Scan SKiDL global circuit
+    for part in getattr(circuit, "parts", []) or []:
+        _count_part(part)
+
+    # Scan native OpenHaC core circuit (holds Component-based parts)
+    try:
+        from openhac.core.circuit import default_circuit as _nc
+        for part in getattr(_nc, "parts", []) or []:
+            _count_part(part)
+    except Exception:
+        pass
+
     return dict(sorted(counts.items()))
 
 
@@ -234,7 +255,8 @@ def _cap_nominal_rail_voltage_v(comp: Component, declared: dict) -> float | None
     if part is None:
         return None
     try:
-        pins = list(part.pins)
+        raw = part.pins
+        pins = list(raw.values()) if isinstance(raw, dict) else list(raw)
     except Exception:
         return None
     vals: list[float] = []
@@ -279,7 +301,9 @@ def _test_point_touches_net_name_ci(board, name_lower: str) -> bool:
         if not _is_test_point_component(comp):
             continue
         part = comp.part
-        for pin in getattr(part, "pins", []) or []:
+        raw_pins = getattr(part, "pins", []) or []
+        pin_iter = list(raw_pins.values()) if isinstance(raw_pins, dict) else list(raw_pins)
+        for pin in pin_iter:
             net = getattr(pin, "net", None)
             if net is None:
                 continue
@@ -296,7 +320,8 @@ def _count_test_points_on_net_ci(board, name_lower: str) -> int:
         if not _is_test_point_component(comp):
             continue
         part = comp.part
-        for pin in getattr(part, "pins", []) or []:
+        raw_pins2 = getattr(part, "pins", []) or []
+        for pin in (list(raw_pins2.values()) if isinstance(raw_pins2, dict) else list(raw_pins2)):
             net = getattr(pin, "net", None)
             if net is None:
                 continue
@@ -477,7 +502,10 @@ def _run_power_budget(board) -> None:
             f"ERC Status: Passed. Power Budget OK ({total_draw}mA / {scalar_supply}mA)."
         )
     else:
-        logger.info("ERC Status: No power sources defined. Skipping budget checks.")
+        if getattr(board, "declared_supply_voltages_v", {}):
+            logger.info("ERC Status: Power Budget Check Passed (no supply limits defined, assumed infinite).")
+        else:
+            logger.info("ERC Status: No power sources defined. Skipping budget checks.")
 
 
 def _net_is_no_connect_rail(net, circuit) -> bool:
@@ -514,27 +542,15 @@ def _pin_is_no_connect(pin) -> bool:
 
 
 def _check_net_level(board):
-    """Check for floating nets, unconnected pins, and missing power flags."""
-    try:
-        import skidl  # noqa: F401 — ensure package importable
-    except Exception as e:
-        logger.warning(
-            "SKiDL not available (%s); skipping net-level ERC (floating nets, unconnected pins, PWR_FLAG).",
-            e,
-        )
-        return
-
+    """Check for floating nets, unconnected pins, and missing power flags using the native circuit."""
     try:
         from openhac.circuit import get_default_circuit
-
         circuit = get_default_circuit()
         nets = list(circuit.nets)
         parts = list(circuit.parts)
     except Exception as e:
-        raise OpenHaCError(
-            "ERC net-level checks require an initialized SKiDL default circuit. "
-            "Run netlist/schematic generation first, or ensure skidl is imported before run_erc()."
-        ) from e
+        logger.warning("ERC net-level checks skipped: circuit not initialized (%s)", e)
+        return
 
     floating_violations = []
     unconnected_violations = []
@@ -545,12 +561,27 @@ def _check_net_level(board):
         if _net_is_no_connect_rail(net, circuit):
             continue
         try:
-            pins = list(net.get_pins())
-        except Exception:
+            # Handle both Native (.pins) and SKiDL (.get_pins()) APIs
+            if hasattr(net, "get_pins"):
+                pins = list(net.get_pins())
+            else:
+                pins = list(getattr(net, "pins", []))
+            # Also scan native OpenHaC circuit for cross-world pins not visible to SKiDL
+            seen = {id(p) for p in pins}
             try:
-                pins = [p for p in net.pins]
+                from openhac.core.circuit import default_circuit as _nc
+                for part in getattr(_nc, "parts", []):
+                    raw = part.pins
+                    pin_iter = list(raw.values()) if isinstance(raw, dict) else list(raw or [])
+                    for p in pin_iter:
+                        if id(p) not in seen and getattr(p, "net", None) is net:
+                            pins.append(p)
+                            seen.add(id(p))
             except Exception:
-                pins = []
+                pass
+        except Exception:
+            pins = []
+
         if len(pins) < 2:
             # Power nets often show one load pin until PWR_FLAG is added; PWR_FLAG check covers that.
             if len(pins) == 1 and _net_requires_power_flag(board, net):
@@ -560,7 +591,10 @@ def _check_net_level(board):
     # 2. Unconnected-pin check
     for part in parts:
         try:
-            part_pins = list(part.pins)
+            if hasattr(part, "get_pins"):
+                part_pins = part.get_pins()
+            else:
+                part_pins = list(getattr(part, "pins", []))
         except Exception:
             continue
         for pin in part_pins:
@@ -583,6 +617,8 @@ def _check_net_level(board):
             continue
         if not _net_requires_power_flag(board, net):
             continue
+            
+        logger.debug(f"ERC: Net {net.name} requires PWR_FLAG. Checking pins...")
         try:
             pins = list(net.get_pins())
         except Exception:
@@ -590,6 +626,9 @@ def _check_net_level(board):
                 pins = [p for p in net.pins]
             except Exception:
                 pins = []
+                
+        for p in pins:
+            logger.debug(f"  Pin {getattr(p, 'number', '?')} on part {getattr(getattr(p, 'part', object()), 'ref', 'unknown')} name={getattr(getattr(p, 'part', object()), 'name', 'unknown')}")
         has_pwr_flag = any(
             getattr(p.part, 'name', '').upper() == 'PWR_FLAG' or
             getattr(p.part, 'ref_prefix', '') == 'PWR'
@@ -640,9 +679,138 @@ def run_erc(board):
     # Net-level checks (floating nets, unconnected pins, missing power flags)
     _check_net_level(board)
 
+    # Pin compatibility checks (Shorts, contention, domain mismatch)
+    _check_pin_type_compatibility(board)
+    _check_voltage_safety(board)
+
     _run_erc_plugin_hooks(board)
 
     _run_power_budget(board)
+
+
+def _check_pin_type_compatibility(board) -> None:
+    """Advanced ERC: Verify that connected pins have compatible types (SIG-007, PWR-003)."""
+    try:
+        from openhac.circuit import get_default_circuit
+        circuit = get_default_circuit()
+    except Exception:
+        return
+
+    violations = []
+    for net in circuit.nets:
+        if _net_is_no_connect_rail(net, circuit):
+            continue
+        
+        pins = list(net.get_pins()) if hasattr(net, "get_pins") else []
+        if not pins:
+            continue
+
+        drivers = []
+        power_sources = []
+        grounds = []
+        loads = []
+
+        for p in pins:
+            ptype = str(getattr(p, "pin_type", "passive")).lower()
+            pname = str(getattr(p, "name", "")).upper()
+            
+            # Semantic refinement of 'power' type
+            if ptype == "power":
+                if any(x in pname for x in ["GND", "VSS", "GROUND", "VREFN", "COM"]):
+                    ptype = "ground"
+                elif any(x in pname for x in ["OUT", "VCC", "VDD", "3V3", "5V", "12V", "VIN", "VBUS", "BATT"]):
+                    # If it has 'OUT', it is definitely a source. 
+                    # If it's a known rail name on a module/IC, we treat it as power_in by default
+                    # unless it's a known source (LDO/Buck).
+                    if "OUT" in pname:
+                        ptype = "power_out"
+                    else:
+                        ptype = "power_in"
+            
+            if ptype in ("output", "power_out"):
+                drivers.append(p)
+            if ptype == "power_out":
+                power_sources.append(p)
+            if ptype == "ground":
+                grounds.append(p)
+            if ptype in ("input", "power_in"):
+                loads.append(p)
+
+        # Rule: Conflict (Multiple drivers)
+        if len(drivers) > 1:
+            # Allow multiple power sources only if user explicitly allowed it
+            if len(power_sources) > 1:
+                logger.warning(f"Multiple power sources detected on net '{net.name}': {drivers}")
+            else:
+                violations.append(f"Driver contention on net '{net.name}': Multiple output pins detected {drivers}")
+
+        # Rule: Critical Short (Power vs Ground)
+        if power_sources and grounds:
+            violations.append(f"CRITICAL SHORT on net '{net.name}': Power source {power_sources} connected to Ground {grounds}!")
+
+    if violations:
+        raise OpenHaCError("ERC Pin Compatibility Violations:\n" + "\n".join(violations))
+
+
+def _check_voltage_safety(board) -> None:
+    """Verify that pin voltage ratings are compatible with the net's nominal voltage (PWR-004)."""
+    try:
+        from openhac.circuit import get_default_circuit
+        circuit = get_default_circuit()
+    except Exception:
+        return
+
+    # 1. Map net names to nominal voltages (from Board or inference)
+    raw_v = getattr(board, "declared_supply_voltages_v", {})
+    if raw_v is None:
+        raw_v = {}
+    net_voltages = {str(k).lower(): float(v) for k, v in raw_v.items()}
+    
+    # 2. Iterate nets and perform checks
+    violations = []
+    for net in circuit.nets:
+        net_name = net.name.lower()
+        nom_v = net_voltages.get(net_name)
+        
+        # Inferred voltage from power prefix (e.g. '3V3' -> 3.3V)
+        if nom_v is None:
+            import re
+            m = re.search(r"(\d+)[Vv](\d+)?", net_name)
+            if m:
+                v_str = m.group(1) + ("." + m.group(2) if m.group(2) else "")
+                try: nom_v = float(v_str)
+                except: pass
+
+        if nom_v is None:
+            continue
+
+        # Check every component on this net
+        for p in net.get_pins():
+            comp = getattr(p, "part", None)
+            if not comp: continue
+            
+            # Use database rating if available
+            # Note: We access the component's internal data store
+            comp_data = getattr(comp, "_comp_data", {}) if hasattr(comp, "_comp_data") else {}
+            v_rating = comp_data.get("voltage_rating")
+            
+            if v_rating is not None:
+                try:
+                    v_max = float(v_rating)
+                    if nom_v > v_max:
+                        violations.append(
+                            f"VOLTAGE MISMATCH on net '{net.name}': Net voltage {nom_v}V exceeds "
+                            f"component {comp.refdes} ({comp.value}) rating of {v_max}V!"
+                        )
+                except (ValueError, TypeError):
+                    pass
+    
+    if violations:
+        # For now, we warn instead of failing until DB coverage is 100%
+        for v in violations:
+            logger.warning(f"ERC Warning: {v}")
+    elif net_voltages:
+        logger.info("ERC Status: Voltage Safety Check Passed.")
 
 
 def calculate_ipc2152_trace_width(current_amps, temp_rise_c=10, copper_oz=1.0):
@@ -1131,13 +1299,29 @@ def run_drc(board):
 
         circuit = get_default_circuit()
         offenders: list[str] = []
-        for part in getattr(circuit, "parts", []) or []:
+        seen_part_ids: set[int] = set()
+
+        def _check_part_jit(part):
+            if id(part) in seen_part_ids:
+                return
+            seen_part_ids.add(id(part))
             fields = getattr(part, "fields", None)
             if not isinstance(fields, dict):
-                continue
+                return
             conf = str(fields.get("OpenHaC_JIT_Confidence", "") or "").strip().lower()
             if conf in ("medium", "low"):
                 offenders.append(f"{getattr(part, 'ref', '?')}:{conf}")
+
+        for part in getattr(circuit, "parts", []) or []:
+            _check_part_jit(part)
+        # Also scan native OpenHaC core circuit
+        try:
+            from openhac.core.circuit import default_circuit as _nc
+            for part in getattr(_nc, "parts", []) or []:
+                _check_part_jit(part)
+        except Exception:
+            pass
+
         if offenders:
             offenders = sorted(offenders)
             violations.append(

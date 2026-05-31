@@ -1,8 +1,11 @@
 import csv
 import logging
 
-from openhac.core.circuit import default_circuit
+import openhac.core.circuit
 from openhac.util.sort_keys import natural_key
+
+def get_default_circuit():
+    return openhac.core.circuit.default_circuit
 
 logger = logging.getLogger("openhac.netlist")
 
@@ -64,12 +67,19 @@ def bom_fieldnames_for_profile(bom_profile: str | None) -> list[str]:
     return list(_BOM_ALL_FIELDNAMES)
 
 
+def generate_netlist(netlist_path: str) -> None:
+    """Module-level wrapper so tests can monkeypatch ``netlist_gen.generate_netlist``
+    without having to reach into the circuit object (BUG-002 fix).
+    """
+    get_default_circuit().generate_netlist(netlist_path)
+
+
 def generate_logic_and_bom(
     netlist_path: str, *, bom_path: str | None = None, bom_profile: str | None = None
 ):
     """Write native netlist to *netlist_path*; optional BOM CSV to *bom_path*."""
     logger.info("Compiling Netlist → %s", netlist_path)
-    default_circuit.generate_netlist(netlist_path)
+    generate_netlist(netlist_path)
     logger.info("Generated %s", netlist_path)
 
     if bom_path is None:
@@ -86,12 +96,12 @@ def generate_logic_and_bom(
     with open(bom_path, "w", newline="", encoding="utf-8") as csvfile:
         writer = csv.DictWriter(csvfile, fieldnames=fieldnames, lineterminator="\n")
         writer.writeheader()
-        parts = sorted(default_circuit.parts, key=lambda p: natural_key(p.refdes))
+        parts = sorted(get_default_circuit().parts, key=lambda p: natural_key(getattr(p, "refdes", "") or getattr(p, "ref", "")))
         for part in parts:
             # Determine component type and placement notes
-            ref = part.refdes
-            fp = part.footprint
-            val = part.value
+            ref = str(getattr(part, "refdes", None) or getattr(part, "ref", "") or "")
+            fp = getattr(part, "footprint", "")
+            val = getattr(part, "value", "")
             
             # Component type detection
             comp_type = "Unknown"

@@ -27,6 +27,16 @@ def seeded_resistor_db(tmp_db, monkeypatch):
             "description": "",
         }
     )
+    dm.insert_component(
+        {
+            "generic_name": "PWR_FLAG",
+            "kicad_symbol": "power:PWR_FLAG",
+            "kicad_footprint": "",
+            "manufacturer": "",
+            "mpn": "PWR_FLAG",
+            "description": "Power Flag",
+        }
+    )
     monkeypatch.setattr(Component, "db", dm)
 
 
@@ -35,13 +45,16 @@ def test_cli_main_compile_smoke(tmp_path, seeded_resistor_db, monkeypatch):
     script.write_text(
         """
 import openhac.core
-from skidl import Net, Part
+from openhac.core.net import Net
+from openhac.core.base import Component
 from openhac.core import Board
-from openhac.core.base import Component, Module
+from openhac.core.base import Module
 
 vcc, gnd = Net("3V3"), Net("GND")
-Part("power", "PWR_FLAG")[1] += vcc
-Part("power", "PWR_FLAG")[1] += gnd
+pwr_flag1 = Component("PWR_FLAG")
+pwr_flag2 = Component("PWR_FLAG")
+pwr_flag1["1"] += vcc
+pwr_flag2["1"] += gnd
 
 class Node(Module):
     def __init__(self, name: str):
@@ -74,14 +87,16 @@ board.connect(a.expose_interface("power"), b.expose_interface("power"))
             "--no-schematic",
         ],
     )
+    monkeypatch.setattr("openhac.database.enrich.network_allowed", lambda: False)
 
     with patch("openhac.compiler.layout_gen.generate_layout"):
         import openhac.cli as cli
 
         cli.main()
 
-    assert (tmp_path / "from_cli.net").is_file()
-    mf = json.loads((tmp_path / "from_cli.openhac-manifest.json").read_text(encoding="utf-8"))
+    out_dir = tmp_path / "from_cli"
+    assert (out_dir / "from_cli.net").is_file()
+    mf = json.loads((out_dir / "from_cli.openhac-manifest.json").read_text(encoding="utf-8"))
     assert mf["project_name"] == "from_cli"
     assert mf["source_input"]["path"] == str(script.resolve())
     assert len(mf["source_input"]["sha256"]) == 64
@@ -101,13 +116,16 @@ def test_cli_compile_strict_jit_flag_smoke(tmp_path, seeded_resistor_db, monkeyp
     script.write_text(
         """
 import openhac.core
-from skidl import Net, Part
+from openhac.core.net import Net
+from openhac.core.base import Component
 from openhac.core import Board
-from openhac.core.base import Component, Module
+from openhac.core.base import Module
 
 vcc, gnd = Net("3V3"), Net("GND")
-Part("power", "PWR_FLAG")[1] += vcc
-Part("power", "PWR_FLAG")[1] += gnd
+pwr_flag1 = Component("PWR_FLAG")
+pwr_flag2 = Component("PWR_FLAG")
+pwr_flag1["1"] += vcc
+pwr_flag2["1"] += gnd
 
 class Node(Module):
     def __init__(self, name: str):
@@ -141,10 +159,12 @@ board.connect(a.expose_interface("power"), b.expose_interface("power"))
             "--strict-jit",
         ],
     )
+    monkeypatch.setattr("openhac.database.enrich.network_allowed", lambda: False)
 
     with patch("openhac.compiler.layout_gen.generate_layout"):
         import openhac.cli as cli
 
         cli.main()
 
-    assert (tmp_path / "strict_jit_cli.net").is_file()
+    out_dir = tmp_path / "strict_jit_cli"
+    assert (out_dir / "strict_jit_cli.net").is_file()

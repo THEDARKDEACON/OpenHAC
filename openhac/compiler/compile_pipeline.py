@@ -45,7 +45,7 @@ class CompileState:
     pro_path: str | None = field(init=False)
     erc_report_name: str | None = field(default=None, init=False)
     pcb_metrics: dict = field(default_factory=dict, init=False)
-    enrich_metrics: dict = field(default_factory=dict, init=False)
+    enrich_metrics: dict = field(default_factory=lambda: {"poisoned_parts": []}, init=False)
 
     def __post_init__(self) -> None:
         self.skip_layout = os.environ.get("OPENHAC_SKIP_LAYOUT", "").lower() in ("1", "true", "yes")
@@ -54,7 +54,7 @@ class CompileState:
         self.board_class = str(getattr(self.board, "board_class", "generic") or "generic")
         self.quality_gates = dict(getattr(self.board, "quality_gates", None) or {})
         try:
-            self.bbox_padding_mm = float(getattr(self, "bbox_padding_mm", 0.5) or 0.0)
+            self.bbox_padding_mm = float(self.bbox_padding_mm or 0.0)  # STYLE-001: direct field access
         except Exception:
             self.bbox_padding_mm = 0.5
 
@@ -83,7 +83,7 @@ def phase_enrich_parts(state: CompileState) -> None:
     allow_net = network_allowed()
     if not allow_net and state.compile_goal == "fabrication":
         # Still allow the existing pinout gate to fail with a clearer list later.
-        state.enrich_metrics = {"attempted": 0, "updated": 0, "skipped": 0, "failed": 0, "network": False}
+        state.enrich_metrics.update({"attempted": 0, "updated": 0, "skipped": 0, "failed": 0, "network": False})
         return
 
     try:
@@ -106,7 +106,11 @@ def phase_enrich_parts(state: CompileState) -> None:
                 except Exception:
                     row = None
                 row_d = dict(row) if row else None
-                if not needs_pinout_database_enrich(cd.get("pinout_json"), catalog_row=row_d):
+                from openhac.database.enrich import _get_override_asset
+                has_override = _get_override_asset(gn) or _get_override_asset(cd.get("supplier_sku") or "")
+                is_poisoned = gn in state.enrich_metrics.get("poisoned_parts", [])
+                
+                if not has_override and not is_poisoned and not needs_pinout_database_enrich(cd.get("pinout_json"), catalog_row=row_d):
                     skipped += 1
                     continue
             except Exception:
@@ -122,13 +126,21 @@ def phase_enrich_parts(state: CompileState) -> None:
             except Exception:
                 failed += 1
 
-    state.enrich_metrics = {
+    state.enrich_metrics.update({
         "attempted": attempted,
         "updated": updated,
         "skipped": skipped,
         "failed": failed,
         "network": bool(allow_net),
-    }
+    })
+    
+    # [Professional Grade] Sync enriched metadata back to live objects
+    # This ensures that 3D model overrides and footprint fixes are visible to the layout engine
+    for mod in modules:
+        for comp in getattr(mod, "components", []) or []:
+            if hasattr(comp, "refresh_from_db"):
+                comp.refresh_from_db()
+
     if attempted or updated or failed:
         logger.info(
             "Enrichment: attempted=%s updated=%s skipped=%s failed=%s network=%s",
@@ -139,11 +151,97 @@ def phase_enrich_parts(state: CompileState) -> None:
             bool(allow_net),
         )
 
-        # Sync metadata (including 3D models) back to Component instances
-        for mod in modules:
-            for comp in getattr(mod, "components", []):
-                if hasattr(comp, "refresh_from_db"):
-                    comp.refresh_from_db()
+def phase_audit_database(state: CompileState) -> None:
+    """Enterprise Data Integrity Phase: Audit database for poisoned or missing assets.
+    
+    Identifies components that need re-enrichment due to file loss or suspicious heuristics.
+    """
+    logger.info("Enterprise Phase 0: Auditing Database Integrity...")
+    
+    try:
+        modules = state.board._get_all_modules()
+    except Exception:
+        modules = getattr(state.board, "modules", []) or []
+
+    gns = []
+    for mod in modules:
+        for comp in getattr(mod, "components", []) or []:
+            gn = str(getattr(comp, "generic_name", "") or "").strip()
+            if gn:
+                gns.append(gn)
+    
+    if not gns:
+        return
+
+    # Check the first component's DB (all components share the same DB connection usually)
+    first_comp = None
+    for mod in modules:
+        for comp in getattr(mod, "components", []) or []:
+            if hasattr(comp, "db"):
+                first_comp = comp
+                break
+        if first_comp:
+                break  # STYLE-003: expanded for readability
+    
+    if not first_comp:
+        return
+
+    poisoned = first_comp.db.audit_data_integrity(gns)
+    if poisoned:
+        logger.warning("Audit found %s poisoned or incomplete part(s) in DB: %s", len(poisoned), poisoned)
+        # Store poisoned list in state for phase_enrich_parts to consume
+        state.enrich_metrics["poisoned_parts"] = poisoned
+    else:
+        logger.info("Audit: Database integrity verified for %s components.", len(gns))
+
+
+def phase_propagate_currents(state: CompileState) -> None:
+    """Heuristic current propagation for physics-based trace width generation (IPC-2152).
+    
+    Discovers current ratings from component generic names, values, or metadata 
+    and applies them to the connected nets.
+    """
+    import re
+    try:
+        modules = state.board._get_all_modules()
+    except Exception:
+        modules = getattr(state.board, "modules", []) or []
+
+    net_currents: dict[str, float] = {}
+
+    def _extract_amps(s: str | None) -> float | None:
+        if not s: return None
+        # Match 10A, 5.5A, 500mA with word boundaries to avoid 74AHCT -> 74A
+        m = re.search(r"\b(\d+\.?\d*)\s*([mM]?[aA])\b", str(s))
+        if m:
+            val = float(m.group(1))
+            unit = m.group(2).lower()
+            if unit == "ma":
+                return val / 1000.0
+            return val
+        return None
+
+    for mod in modules:
+        for comp in getattr(mod, "components", []) or []:
+            # Check generic name and value for current hints
+            rating = _extract_amps(getattr(comp, "generic_name", ""))
+            if rating is None:
+                rating = _extract_amps(getattr(comp, "value", ""))
+            
+            if rating is not None and rating > 0:
+                # Apply this rating to all 'power_out', 'bidirectional', or 'passive' pins 
+                # (to catch fuses/sensors) of this component if they aren't already set higher.
+                for pin in comp.part.get_pins():
+                    if pin.net and pin.pin_type in ("power_out", "bidirectional", "passive"):
+                        curr = getattr(pin.net, "current_a", 0.0)
+                        if rating > curr:
+                            pin.net.set_current(rating)
+                            net_currents[pin.net.name] = rating
+
+    if net_currents:
+        logger.info("Current Propagation: identified %s net(s) with physics-based current ratings.", len(net_currents))
+        for name, amps in net_currents.items():
+            logger.debug("  - Net %s: %.3f A", name, amps)
 
 
 def phase_post_layout_checks(state: CompileState) -> None:
@@ -189,6 +287,121 @@ def phase_post_layout_checks(state: CompileState) -> None:
     for v in viols:
         logger.warning("%s", v)
     return
+
+
+def phase_groom_metadata(state: CompileState) -> None:
+    """Enterprise Phase A: Deterministic RefDes Assignment and Net Categorization.
+    
+    Locks all component designators and identifies semantic net types before synthesis.
+    """
+    logger.info("Enterprise Phase A: Grooming Project Metadata (RefDes & Net Typing)...")
+    
+    # 1. Deterministic RefDes Assignment (Recursive Tree Order)
+    seen_parts = set()
+    ref_counters = {} # prefix -> count
+    
+    from openhac.core.base import Component
+    from openhac.core.module import Module
+
+    def _groom_node(node, current_path=""):
+        # Determine child items (Modules have 'components', Board has 'modules')
+        if isinstance(node, Module):
+            items = getattr(node, "components", []) or []
+            mod_name = str(node.name)
+            current_path = f"{current_path}.{mod_name}" if current_path else mod_name
+        elif hasattr(node, "modules"): # Top-level Board
+            items = getattr(node, "modules", []) or []
+        else:
+            items = []
+        
+        # 1. Process Components at this level
+        # We sort by generic_name then by the stable part ID to ensure deterministic but unique order
+        comps = sorted([i for i in items if isinstance(i, Component)], key=lambda x: (getattr(x, "generic_name", ""), getattr(getattr(x, "part", object()), "_part_id", id(x))))
+        for c in comps:
+            p = getattr(c, "part", None)
+            pid = getattr(p, "_part_id", id(p)) if p else None
+            if p and pid not in seen_parts:
+                seen_parts.add(pid)
+                # Tag the part with the module name for the schematic emitter
+                p._module_name = current_path
+                if hasattr(p, "fields") and isinstance(p.fields, dict):
+                    p.fields["OpenHaC_Module"] = current_path
+                from openhac.core.refdes import get_refdes_prefix
+                cat = getattr(c, "_comp_data", {}).get("category")
+                pref = get_refdes_prefix(cat, generic_name=c.generic_name, mpn=getattr(c, "generic_name", ""))
+                
+                count = ref_counters.get(pref, 0) + 1
+                ref_counters[pref] = count
+                p.refdes = f"{pref}{count}"
+                if hasattr(p, "ref"): p.ref = p.refdes
+                logger.info("Groomed: %s -> %s (Sheet: %s)", c.generic_name, p.refdes, current_path)  # STYLE-007
+        
+        # 2. Recurse into Sub-Modules
+        submods = sorted([i for i in items if isinstance(i, Module)], key=lambda x: getattr(x, "name", ""))
+        for sm in submods:
+            _groom_node(sm, current_path=current_path)
+
+    _groom_node(state.board)
+    
+    # 2. Semantic Net Categorization
+    from openhac.circuit import get_default_circuit
+    circuit = get_default_circuit()
+    nets = getattr(circuit, "nets", [])
+    for net in nets:
+        n_upper = (getattr(net, "name", "") or str(net)).upper()
+        
+        net_type = "signal"
+        if any(p in n_upper for p in ("GND", "VSS", "EARTH", "RETURN", "COMMON")):
+            net_type = "gnd"
+        elif any(p in n_upper for p in ("VCC", "VDD", "3V3", "5V", "12V", "VIN", "PWR", "BAT")):
+            net_type = "power"
+        elif "[" in n_upper and "]" in n_upper:
+            net_type = "bus"
+            
+        if net_type == "signal":
+            for p in getattr(net, "pins", []):
+                pt = getattr(p, "pin_type", "").lower()
+                if "ground" in pt:
+                    net_type = "gnd"
+                    break
+                if "power" in pt:
+                    net_type = "power"
+                    break
+        
+        setattr(net, "_openhac_net_type", net_type)
+        logger.debug(f"Net {n_upper} categorized as {net_type}")
+
+    logger.info(f"Grooming complete: {len(seen_parts)} parts named, {len(nets)} nets categorized.")
+
+
+def phase_fixup_power_flags(state: CompileState) -> None:
+    """Automatically add PWR_FLAG components to nets categorized as 'power' or 'gnd' (SCH-004)."""
+    from openhac.circuit import get_default_circuit
+    from openhac.core.base import Component
+    
+    circuit = get_default_circuit()
+    for net in circuit.nets:
+        if str(getattr(net, "name", "")) == "__NOCONNECT":
+            continue
+        ntype = getattr(net, "_openhac_net_type", None)
+        logger.debug(f"Checking net {getattr(net, 'name', net)} for PWR_FLAG: type={ntype}")
+        if ntype in ("power", "gnd"):
+            # Check if it already has a PWR_FLAG
+            has_pwr_flag = any(
+                getattr(p.part, 'name', '').upper() == 'PWR_FLAG' or
+                getattr(p.part, 'ref_prefix', '') == 'PWR'
+                for p in net.pins if hasattr(p, 'part') and p.part is not None
+            )
+            if not has_pwr_flag and len(net.pins) > 0:
+                # Inject a synthetic PWR_FLAG component
+                # Use a special generic name that rule_check.py recognizes
+                # We provide minimal pin definition to satisfy native Component logic
+                try:
+                    flag = Component("PWR_FLAG", pins={"1": ("pwr", "power_out")})
+                    flag["1"] += net
+                    logger.info(f"Injected PWR_FLAG on net {net.name}")
+                except Exception as e:
+                    logger.warning(f"Failed to inject PWR_FLAG on net {net.name}: {e}")
 
 
 def phase_warn_multilayer_stackup(state: CompileState) -> None:
@@ -381,6 +594,28 @@ def phase_layout(state: CompileState) -> None:
 def phase_autoroute(state: CompileState) -> None:
     if state.skip_layout or not state.auto_route:
         return
+    if Path(state.pcb_path).is_file():
+        try:
+            import pcbnew
+            from openhac.compiler.pcb_physics import apply_physics_net_classes
+            from openhac.compiler.pcb_postprocess import apply_high_current_polygons
+
+            board_obj = pcbnew.LoadBoard(str(state.pcb_path))
+            if board_obj is None:
+                raise RuntimeError(f"pcbnew failed to load board from {state.pcb_path}")
+                
+            apply_physics_net_classes(board_obj, state.board, pcbnew)
+
+            # [Foolproof] Inject polygons early so they exist even if routing is skipped/cancelled
+            n_zones = apply_high_current_polygons(board_obj, state.board, pcbnew)
+            if n_zones:
+                logger.info("Physics-Based Layout: Injected %d high-current copper zone(s).", n_zones)
+
+            pcbnew.SaveBoard(str(state.pcb_path), board_obj)
+            logger.info("Physics-Based Layout: Persisted NetClasses and Polygons to %s.", Path(state.pcb_path).name)
+        except Exception as e:
+            logger.warning("Failed to apply physics constraints: %s", e)
+
     if not Path(state.pcb_path).is_file():
         logger.warning(
             "PCB autoroute skipped: PCB file was not generated at %s (layout phase failed or was mocked).",
@@ -474,7 +709,13 @@ def phase_schematic(state: CompileState) -> None:
     parts: list[object] = []
     try:
         seen: set[int] = set()
-        for mod in getattr(state.board, "modules", []) or []:
+        # Use recursive traversal to find ALL parts, including nested modules
+        try:
+            all_mods = state.board._get_all_modules()
+        except Exception:
+            all_mods = getattr(state.board, "modules", []) or []
+            
+        for mod in all_mods:
             for child in getattr(mod, "components", []) or []:
                 p = getattr(child, "part", None)
                 if p is None:
@@ -587,9 +828,13 @@ def phase_release_zip(state: CompileState) -> None:
 
 
 DEFAULT_COMPILE_PHASES: tuple[Callable[[CompileState], None], ...] = (
+    phase_audit_database,
     phase_warn_multilayer_stackup,
-    phase_erc_drc,
     phase_enrich_parts,
+    phase_propagate_currents,
+    phase_groom_metadata,
+    phase_fixup_power_flags,  # Must run after phase_groom_metadata so net types are set (CODE-005)
+    phase_erc_drc,
     phase_pinout_coverage,
     phase_interface_validation,
     phase_netlist_bom,

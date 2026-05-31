@@ -26,6 +26,7 @@ class Module:
     def __init__(self, name=None):
         self.name = name or self.__class__.__name__
         self.components: list = []
+        self.components_by_name: dict[str, any] = {}
         self.required_interfaces: dict[str, Interface] = {}
         self.optional_interfaces: dict[str, Interface] = {}
         self.width = 10.0
@@ -39,6 +40,45 @@ class Module:
         self.source_current_max_ma = 0.0
         #: Optional extra draw (mA) attributed to named rails for converters / loss (PWR-002 hook).
         self.extra_input_draw_by_rail_ma: dict[str, float] = {}
+        self.layout_zone = None
+
+    def assign_to(self, zone) -> Module:
+        """Assign this module to a specific LayoutZone."""
+        self.layout_zone = zone
+        zone.add_member(self)
+        return self
+
+    def nc_unused_pins(self) -> None:
+        """Connect all unconnected pins in all components of this module to NC.
+        
+        Recursively walks child components and nested modules. Use this to 
+        quickly resolve ERC 'unconnected pin' warnings for large MCU headers.
+        """
+        from openhac.core.base import Component
+        import openhac.core.circuit
+        from openhac.core.net import Net
+        
+        nc_net = None
+        for n in getattr(openhac.core.circuit.default_circuit, "nets", []):
+            if str(getattr(n, "name", "")).upper() == "NC":
+                nc_net = n
+                break
+        if not nc_net:
+            nc_net = Net("NC")
+            
+        for item in self.components:
+            if isinstance(item, Component):
+                item.nc_unused_pins()
+            elif isinstance(item, Module):
+                item.nc_unused_pins()
+            else:
+                # Handle raw SKiDL Part objects
+                pins = item.get_pins() if hasattr(item, "get_pins") else []
+                for pin in pins:
+                    if hasattr(pin, "is_connected") and not pin.is_connected():
+                        pin += nc_net
+                    elif getattr(pin, "net", None) is None:
+                        pin += nc_net
 
     def __iter__(self):
         """Yield direct child nodes (:class:`Component` or nested :class:`Module`) for tree walks (ERC/DRC)."""
@@ -49,6 +89,12 @@ class Module:
         from openhac.core.base import Component as _Comp
 
         self.components.append(component)
+        
+        # [Professional Grade] Index by name or MPN for deep-path access (Module['MCU.PA1'])
+        cname = getattr(component, "name", None) or getattr(component, "generic_name", None)
+        if cname:
+            self.components_by_name[str(cname)] = component
+        
         if isinstance(component, _Comp):
             component._owning_module = self
             # Tag the underlying Part so schematic/BOM tooling can group by module.
@@ -80,6 +126,7 @@ class Module:
 
         c = _Comp(generic_name, parent_module=self, **kwargs)
         self.components.append(c)
+        self.components_by_name[str(generic_name)] = c
         try:
             p = getattr(c, "part", None)
             if p is not None and hasattr(p, "fields") and isinstance(p.fields, dict):
@@ -179,7 +226,6 @@ class Module:
                 if re.search(pattern, fp_name):
                     wf, hf = float(w), float(h)
                     return wf, hf, wf * hf
-                return 5.0, 5.0, 25.0
             return 5.0, 5.0, 25.0
 
         cell_dims: list[tuple[float, float]] = []
@@ -257,15 +303,44 @@ class Module:
     def __getitem__(self, key):
         """Allow subscripting the module to access pins of its internal components.
 
-        If the module contains components, delegates to the first component.
-        This provides backward compatibility for scripts that treat modules as parts.
+        Supports:
+        1. Component lookup: module["U1"]
+        2. Deep pin access: module["U1.1"] or module["U1.VCC"]
+        3. Legacy fallback: module["1"] delegates to the first component
         """
+        ks = str(key)
+        
+        # 1. Direct component lookup
+        if ks in self.components_by_name:
+            return self.components_by_name[ks]
+            
+        # 2. Deep path access (e.g. "U1.PA1")
+        if "." in ks:
+            parts = ks.split(".", 1)
+            comp_key, pin_key = parts[0], parts[1]
+            if comp_key in self.components_by_name:
+                return self.components_by_name[comp_key][pin_key]
+        
+        # 3. Legacy fallback: delegate to first component
         if self.components:
             return self.components[0][key]
-        raise AttributeError(f"Module '{self.name}' has no components to subscript.")
+            
+        raise AttributeError(f"Module '{self.name}' has no component or pin matching '{key}'.")
 
     def __setitem__(self, key, value):
-        """Allow setting pins/properties on the module's primary component."""
+        """Allow setting pins/properties on the module's components."""
+        ks = str(key)
+        if ks in self.components_by_name:
+            self.components_by_name[ks] = value
+            return
+            
+        if "." in ks:
+            parts = ks.split(".", 1)
+            comp_key, pin_key = parts[0], parts[1]
+            if comp_key in self.components_by_name:
+                self.components_by_name[comp_key][pin_key] = value
+                return
+
         if self.components:
             self.components[0][key] = value
         else:

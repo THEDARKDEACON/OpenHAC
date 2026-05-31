@@ -78,10 +78,23 @@ def solve_placement(board):
         mod.z3_x = Int(f"{mod.name}_x")
         mod.z3_y = Int(f"{mod.name}_y")
         
-        solver.add(mod.z3_x >= 0)
-        solver.add(mod.z3_y >= 0)
-        solver.add(mod.z3_x + int(mod.width) <= board.size_mm[0])
-        solver.add(mod.z3_y + int(mod.height) <= board.size_mm[1])
+        # Add a safety margin from the board edge to prevent component anchors 
+        # (often at footprint center) from causing off-board placement.
+        # [Professional Grade] Dynamic scaling for sensitive sensor suites (U26).
+        base_margin = float(getattr(board, "bbox_padding_mm", 5.0) or 5.0)
+        if "SENSOR" in str(mod.name).upper() or any(getattr(c, "current_a", 0) > 10.0 for c in mod.components):
+            edge_margin = int(math.ceil(base_margin * 1.5)) # 50% more margin for power/sensors
+        else:
+            edge_margin = int(math.ceil(base_margin))
+            
+        solver.add(mod.z3_x >= edge_margin)
+        solver.add(mod.z3_y >= edge_margin)
+        
+        # Use ceil to prevent float-to-int truncation overflow at board edges
+        mw = int(math.ceil(float(mod.width)))
+        mh = int(math.ceil(float(mod.height)))
+        solver.add(mod.z3_x + mw <= int(math.floor(float(board.size_mm[0]))) - edge_margin)
+        solver.add(mod.z3_y + mh <= int(math.floor(float(board.size_mm[1]))) - edge_margin)
         
     # 2. Non-overlapping constraints (all logical modules, including nested)
     n = len(all_mods)
@@ -324,7 +337,9 @@ def generate_layout(netlist_path: str, output_pcb_path: str, board):
                 apply_net_tie_intents,
                 spread_footprints_no_overlap,
             )
+            from openhac.compiler.pcb_physics import apply_physics_net_classes
 
+            apply_physics_net_classes(pcb, board, pcbnew)
             apply_keepout_rect_intents(pcb, board, pcbnew)
             apply_net_tie_intents(pcb, board, pcbnew)
             apply_mounting_hole_intents(pcb, board, pcbnew)
