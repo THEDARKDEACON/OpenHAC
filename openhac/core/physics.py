@@ -32,4 +32,4 @@ def calculate_trace_width_ipc2152(current_a: float, temp_rise_c: float = 10.0, t
     width_mm = width_mils * 0.0254
 
     # Ensure a reasonable manufacturing minimum
-    return max(width_mm, 0.25)
+    return float(max(width_mm, 0.25))

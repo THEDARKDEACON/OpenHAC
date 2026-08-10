@@ -1,19 +1,22 @@
 # OpenHaC — Open Hardware-as-Code
 
-Python compiler that turns declarative hardware code into **netlists**, **BOMs**, **KiCad PCB/schematic** outputs, optional **FreeRouting**, and **SPICE** — no GUI required.
+Python compiler that turns declarative hardware code into **netlists**, **BOMs**, **KiCad PCB** outputs, optional **FreeRouting**, and **SPICE** — no GUI required. Connectivity and ERC are first-class; pretty `.kicad_sch` drawings are optional handoff aids, not the fabrication source of truth.
 
 ## Outputs
 
-- `.net` / `.csv` — SKiDL netlist and BOM (LCSC-oriented fields when available)
+- `.net` / `.csv` — netlist and BOM (LCSC-oriented fields when available)
 - `.kicad_pcb` — placement, pad nets; optional autoroute (FreeRouting or minimal `pcbnew` fallback)
-- `.kicad_sch` / `.kicad_pro` — optional schematic + project (when enabled)
+- `.kicad_sch` / `.kicad_pro` — optional schematic + project (off by default under `--production`)
 - Generated symbol stubs (`*.openhac-generated.kicad_sym`) and manifest / handoff JSON when configured
 - `.cir` — SPICE from `Board.simulate()`
+- Fab bundle — Gerbers / drill / position via `openhac export fab` (after a successful PCB)
 
 **Docs:** [USER_GUIDE.md](docs/USER_GUIDE.md), [API_REFERENCE.md](docs/API_REFERENCE.md), [3D_MODELS_AND_FOOTPRINTS.md](docs/3D_MODELS_AND_FOOTPRINTS.md).
-**Internal/Spec:** [SCOPE.md](docs/internal/SCOPE.md), [IMPLEMENTATION_STATUS.md](docs/internal/IMPLEMENTATION_STATUS.md).
+**Internal/Spec:** [SCOPE.md](docs/internal/SCOPE.md), [IMPLEMENTATION_STATUS.md](docs/internal/IMPLEMENTATION_STATUS.md), [FABRICATION_READINESS_SPEC.md](docs/internal/FABRICATION_READINESS_SPEC.md) (Phase-2 code→fab gates).
 
-Autorouting is **assistive** (not a substitute for HS/EMC review). See SCOPE for **PCB-007** / differential-pair notes.
+Autorouting is **assistive** (not a substitute for HS/EMC review). See SCOPE for **PCB-007** / differential-pair notes. Phase-2 defines fail-closed fabrication gates — track status in IMPLEMENTATION_STATUS; do not treat Alpha handoff builds as production-ready copper.
+
+The active circuit is the **native** OpenHaC circuit (`openhac.core.circuit`). Legacy SKiDL `builtins.default_circuit` is opt-in via `OPENHAC_LEGACY_SKIDL=1` for migration / schematic tooling only.
 
 ---
 
@@ -42,8 +45,12 @@ Dependencies live in **`pyproject.toml`**. Copy **`.env.example`** → **`.env`*
 | Variable | Purpose |
 |----------|---------|
 | `OPENHAC_DB_PATH` | SQLite catalog path (default under `openhac/database/`) |
+| `OPENHAC_API_CACHE_PATH` / `OPENHAC_CACHE_DB` | Vendor API cache SQLite path (default `~/.cache/openhac/`; not in-repo) |
 | `OPENHAC_SKIP_LAYOUT` | Skip PCB layout + autoroute (netlist/BOM/manifest only) |
 | `OPENHAC_COMPILE_GOAL` | `handoff` vs stricter `fabrication` |
+| `OPENHAC_NO_NETWORK` | `1` = deny vendor/network enrich (CI / fabrication default under `--production`) |
+| `OPENHAC_ALLOW_NETWORK` | `1` = allow network even under `fabrication` (escape hatch) |
+| `OPENHAC_LEGACY_SKIDL` | `1` = use SKiDL `builtins.default_circuit` instead of native SoT |
 | `OPENHAC_DETERMINISTIC` | More stable outputs for CI/golden tests |
 | `FREEROUTING_JAR` | Path to FreeRouting `.jar` |
 | `KICAD9_FOOTPRINT_DIR` / `KICAD8_FOOTPRINT_DIR` | Footprint search roots |
@@ -51,6 +58,7 @@ Dependencies live in **`pyproject.toml`**. Copy **`.env.example`** → **`.env`*
 | `OPENHAC_ENRICH_STRICT_PINOUT_PADS` | `1` = when merging enriched pinouts, require pad names to line up with the KiCad footprint (stricter than default) |
 | `OPENHAC_CATALOG_OVERLAY` | Pathsep-separated files/dirs of JSON catalog overrides (see `openhac/database/package_catalog_overlays/README.md`) |
 | `OPENHAC_NO_BUNDLED_CATALOG_OVERLAYS` | `1` = do not merge bundled `package_catalog_overlays/*.json` (use your own overlays only) |
+| `OPENHAC_PRODUCTION_SCHEMATIC` | `1` = keep schematic export when using `--production` (default off) |
 
 Vendor API variables (DigiKey, Mouser, TME, JLC) are documented in **`.env.example`**. Fabrication export also uses KiCad env vars as usual.
 
@@ -84,8 +92,18 @@ export FREEROUTING_JAR=/path/to/freerouting.jar
 **Fabrication (Gerbers / drill / position)** after you have a `.kicad_pcb`:
 
 ```bash
-openhac export fab my_board.kicad_pcb -o ./gerbers
+openhac export fab my_board.kicad_pcb -o ./gerbers --zip
 ```
+
+**Phase-2 fab gate check** (unit gates + FAB-001/003 negatives + known-good place/Gerbers when KiCad is present):
+
+```bash
+OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_fab_gates.py
+# CI layout job:
+OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_fab_gates.py --require-layout
+```
+
+Golden board: `tests/fixtures/fab_golden_board.py` (also mirrored at `examples/fab_golden_resistor_bridge.py`).
 
 ### JLC / LCSC boards — simple workflow
 
@@ -152,7 +170,7 @@ Run `openhac compile --help` for the full list. Common flags:
 | `--allow-risky-parts` | Allow low-confidence JIT symbol/footprint guesses. |
 | `--strict-kicad` | Fail if KiCad symbols cannot load. |
 | `--strict-jit` | Stricter JIT unless combined with `--allow-risky-parts`. |
-| `--production`, `--strict` | Same option: strict KiCad + strict JIT. |
+| `--production`, `--strict` | Fabrication-oriented umbrella: fab compile goal, pad-strict, verified parts, `OPENHAC_NO_NETWORK`, schematic off unless `OPENHAC_PRODUCTION_SCHEMATIC=1`. |
 | `--require-verified-parts` | Fail if unverified JIT parts are present. |
 | `--kicad-erc` | After schematic export, run `kicad-cli sch erc`. |
 | `--kicad-erc-json` | With `--kicad-erc`, ERC report as JSON. |
@@ -198,8 +216,8 @@ openhac compile my_design.py -o build --skip-autoroute
 # Netlist / BOM / manifest only (no PCB, no route)
 openhac compile my_design.py -o build --skip-layout
 
-# Stricter pipeline
-openhac compile my_design.py -o build --compile-goal fabrication --production
+# Stricter fabrication pipeline (offline + pad-strict + verified parts; no schematic by default)
+openhac compile my_design.py -o build --compile-goal fabrication --production --no-route
 
 # Fail on pin↔footprint pad mismatches before pcbnew (fix DB pinout vs footprint)
 openhac compile my_design.py -o build --strict-footprint-pads
@@ -247,9 +265,25 @@ Long-form write-up: `docs/internal/report/`. Build PDF: `python3 scripts/build_l
 
 ---
 
+## Development / CI
+
+```bash
+pip install -e ".[dev]"
+ruff check openhac tests
+# Hard gate (FAB-050): core + PCB placement/layout only
+mypy openhac/core openhac/compiler/pcb_placement.py openhac/compiler/layout_gen.py \
+  --ignore-missing-imports --follow-imports=silent
+OPENHAC_NO_NETWORK=1 pytest tests/ -q
+OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_fab_gates.py   # optional locally; required in kicad-fab-golden job
+```
+
+GitHub Actions runs the above plus KiCad schematic ERC and layout/fab golden jobs. See `.github/workflows/ci.yml`.
+
+---
+
 ## Errors
 
-Common compiler exceptions live in `openhac.core.base` and `openhac.compiler.rule_check` — e.g. floating/unconnected nets, interface not wired, power budget, FreeRouting missing/failed, layout/schematic failures, DRC violations, risky JIT lookups. See docstrings and tests for details.
+Common compiler exceptions live in `openhac.core.base` and `openhac.compiler.rule_check` — e.g. floating/unconnected nets, interface not wired, power budget, FreeRouting missing/failed, layout/schematic failures, DRC violations, risky JIT lookups, fabrication pin/footprint refusals (FAB-001/003). See docstrings and tests for details.
 
 ---
 
@@ -257,12 +291,13 @@ Common compiler exceptions live in `openhac.core.base` and `openhac.compiler.rul
 
 ```
 openhac/
-  core/           # Component, Module, Board
+  core/           # Component, Module, Board (native circuit SoT)
   stdlib/         # Reusable modules
   compiler/       # Netlist, layout, PCB, schematic, SPICE, export, manifest
-  database/       # SQLite catalog, sync_jlc, seed
-tests/
-scripts/          # CI smoke, examples, report build
+  database/       # SQLite catalog, sync_jlc, seed (vendor cache under ~/.cache/openhac/)
+tests/            # Unit tests + fab fixtures (tests/fixtures/fab_*.py)
+scripts/          # CI smoke, fab gate validator, report build
+examples/         # Sample boards (incl. fab golden mirror)
 ```
 
 ---

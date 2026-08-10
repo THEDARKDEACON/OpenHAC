@@ -79,6 +79,9 @@ class Resistor(Module, _ParametricMixin):
             self._warn_soft_fallback(desc, comp_data)
 
         self._comp = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
+        self._comp.lib = "Device"
+        if "kicad_symbol" not in self._comp.fields:
+            self._comp.fields["kicad_symbol"] = "Device:R"
         self.max_current_draw_ma = 0.0
 
 
@@ -122,6 +125,9 @@ class Capacitor(Module, _ParametricMixin):
             self._warn_soft_fallback(desc, comp_data)
 
         self._comp = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
+        self._comp.lib = "Device"
+        if "kicad_symbol" not in self._comp.fields:
+            self._comp.fields["kicad_symbol"] = "Device:C"
         self.max_current_draw_ma = 0.0
 
 
@@ -137,6 +143,9 @@ class Inductor(Module, _ParametricMixin):
         if not comp_data:
             comp_data = Component._live_lookup(f"L_{value}_{package}")
         self._comp = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
+        self._comp.lib = "Device"
+        if "kicad_symbol" not in self._comp.fields:
+            self._comp.fields["kicad_symbol"] = "Device:L"
 
 
 class ResistorArray(Module, _ParametricMixin):

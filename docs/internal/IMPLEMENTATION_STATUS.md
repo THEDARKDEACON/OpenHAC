@@ -1,6 +1,36 @@
 # Implementation status (OpenHaC)
 
-Track record of fixes applied against [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md). Update this file when you close spec items.
+Track record of fixes applied against [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md) (Phase-1) and [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md) (Phase-2). Update this file when you close spec items.
+
+### Phase-2 Fabrication Readiness (FAB-* IDs)
+
+Normative spec: [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md). All Phase-2 IDs start **Open** until acceptance criteria land.
+
+| Spec ID | Status | Notes |
+|---------|--------|--------|
+| **FAB-001** | Done | `pin_resolution.get_pins_from_data` refuses invented/corrupt pinouts under fabrication; `Component._get_pins_from_data` delegates. Tests in `tests/test_fab_phase2_gates.py`. |
+| **FAB-002** | Done | Pad mismatches logged at warning; `assert_footprint_pin_pad_or_raise` auto-strict when `compile_goal=fabrication`. |
+| **FAB-003** | Done | Omitted footprint refs recorded; fab place/zip refuse; export respects `OPENHAC_OMITTED_FOOTPRINT_REFS`. |
+| **FAB-004** | Done | Native `openhac.core.circuit` is SoT via `get_default_circuit()`; SKiDL `builtins.default_circuit` only when `OPENHAC_LEGACY_SKIDL=1`. Dual-scan gated the same way. |
+| **FAB-010** | Done | `network_allowed()` denies under fabrication unless `OPENHAC_ALLOW_NETWORK`. |
+| **FAB-011** | Done | Fabrication auto-enables verified-parts gate; synthetic watermarks rejected in DRC. |
+| **FAB-012** | Done | `api_cache.db` gitignored/untracked; default cache under `~/.cache/openhac/` (`OPENHAC_API_CACHE_PATH`). |
+| **FAB-013** | Done | Enrich import/per-part failures recorded on `CompileState` / manifest; fab raises on import failure. |
+| **FAB-020** | Done | `pcb_metrics.footprint_count` + fab_audit; place parity enforced via FAB-002/003 gates. |
+| **FAB-021** | Done | `unrouted_net_count` in metrics; fab routing phase fails if unrouted > 0 unless `allow_unrouted_nets`. |
+| **FAB-022** | Done | `phase_kicad_pcb_drc` already required in fabrication; report path stored for fab_audit. |
+| **FAB-023** | Done | Enrich/layout paths log exceptions; fab raises on omitted footprints / pad / enrich import (incremental). |
+| **FAB-030** | Done | `--production` sets fab goal, pad strict, verified parts, `OPENHAC_NO_NETWORK`, schematic off by default. |
+| **FAB-031** | Done | `scripts/ci_fab_golden.py` + `kicad-fab-golden` CI job runs `export fab --zip` when `kicad-cli` present. |
+| **FAB-032** | Done | Manifest `fab_audit` / `openhac.fab_audit.v1`. |
+| **FAB-040** | Done | `--production` defaults schematic off; SCOPE demotes sch as SoT. |
+| **FAB-041** | Done | Webview/IR documented as primary review in SCOPE / USER_GUIDE / RELEASE_CHECKLIST; CLI `--webview`. |
+| **FAB-042** | Done | API stability section in `docs/API_REFERENCE.md`. |
+| **FAB-050** | Done | CI: `OPENHAC_NO_NETWORK=1`; mypy hard gate on `openhac/core` + placement/layout (`--follow-imports=silent`); layout/fab golden validators blocking. |
+| **FAB-051** | Done | Blocking `kicad-fab-golden` via `ci_validate_fab_gates.py --require-layout`; fixtures golden + FAB-001/FAB-003 negatives; hard `fab_audit` asserts. |
+
+
+**Phase-2 open:** **0 / 20**.
 
 ### Phase-1 completion (all 48 spec IDs)
 
@@ -32,7 +62,7 @@ Earlier revisions used **Partial** for useful slices that did not yet meet every
 | **MFG-002** | Done | ``export_assembly_csv`` / ``openhac export assembly <pcb> -o <dir>`` (KiCad pos CSV via ``kicad-cli``). Manifest **``mfg002_assembly_export_cli``** records the **pos** export hint. |
 | **MFG-003** | Done | **``examples/fab_stackup_table.md``** (links **``.openhac-fab-handoff.md``**); manifest **``mfg003_fab_handoff_markdown_suffix``**; **``declare_stackup_reference(..., documentation_note=...)``** → manifest + fab handoff markdown; **``--zip-release``** when present. PDF generation still future. |
 | **STR-002** | Done | **``git_branch``**; **``git_describe``** (``git describe --always --dirty``) when the compile cwd is a git worktree; **``compile_pipeline_phases``** + **``compile_pipeline_phase_count``**; **``compile_env_flags``** (**``OPENHAC_*``** toggles; set **``OPENHAC_DETERMINISTIC_MANIFEST=1``** *or* umbrella **``OPENHAC_DETERMINISTIC=1``** to freeze **``generated_utc``** for golden/CI use and to scrub machine-specific ``build_environment``); optional **``kicad_cli_version``**; **``erc_plugin_hook_count``**; **``compile_manifest_emitter``** / **``compile_pipeline_module``** / **``str002_cli_module``**; **``str002_compile_pipeline_entry``**; **``str002_openhac_distribution_package``**; **``str002_manifest_json_sort_keys``**; **``str002_patch_manifest_release_zip_function``**; **``mfg005_zip_project_outputs_function``**; **``sim002_spice_analysis_loader_function``**; **``spice_presets_module``**; **``str002_rule_check_module``**, **``str002_layout_gen_module``**, **``str002_autoroute_module``**, **``str002_kicad_sch_erc_module``**, **``str002_schematic_gen_module``**, **``str002_spice_gen_module``**, **``str002_project_gen_module``**, **``str002_compile_state_dataclass``**, **``str002_manifest_json_suffix``**, **``str002_manifest_sha256_sidecar_suffix``**; **``str002_kicad_erc_report_module``**, **``str002_layout_constraints_module``**, **``str002_pcb_placement_module``**, **``str002_compile_manifest_module``**, **``str002_version_info_module``**; **``str002_core_board_module``** / **``str002_core_base_module``** / **``str002_core_compile_context_module``**; **``str002_compile_pipeline_default_phases_symbol``**; **``str002_openhac_version_info_function``** / **``str002_openhac_user_agent_function``**; **``str002_stdlib_erc_rules_module``**; **``str002_release_bundle_module``**; **``str002_stdlib_passives_module``**; **``str002_netlist_gen_generate_function``**; **``str002_rule_check_run_erc_function``** / **``str002_rule_check_run_drc_function``**; **``bom_csv_column_names``** when BOM CSV exists; **``netlist_line_count``** / **``netlist_suffix``** when **``.net``** exists; **``source_input.line_count``** when **``source_script_path``** resolves; **``pcb_routing_handoff_schema``** + **``pcb_routing_handoff_json_present``** + **``pcb_routing_handoff_json_sha256``** when routing JSON exists; **``pcb_routing_handoff_writer``**; **``pcb_pipeline_handoff_key_count``**; **``bom_alternates_schema``** + **``bom_alternates_handoff``** when alternates JSON exists; **``mfg001_fab_export_cli``** / **``mfg002_assembly_export_cli``**; **``mfg003_fab_handoff_markdown_suffix``**; **``sim002_spice_cli_flags``**; **``sim002_default_analysis_note``**; **``sim002_spice_analysis_config_module``**; **``sch003_kicad_erc_report_suffixes``**; **``rel003_test_point_net_names``** when **``require_test_point_on_nets``** is set; **``rel001_reliability_policy_key_catalog``**; **``reliability_policy``** / **``jlc_line_policy``** / **``lib006_passive_catalog_policy``** when corresponding **``Board``** flags set; **``release_bundle_suffixes``** (incl. alternates, SI reminder, **``.openhac-bom-expand-hint.md``**, **``.openhac-spice-model-hint.md``**, **``.openhac-autoroute-policy.md``**); **``compile_options``**, **``openhac_env_keys_present``**, **``sch_kicad_symbol_dirs_configured``**, **``pcb_pipeline_handoff``**, **``jit_confidence_histogram``** (when non-empty), **``stackup_json_summaries``** (JSON stackup refs), **``release_zip_path``** when zipping; **``release_zip_sha256``** when the zip file exists; **``mfg005_release_zip_sha256_note``**; **``fab_profile``** / **``fab_profile_json_path``** when set; **``length_match_group_count``**; **``logical_module_reference_total``** when **``logical_modules``** present; prior keys (**``compile_strictness``**, hierarchy, spice summary, etc.) unchanged; optional **``.sha256``** sidecar. Human sign-off / full CI golden matrix still future. |
-| **SW-006** | Done | **``OPENHAC_SKIP_LAYOUT``** pytest covers logic-only **``compile``**; manifest **``sw006_skip_layout_env_key``**; subprocess **``openhac simulate … --spice-preset``** E2E for **ac** / **tran** / **op** / **dc** / **noise** (``.cir`` contains preset directive); subprocess **``--spice-line``** E2E; **``Board.simulate``** + **``spice_analysis_json_path``** contract test; **``scripts/ci_full_compile_smoke.py``**; **``kicad-layout-smoke``** (**``continue-on-error``**). |
+| **SW-006** | Done | **``OPENHAC_SKIP_LAYOUT``** pytest covers logic-only **``compile``**; manifest **``sw006_skip_layout_env_key``**; subprocess **``openhac simulate … --spice-preset``** E2E for **ac** / **tran** / **op** / **dc** / **noise** (``.cir`` contains preset directive); subprocess **``--spice-line``** E2E; **``Board.simulate``** + **``spice_analysis_json_path``** contract test; **``scripts/ci_full_compile_smoke.py``**; **``kicad-layout-smoke``** is **blocking** (no ``continue-on-error``). |
 | **ARCH** | Done | **[./ARCHITECTURE.md](./ARCHITECTURE.md)**: **contextvars** compile context; **no** ``Board`` → ``Component`` **class-attribute stomp**; **``Module.__iter__``** + ERC/DRC walks; **``Module.add_part``** / **``parent_module=``** for host-board strict at construction; **``compile_pipeline``** phase coordinator; schematic **alphanumeric pin sort**; JIT **category + word-boundary** matching; **``Board.power_net_prefixes``**; CLI copies strict flags onto **board** before **compile**; doc sections for **manifest traceability** + **ERC example hooks**; **``openhac.stdlib.erc_plugin_registry``** (**``register_erc_plugin``**, **``apply_erc_plugin``**, **``list_erc_plugin_names``**) + **``Board.apply_erc_plugin``** (named ERC packs + custom plugins). |
 | **LIB-003** | Done | JIT maps **high/medium/low**; **``Board(strict=True)``** + CLI **``--strict``**; live API match uses **category blob** (when API provides it) + **word-boundary** tokens on description; manifest **``compile_strictness``**, **``lib003_jit_bom_columns``**, **``lib003_database_api_fallback_module``** (**``openhac.database.api_fallback``**), **``lib003_db_manager_module``** (**``openhac.database.db_manager``**), **``lib003_sync_jlc_module``** (**``openhac.database.sync_jlc``**); BOM **``OpenHaC_JIT_Confidence``** / **``OpenHaC_JIT_Score``**. Unified numeric model + first-class **functional tags** in DB still future. |
 | **LIB-002** | Done | **``part_alternates``** + BOM columns; **``{project}.openhac-bom-alternates.json``** + **``{project}.openhac-bom-expand-hint.md``** (incl. suggested CM workflows) when alternates file exists; manifest **``bom_alternates_schema``**, **``bom_alternates_handoff``**, **``bom_alternates_generic_count``**, **``bom_alternates_total_rows``** when alternates JSON exists; manifest **``lib002_bom_csv_suffix``**; release zip suffixes. CM-specific BOM expand/collapse templates still future. |
@@ -309,22 +339,26 @@ Extra rows (**Layout stub**, **Z3 overlap**, **Board DRC**, etc.) are **not** co
 
 ## How many tickets are left?
 
-**Zero** open **Partial** rows for the **48** numbered spec IDs: all are **Done** under Phase-1. Optional **stretch** work is tracked in per-ID Notes and in [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md), not as a separate backlog count in this table.
+**Phase-1:** **Zero** open **Partial** rows for the **48** numbered spec IDs: all are **Done**. Optional Phase-1 **stretch** work is tracked in per-ID Notes and in [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md).
+
+**Phase-2:** **0** open `FAB-*` IDs — see [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md) and the Phase-2 table above.
 
 | Bucket | Count | Meaning |
 |--------|--------|--------|
-| **Done** (all 48 spec IDs) | **48** | Phase-1 acceptance (see spec). |
+| **Done** (all 48 Phase-1 spec IDs) | **48** | Phase-1 acceptance (see production spec). |
 | **Done (extra rows)** | **5** | Layout stub, Z3 overlap, Board DRC, interface validation, ERC net-level (supporting work, not a single spec ID). |
+| **Done (Phase-2 FAB-*)** | **20** | Fabrication readiness contract. |
+| **Open (Phase-2 FAB-*)** | **0** | — |
 
 ### Stretch backlog (follow-on batches)
 
-These items are **explicit stretch / future** notes repeated across per-ID Notes. They are not Phase-1 blockers, but they are the main “next batches” when you want deeper production polish:
+Phase-2 fabrication gates (**FAB-***) are the primary follow-on backlog. Additional Phase-1 stretch notes (not Phase-2 IDs):
 
-- **SCH-002**: richer hierarchical export (sheet pins, per-module wiring) beyond the current multi-sheet split.
+- **SCH-002**: richer hierarchical export (sheet pins, per-module wiring) beyond the current multi-sheet split — subordinate to **FAB-040** (schematic demotion).
 - **PCB-007 / SIG-002**: emit netclass/rule constraints into KiCad project/board files (not just handoff JSON/markdown).
 - **PCB-003 / SIG-001**: stackup/inner-plane authoring beyond warnings + handoff docs.
 - **LIB-003**: unify JIT confidence scoring (numeric) and introduce first-class functional tags in the DB.
-- **STR-002**: release signing / explicit human approval flows + broader CI golden matrix.
+- **STR-002**: release signing / explicit human approval flows + broader CI golden matrix (overlaps **FAB-031** / **FAB-051**).
 
 ## CLI usage
 

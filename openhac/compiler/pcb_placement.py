@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import sys
+from typing import Any
 
 from openhac.circuit import get_default_circuit
 from openhac.core.base import Component, LayoutGenerationError, Module
@@ -20,6 +21,21 @@ logger = logging.getLogger("openhac.pcb_placement")
 
 # Best-effort compile post-report capture (dev/handoff diagnostics).
 _PAD_MISMATCH_EVENTS: list[dict] = []
+# FAB-003: refs skipped during placement (missing footprint); cleared at start of place.
+_OMITTED_FOOTPRINT_REFS: list[str] = []
+
+
+def drain_omitted_footprint_refs() -> list[str]:
+    """Return and clear omitted footprint refs recorded during the last place pass."""
+    out = list(_OMITTED_FOOTPRINT_REFS)
+    _OMITTED_FOOTPRINT_REFS.clear()
+    return out
+
+
+def record_omitted_footprint_ref(ref: str) -> None:
+    r = str(ref or "").strip() or "?"
+    if r not in _OMITTED_FOOTPRINT_REFS:
+        _OMITTED_FOOTPRINT_REFS.append(r)
 
 
 def parse_footprint_id(footprint: str | None) -> tuple[str, str] | None:
@@ -90,13 +106,13 @@ def footprint_pad_numbers_from_library(lib_name: str, fp_name: str) -> set[str] 
 class _BoardCircuitView:
     __slots__ = ("parts",)
 
-    def __init__(self, parts: tuple[object, ...] | list[object]):
+    def __init__(self, parts: tuple[Any, ...] | list[Any]):
         self.parts = tuple(parts)
 
 
-def circuit_parts_from_board(board) -> list[object]:
+def circuit_parts_from_board(board) -> list[Any]:
     """SKiDL parts attached under ``board.modules`` (same iteration as PCB placement)."""
-    parts: list[object] = []
+    parts: list[Any] = []
     seen: set[int] = set()
     
     modules = []
@@ -130,10 +146,11 @@ def pin_pad_coverage_warnings_for_board(board) -> list[str]:
 
 def pin_pad_mismatch_records(board) -> list[dict]:
     """Structured pad↔pin mismatches for reports (ref, footprint, pins, sample pads from ``.kicad_mod``)."""
+    SKIDL_NC: Any = None
     try:
-        from openhac.core.net import NC as SKIDL_NC
-    except Exception:
-        SKIDL_NC = None
+        from openhac.core.net import NC as SKIDL_NC  # type: ignore[no-redef]
+    except Exception as e:
+        logger.debug("NC sentinel unavailable for pad mismatch scan: %s", e)
     out: list[dict] = []
     for part in circuit_parts_from_board(board):
         fpid = parse_footprint_id(getattr(part, "footprint", None))
@@ -151,8 +168,8 @@ def pin_pad_mismatch_records(board) -> list[dict]:
             try:
                 if SKIDL_NC is not None and pin.net is SKIDL_NC:
                     continue
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("NC check skipped for pin: %s", e)
             if pin.net is None:
                 continue
             pnum = str(getattr(pin, "num", None) or getattr(pin, "number", None) or "")
@@ -182,10 +199,11 @@ def pin_pad_coverage_warnings(circuit) -> list[str]:
     Does not require ``pcbnew``. Use before ``place_circuit_on_board`` to catch pad-name mismatches (PCB-002).
     Pass a circuit with ``.parts`` (e.g. from :func:`circuit_view_from_board`).
     """
+    SKIDL_NC: Any = None
     try:
-        from openhac.core.net import NC as SKIDL_NC
-    except Exception:
-        SKIDL_NC = None
+        from openhac.core.net import NC as SKIDL_NC  # type: ignore[no-redef]
+    except Exception as e:
+        logger.debug("NC sentinel unavailable for pad coverage: %s", e)
 
     messages: list[str] = []
     for part in circuit.parts:
@@ -199,8 +217,8 @@ def pin_pad_coverage_warnings(circuit) -> list[str]:
             try:
                 if SKIDL_NC is not None and pin.net is SKIDL_NC:
                     continue
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("NC check skipped for pin: %s", e)
             if pin.net is None:
                 continue
             pnum = str(getattr(pin, "num", None) or getattr(pin, "number", None) or "")
@@ -317,7 +335,7 @@ def _fp_size_mm_for_part(
     return out
 
 
-def collect_skidl_part_positions(board) -> dict[object, tuple[float, float]]:
+def collect_skidl_part_positions(board) -> dict[Any, tuple[float, float]]:
     """Map each SKiDL ``Part`` to ``(x_mm, y_mm)`` using module placement + local grid.
 
     When ``OPENHAC_PLACEMENT_USE_FP_BBOX`` is enabled (default) and pcbnew can load
@@ -516,8 +534,8 @@ def _pad_keys(pad) -> list[str]:
             s = str(fn()).strip()
             if s and s not in keys:
                 keys.append(s)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("pad key via %s failed: %s", getter, e)
     return keys
 
 
@@ -554,10 +572,10 @@ def find_pad_for_pin(fp, pin_num: str, pin_name: str | None = None):
                 p = fp.FindPadByNumber(c)
                 if p is not None:
                     return p
-            except Exception:
-                pass
-    except Exception:
-        pass
+            except Exception as e:
+                logger.debug("FindPadByNumber(%r) failed: %s", c, e)
+    except Exception as e:
+        logger.debug("FindPadByNumber path unavailable: %s", e)
 
     # Walk pads (fallback + case-insensitive)
     def _norm(s: str) -> str:
@@ -589,8 +607,8 @@ def find_pad_for_pin(fp, pin_num: str, pin_name: str | None = None):
                     p = fp.FindPadByNumber(try_num)
                     if p is not None:
                         return p
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("FindPadByNumber alias %r failed: %s", try_num, e)
                 for pad in pads:
                     for k in _pad_keys(pad):
                         if k == try_num:
@@ -626,14 +644,22 @@ def _to_board_vec(pcbnew, x_mm: float, y_mm: float):
 
 def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
     """Add footprints for every part in the default SKiDL circuit and assign nets."""
+    SKIDL_NC: Any = None
     try:
-        from openhac.core.net import NC as SKIDL_NC
-    except Exception:
-        SKIDL_NC = None
+        from openhac.core.net import NC as SKIDL_NC  # type: ignore[no-redef]
+    except Exception as e:
+        logger.debug("NC sentinel unavailable during placement: %s", e)
 
+    _OMITTED_FOOTPRINT_REFS.clear()
     circuit = circuit_view_from_board(board)
-    for msg in pin_pad_coverage_warnings(circuit):
-        logger.debug("%s", msg)
+    pad_msgs = pin_pad_coverage_warnings(circuit)
+    for msg in pad_msgs:
+        # FAB-002: pad mismatches are warnings by default (not debug-only).
+        logger.warning("%s", msg)
+    try:
+        board._last_pad_pin_warnings = list(pad_msgs)
+    except Exception as e:
+        logger.debug("Could not stash pad/pin warnings on board: %s", e)
 
     part_positions = collect_skidl_part_positions(board)
     plugin = _get_kicad_sexp_plugin(pcbnew_mod)
@@ -642,27 +668,74 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
     fabrication = False
     try:
         fabrication = str(getattr(board, "effective_compile_goal", lambda: "")()).strip().lower() == "fabrication"
-    except Exception:
+    except Exception as e:
+        logger.debug("Could not resolve fabrication goal for placement: %s", e)
         fabrication = False
 
-    for part in circuit.parts:
+    for part in circuit.parts:  # type: Any
         fpid = parse_footprint_id(getattr(part, "footprint", None))
         if fpid is None:
-            logger.warning("Part %s: no usable Library:Name footprint; skipping PCB placement.", part.ref)
+            ref = getattr(part, "ref", "?")
+            logger.warning("Part %s: no usable Library:Name footprint; skipping PCB placement.", ref)
+            record_omitted_footprint_ref(str(ref))
+            if fabrication:
+                raise LayoutGenerationError(
+                    f"FAB-003: part {ref} has no usable Library:Name footprint in fabrication mode."
+                )
             continue
 
         lib_name, fp_name = fpid
         pretty_dir = resolve_pretty_directory(lib_name)
         if not pretty_dir:
-            msg = (
-                f"Footprint library directory not found for '{lib_name}.pretty'. "
-                f"Searched: {footprint_search_roots()}"
-            )
+            # --- EasyEDA auto-download fallback ---
+            # The footprint isn't in any local KiCad library. Try to fetch it from
+            # EasyEDA using the part's LCSC ID (same pipeline used for 3D models).
+            lcsc_id = None
+            fields = getattr(part, "fields", {}) or {}
+            for field_key in ("LCSC", "lcsc", "lcsc_id", "supplier_sku", "Supplier_SKU"):
+                v = fields.get(field_key)
+                if v and str(v).strip().startswith("C"):
+                    lcsc_id = str(v).strip()
+                    break
+
+            easyeda_fp_id = None
+            if lcsc_id:
+                try:
+                    from openhac.database.easyeda_integration import generate_footprint_from_lcsc
+                    logger.info(
+                        "Part %s: footprint '%s:%s' not found locally — fetching from EasyEDA (LCSC: %s)...",
+                        getattr(part, "ref", "?"), lib_name, fp_name, lcsc_id,
+                    )
+                    easyeda_fp_id = generate_footprint_from_lcsc(lcsc_id)
+                    if easyeda_fp_id:
+                        logger.info("Part %s: downloaded footprint '%s' via EasyEDA.", getattr(part, "ref", "?"), easyeda_fp_id)
+                        part.footprint = easyeda_fp_id
+                        fpid = parse_footprint_id(easyeda_fp_id)
+                        if fpid:
+                            lib_name, fp_name = fpid
+                            pretty_dir = resolve_pretty_directory(lib_name)
+                except Exception as e:
+                    logger.warning("EasyEDA footprint fetch failed for %s (LCSC: %s): %s", getattr(part, "ref", "?"), lcsc_id, e)
+
+            if not pretty_dir:
+                msg = (
+                    f"Footprint library directory not found for '{lib_name}.pretty'. "
+                    f"Searched: {footprint_search_roots()}"
+                    + (f" EasyEDA fallback also failed (LCSC: {lcsc_id})." if lcsc_id else " No LCSC ID available for EasyEDA fallback.")
+                )
+                if fabrication:
+                    raise LayoutGenerationError(msg)
+                logger.warning("%s; skipping part %s in PCB placement (handoff/dev).", msg, getattr(part, "ref", "?"))
+                record_omitted_footprint_ref(str(getattr(part, "ref", "?")))
+                continue
+
+        if fpid is None:
+            msg = f"Part {getattr(part, 'ref', '?')}: footprint id unresolved after library search."
             if fabrication:
                 raise LayoutGenerationError(msg)
-            logger.warning("%s; skipping part %s in PCB placement (handoff/dev).", msg, getattr(part, "ref", "?"))
+            logger.warning("%s; skipping part in PCB placement (handoff/dev).", msg)
+            record_omitted_footprint_ref(str(getattr(part, "ref", "?")))
             continue
-
         lib, fp_name = fpid
         pretty_path = resolve_pretty_directory(lib)
         if pretty_path:
@@ -674,6 +747,7 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
             if fabrication:
                 raise LayoutGenerationError(msg)
             logger.warning("%s Skipping part in PCB placement (handoff/dev).", msg)
+            record_omitted_footprint_ref(str(getattr(part, "ref", "?")))
             continue
         
         pcb.Add(fp)
@@ -706,8 +780,8 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
                     try:
                         # Only clear if we actually have a replacement model to add
                         fp.Models().clear()
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("Could not clear existing 3D models on %s: %s", part.ref, e)
                     fp.Models().push_back(m)
                 elif hasattr(fp, "AddModel"):
                     fp.AddModel(m)
@@ -731,7 +805,7 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
             fields = getattr(part, "fields", None)
             rot = None
             if isinstance(fields, dict) and fields.get("OpenHaC_Rotation_Deg") is not None:
-                rot = float(fields.get("OpenHaC_Rotation_Deg"))
+                rot = float(str(fields.get("OpenHaC_Rotation_Deg")))
             if rot is not None:
                 # KiCad pcbnew uses tenths of degrees in older APIs; in newer it is degrees.
                 # Try common setters; ignore if unavailable.
@@ -740,17 +814,18 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
                 elif hasattr(fp, "SetOrientation"):
                     try:
                         fp.SetOrientation(int(rot * 10))
-                    except Exception:
+                    except Exception as e:
+                        logger.debug("SetOrientation tenths failed for %s: %s", part.ref, e)
                         fp.SetOrientation(rot)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("Rotation apply skipped for %s: %s", getattr(part, "ref", "?"), e)
 
         for pin in _iter_unique_pins(part):
             try:
                 if SKIDL_NC is not None and pin.net is SKIDL_NC:
                     continue
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("NC check skipped during pad net assign: %s", e)
             if pin.net is None:
                 continue
             net_name = str(pin.net.name)
@@ -784,8 +859,8 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
                             "net": str(net_name),
                         }
                     )
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("Could not record pad mismatch event: %s", e)
                 continue
             try:
                 pad.SetNet(net_cache[net_name])

@@ -22,11 +22,12 @@ def _layer_id(pcb, pcbnew_mod, layer_name: str) -> int | None:
     """Return KiCad internal layer ID for a name like 'F.Cu'."""
     try:
         return int(pcb.GetLayerID(str(layer_name)))
-    except Exception:
-        pass
+    except Exception as e:
+        logger.debug("GetLayerID(%s) failed: %s", layer_name, e)
     try:
         return int(pcbnew_mod.LayerName(str(layer_name)))
-    except Exception:
+    except Exception as e:
+        logger.debug("LayerName(%s) failed: %s", layer_name, e)
         return None
 
 
@@ -72,8 +73,8 @@ def _netinfo_for_name(pcb, net_name: str):
                 return None
         try:
             pcb.Add(ni)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("pcb_postprocess optional path failed: %s", e)
         try:
             nets = pcb.GetNetsByName()
             return nets[str(net_name)]
@@ -121,12 +122,12 @@ def apply_copper_pour_intents(pcb, board, pcbnew_mod) -> int:
         except Exception:
             try:
                 z.SetNetCode(int(ni.GetNetCode()))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("pcb_postprocess optional path failed: %s", e)
         try:
             z.SetLayer(lid)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("pcb_postprocess optional path failed: %s", e)
 
         # Simple "board outline" rectangle zone. This does not do keepouts or stitching.
         # KiCad 9 expects a SHAPE_LINE_CHAIN for AddPolygon().
@@ -231,8 +232,8 @@ def apply_high_current_polygons(pcb, board, pcbnew_mod) -> int:
                 for p in pts: chain.Append(p)
                 chain.SetClosed(True)
                 z.AddPolygon(chain)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("pcb_postprocess optional path failed: %s", e)
             
             try:
                 pcb.Add(z)
@@ -333,16 +334,16 @@ def apply_mounting_hole_intents(pcb, board, pcbnew_mod) -> int:
 
         try:
             fp.SetReference(f"H{i}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("pcb_postprocess optional path failed: %s", e)
         try:
             fp.SetValue(fp_name)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("pcb_postprocess optional path failed: %s", e)
         try:
             fp.SetPosition(_to_vec(pcbnew_mod, x_mm, y_mm))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("pcb_postprocess optional path failed: %s", e)
 
         # Clamp the footprint bbox inside Edge.Cuts bbox (best-effort).
         if edges_bb is not None:
@@ -376,10 +377,10 @@ def apply_mounting_hole_intents(pcb, board, pcbnew_mod) -> int:
                         try:
                             pos = fp.GetPosition()
                             fp.SetPosition(pcbnew_mod.wxPoint(int(pos.x) + int(dx), int(pos.y) + int(dy)))
-                        except Exception:
-                            pass
-            except Exception:
-                pass
+                        except Exception as e:
+                            logger.debug("pcb_postprocess optional path failed: %s", e)
+            except Exception as e:
+                logger.debug("pcb_postprocess optional path failed: %s", e)
         added += 1
 
     if added:
@@ -628,8 +629,8 @@ def spread_footprints_no_overlap(
                 except Exception:
                     try:
                         fp.Move(type(fp.GetPosition())(cdx, cdy))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.debug("pcb_postprocess optional path failed: %s", e)
 
             moved_fps.add(_ref(fp))
             any_moved = True
@@ -674,25 +675,25 @@ def apply_keepout_rect_intents(pcb, board, pcbnew_mod) -> int:
             z = zone_cls(pcb)
             try:
                 z.SetLayer(lid)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("pcb_postprocess optional path failed: %s", e)
             # Mark as rule area / keepout.
             try:
                 z.SetIsRuleArea(True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("pcb_postprocess optional path failed: %s", e)
             # Defaults: keepout tracks+vias+pour.
             try:
                 z.SetDoNotAllowTracks(True)
                 z.SetDoNotAllowVias(True)
                 z.SetDoNotAllowCopperPour(True)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("pcb_postprocess optional path failed: %s", e)
             if purpose == "placement":
                 try:
                     z.SetDoNotAllowFootprints(True)
-                except Exception:
-                    pass
+                except Exception as e:
+                    logger.debug("pcb_postprocess optional path failed: %s", e)
             pts = [
                 _to_vec(pcbnew_mod, x, y),
                 _to_vec(pcbnew_mod, x + w, y),
@@ -778,18 +779,18 @@ def apply_net_tie_intents(pcb, board, pcbnew_mod) -> int:
                 x, y = 3.0 + col * 4.0, 3.0 + row * 4.0
                 fallback_i += 1
             fp.SetPosition(_to_vec(pcbnew_mod, x, y))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("pcb_postprocess optional path failed: %s", e)
 
         # Reference / value.
         try:
             fp.SetReference(f"NT{added + 1}")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("pcb_postprocess optional path failed: %s", e)
         try:
             fp.SetValue("NET_TIE")
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("pcb_postprocess optional path failed: %s", e)
 
         # Assign pad 1 -> net_a, pad 2 -> net_b when possible.
         try:
@@ -806,8 +807,8 @@ def apply_net_tie_intents(pcb, board, pcbnew_mod) -> int:
                     pad.SetNet(ni_a)
                 elif pn == "2":
                     pad.SetNet(ni_b)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("pcb_postprocess optional path failed: %s", e)
 
         added += 1
 
@@ -854,6 +855,6 @@ def inject_kicad_stackup(pcb_path: str, layers: int) -> None:
             with open(pcb_path, "w", encoding="utf-8") as f:
                 f.write(content)
             logger.info("Successfully injected %d-layer physical stackup definition.", layers)
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("pcb_postprocess optional path failed: %s", e)
 

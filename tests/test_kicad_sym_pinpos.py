@@ -59,8 +59,8 @@ def test_resolve_extends_stub_loads_parent_pins():
 def test_parse_fixture_resistor_pins():
     text = _FIXTURE_SYM.read_text(encoding="utf-8")
     pos = parse_pin_positions_from_symbol_tree(text)
-    assert pos["1"] == pytest.approx((0.0, 5.08))
-    assert pos["2"] == pytest.approx((0.0, -5.08))
+    assert pos["1"][:2] == pytest.approx((0.0, 5.08))
+    assert pos["2"][:2] == pytest.approx((0.0, -5.08))
     clear_symbol_pin_cache()
     m = load_symbol_pin_positions(_FIXTURE_SYM, "R")
     assert m == pos
@@ -124,9 +124,12 @@ def test_empty_resolver_matches_index_stub_geometry(tmp_path, monkeypatch):
     c = get_default_circuit()
     res = EmptySymbolPinResolver()
     geom = schematic_geometry(c, symbol_resolver=res)
-    assert len(geom["wires"]) == 1
-    x1, y1, x2, y2 = geom["wires"][0]
-    assert y2 - y1 == pytest.approx(2.54, rel=1e-3)
+    r1, r2 = c.parts[0], c.parts[1]
+    px1, py1 = geom["part_placements"][r1]
+    from openhac.compiler.schematic_gen import _pin_world_xy
+
+    axw, ayw, _ = _pin_world_xy(r1[1], r1, (px1, py1), res)
+    assert max(abs(axw - px1), abs(ayw - py1)) == pytest.approx(2.54, rel=1e-3)
 
 
 def test_openhac_schematic_stub_only_env_forces_stub_geometry_and_report(tmp_path, monkeypatch):
@@ -145,9 +148,13 @@ def test_openhac_schematic_stub_only_env_forces_stub_geometry_and_report(tmp_pat
 
     c = get_default_circuit()
     geom = schematic_geometry(c)
-    assert len(geom["wires"]) == 1
-    x1, y1, x2, y2 = geom["wires"][0]
-    assert y2 - y1 == pytest.approx(2.54, rel=1e-3)
+    r1 = c.parts[0]
+    px1, py1 = geom["part_placements"][r1]
+    from openhac.compiler.schematic_gen import _pin_world_xy, EmptySymbolPinResolver
+
+    res = EmptySymbolPinResolver()
+    axw, ayw, _ = _pin_world_xy(r1[1], r1, (px1, py1), res)
+    assert max(abs(axw - px1), abs(ayw - py1)) == pytest.approx(2.54, rel=1e-3)
 
     out = tmp_path / "stubonly.kicad_sch"
     rep = tmp_path / "stubonly.openhac-sch-pinpos-report.json"

@@ -1,6 +1,6 @@
 # OpenHaC software architecture (maintainer notes)
 
-This document captures **cross-cutting software design** that complements numbered items in [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md).
+This document captures **cross-cutting software design** that complements numbered items in [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md) (Phase-1) and [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md) (Phase-2).
 
 ## Compile context (no global `Component` stomp)
 

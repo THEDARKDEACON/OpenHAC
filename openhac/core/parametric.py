@@ -1,9 +1,10 @@
 """Base classes for Parametric Submodules (Phase 3)."""
 import logging
+import os
 from typing import Any
 
 from openhac.core.base import Module
-from openhac.database.db_manager import DatabaseManager
+from openhac.database.db_manager import DB_PATH, DatabaseManager
 
 logger = logging.getLogger("openhac.parametric")
 
@@ -23,7 +24,8 @@ class ParametricModule(Module):
         self.category = category
         self.constraints = constraints
         self._is_resolved = False
-        self._db = DatabaseManager()
+        env_db = (os.environ.get("OPENHAC_DB_PATH") or "").strip()
+        self._db = DatabaseManager(db_path=env_db or DB_PATH)
         
     def resolve(self) -> None:
         """Query the database and dynamically construct the sub-circuit.

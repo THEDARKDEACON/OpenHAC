@@ -44,7 +44,7 @@ class PowerTree(Module):
         self.cldo = self.add(Component("C_10UF_0805"))
         self.cldo2 = self.add(Component("C_100NF_0603"))
 
-        vbat_fused = Net("VBAT_FUSED")
+        vbat_fused = self.vbat
         self.cin["1"] += vbat_fused
         self.cin["2"] += self.gnd
         self.cin2["1"] += vbat_fused
@@ -53,6 +53,14 @@ class PowerTree(Module):
         self.buck["VIN"] += vbat_fused
         self.buck["GND"] += self.gnd
         self.buck["L1"] += self.l_buck["1"]
+        buck_fb = Net("BUCK_FB")
+        self.buck["FB"] += buck_fb
+        rfb1 = self.add(Component("R_1K_0603"))
+        rfb2 = self.add(Component("R_1K_0603"))
+        rfb1["1"] += self.v5
+        rfb1["2"] += buck_fb
+        rfb2["1"] += buck_fb
+        rfb2["2"] += self.gnd
         self.l_buck["2"] += self.v5
         self.cout["1"] += self.v5
         self.cout["2"] += self.gnd
@@ -95,7 +103,11 @@ class HostMCU(Module):
         self.can_rx = Net(f"{can_role}_CAN_RX")
         self.mcu["CAN_TX"] += self.can_tx
         self.mcu["CAN_RX"] += self.can_rx
-        self.mcu["NRST"] += Net(f"{can_role}_NRST")
+        nrst = Net(f"{can_role}_NRST")
+        self.mcu["NRST"] += nrst
+        rst_pull = self.add(Component("R_1K_0603"))
+        rst_pull["1"] += self.v3v3
+        rst_pull["2"] += nrst
 
         self.max_current_draw_ma = {"3V3": 120}
         self.pwr = self.declare_interface("pwr", self.v3v3, self.gnd)
@@ -127,6 +139,11 @@ class CANTransceiver(Module):
         self.can_l = Net(f"{bus_tag}_L")
         self.can["CANH"] += self.can_h
         self.can["CANL"] += self.can_l
+
+        # Bus termination (documentation-friendly; satisfies ERC two-pin nets).
+        term = self.add(Component("R_1K_0603"))
+        term["1"] += self.can_h
+        term["2"] += self.can_l
 
         # Connect to controller interface (documented cross-module link).
         # ctrl_iface signals are (tx, rx, gnd) per HostMCU.declare_interface("can", ...).
@@ -191,11 +208,11 @@ def build_board() -> Board:
     b.connect(host_a.can, can_phy_a.declare_interface("ctrl", can_phy_a.tx, can_phy_a.rx, can_phy_a.gnd))
     b.connect(host_b.can, can_phy_b.declare_interface("ctrl", can_phy_b.tx, can_phy_b.rx, can_phy_b.gnd))
 
-    # Rails for checks/manifests
-    b.declare_power_rail("VBAT", Net("VBAT"))
-    b.declare_power_rail("5V", Net("5V"))
-    b.declare_power_rail("3V3", Net("3V3"))
-    b.declare_power_rail("GND", Net("GND"))
+    # Rails for checks/manifests (reuse module nets — do not create duplicate Net objects)
+    b.declare_power_rail("VBAT", pwr.vbat)
+    b.declare_power_rail("5V", pwr.v5)
+    b.declare_power_rail("3V3", pwr.v3v3)
+    b.declare_power_rail("GND", pwr.gnd)
     b.declare_rail_conversion("VBAT", "5V", efficiency=0.92)
     b.declare_rail_conversion("5V", "3V3", efficiency=0.85)
 

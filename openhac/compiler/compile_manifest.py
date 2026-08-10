@@ -222,11 +222,9 @@ def _fab_profile_bundle_names() -> list[str]:
 
 
 def _spice_annotation_summary() -> dict:
-    """Count BOM-visible SPICE fields on SKiDL parts (SIM-001 visibility)."""
+    """Count BOM-visible SPICE fields on native OpenHaC parts (SIM-001 visibility)."""
     try:
-        from openhac.circuit import get_default_circuit
-
-        circuit = get_default_circuit()
+        from openhac.core.circuit import default_circuit as native_circuit
     except Exception:
         return {}
 
@@ -238,7 +236,7 @@ def _spice_annotation_summary() -> dict:
         return bool(str(v or "").strip())
 
     inc = sub = 0
-    for part in getattr(circuit, "parts", []) or []:
+    for part in getattr(native_circuit, "parts", []) or []:
         if _nz(part, "Spice_Include"):
             inc += 1
         if _nz(part, "Spice_Subckt"):
@@ -509,20 +507,23 @@ def _write_bom_alternates_json(base: Path, project_name: str, board) -> None:
     from openhac.core.base import Component
 
     try:
-        from openhac.circuit import get_default_circuit
-
-        circuit = get_default_circuit()
+        from openhac.core.circuit import default_circuit as native_circuit
     except Exception:
         return
 
     by_generic: dict[str, list[dict]] = {}
     seen: set[str] = set()
-    for part in getattr(circuit, "parts", []) or []:
-        try:
-            fv = part.fields.get("Value", "") if hasattr(part, "fields") else ""
-        except Exception:
-            fv = ""
-        g = str(fv or getattr(part, "value", "") or "").strip()
+    for part in getattr(native_circuit, "parts", []) or []:
+        g = str(getattr(part, "value", "") or "").strip()
+        if not g:
+            try:
+                g = str(
+                    part.fields.get("Value")
+                    or part.fields.get("generic_name")
+                    or ""
+                ).strip()
+            except Exception:
+                g = ""
         if not g or g in seen:
             continue
         seen.add(g)
@@ -727,13 +728,15 @@ def _unverified_parts_from_circuit() -> list[dict]:
     A part is considered "unverified" if it has an OpenHaC JIT confidence label
     of medium or low on the generated BOM line.
     """
-    from openhac.circuit import get_default_circuit
+    from openhac.circuit import _legacy_skidl_enabled, get_default_circuit
     import openhac.core.circuit as _core_circuit
 
-    # Collect parts from both the active default circuit (may be SKiDL's) and
-    # the native openhac circuit, which is where Component() always registers.
+    # Native circuit is SoT; optionally also scan legacy SKiDL when enabled.
     all_parts: list = []
-    for circuit in (get_default_circuit(), _core_circuit.default_circuit):
+    circuits = [_core_circuit.default_circuit]
+    if _legacy_skidl_enabled():
+        circuits.append(get_default_circuit())
+    for circuit in circuits:
         if circuit is None:
             continue
         all_parts.extend(getattr(circuit, "parts", []) or [])
@@ -1433,6 +1436,47 @@ def write_compile_manifest(
         "compile_goal": str(getattr(board, "effective_compile_goal", lambda: getattr(board, "compile_goal", "handoff"))()),
         "release_zip_requested": bool(release_zip_path),
     }
+    # FAB-032: fabrication audit block for release review / CI.
+    try:
+        from openhac.database.enrich import network_allowed as _net_allowed
+    except Exception:
+        _net_allowed = None
+    _goal = str(getattr(board, "effective_compile_goal", lambda: getattr(board, "compile_goal", "handoff"))())
+    _omitted = list(getattr(board, "_last_omitted_footprint_refs", None) or [])
+    _enrich_fail = list(getattr(board, "_last_enrich_failures", None) or [])
+    _pad_warn = list(getattr(board, "_last_pad_pin_warnings", None) or [])
+    _net = getattr(board, "_last_network_allowed", None)
+    if _net is None and _net_allowed is not None:
+        try:
+            _net = bool(_net_allowed())
+        except Exception:
+            _net = None
+    _pm = getattr(board, "_last_pcb_metrics", None) if isinstance(getattr(board, "_last_pcb_metrics", None), dict) else {}
+    _drc_rep = getattr(board, "_last_kicad_pcb_drc_report", None)
+    _backend = "native"
+    try:
+        from openhac.core.circuit import default_circuit as _nc
+
+        if getattr(_nc, "parts", None):
+            _backend = "native"
+    except Exception:
+        _backend = "unknown"
+    manifest["fab_audit"] = {
+        "schema_ref": "openhac.fab_audit.v1",
+        "compile_goal": _goal,
+        "network_allowed": _net,
+        "circuit_backend": _backend,
+        "omitted_footprint_refs": _omitted,
+        "enrich_failures": _enrich_fail,
+        "pad_pin_warnings": _pad_warn,
+        "unrouted_net_count": _pm.get("unrouted_net_count"),
+        "track_count": _pm.get("track_count"),
+        "via_count": _pm.get("via_count"),
+        "footprint_count": _pm.get("footprint_count"),
+        "kicad_pcb_drc_report": _drc_rep,
+        "gates_passed": bool(_goal != "fabrication" or (not _omitted and not _enrich_fail)),
+    }
+    manifest["fab032_fab_audit_schema"] = "openhac.fab_audit.v1"
     pm = getattr(board, "_last_pcb_metrics", None)
     if isinstance(pm, dict) and pm:
         manifest["pcb_metrics"] = dict(pm)

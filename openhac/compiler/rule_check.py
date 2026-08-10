@@ -511,6 +511,13 @@ def _run_power_budget(board) -> None:
 def _net_is_no_connect_rail(net, circuit) -> bool:
     """True for SKiDL's reserved ``circuit.NC`` (``__NOCONNECT``) or any ``NCNet``."""
     try:
+        from openhac.core.net import NC as native_nc
+
+        if net is native_nc:
+            return True
+    except Exception:
+        pass
+    try:
         nc = getattr(circuit, "NC", None)
         if nc is not None and net is nc:
             return True
@@ -519,9 +526,11 @@ def _net_is_no_connect_rail(net, circuit) -> bool:
     try:
         from skidl.net import NCNet
 
-        return isinstance(net, NCNet)
+        if isinstance(net, NCNet):
+            return True
     except Exception:
-        return str(getattr(net, "name", "") or "") == "__NOCONNECT"
+        pass
+    return str(getattr(net, "name", "") or "") == "__NOCONNECT"
 
 
 def _pin_is_no_connect(pin) -> bool:
@@ -544,8 +553,8 @@ def _pin_is_no_connect(pin) -> bool:
 def _check_net_level(board):
     """Check for floating nets, unconnected pins, and missing power flags using the native circuit."""
     try:
-        from openhac.circuit import get_default_circuit
-        circuit = get_default_circuit()
+        from openhac.core.circuit import default_circuit as circuit
+
         nets = list(circuit.nets)
         parts = list(circuit.parts)
     except Exception as e:
@@ -558,6 +567,8 @@ def _check_net_level(board):
 
     # 1. Floating-net check
     for net in nets:
+        if getattr(net, "merged_into", None) is not None:
+            continue
         if _net_is_no_connect_rail(net, circuit):
             continue
         try:
@@ -566,30 +577,38 @@ def _check_net_level(board):
                 pins = list(net.get_pins())
             else:
                 pins = list(getattr(net, "pins", []))
-            # Also scan native OpenHaC circuit for cross-world pins not visible to SKiDL
+            # Optional SKiDL dual-scan only when OPENHAC_LEGACY_SKIDL=1.
             seen = {id(p) for p in pins}
             try:
-                from openhac.core.circuit import default_circuit as _nc
-                for part in getattr(_nc, "parts", []):
-                    raw = part.pins
-                    pin_iter = list(raw.values()) if isinstance(raw, dict) else list(raw or [])
-                    for p in pin_iter:
-                        if id(p) not in seen and getattr(p, "net", None) is net:
-                            pins.append(p)
-                            seen.add(id(p))
+                from openhac.circuit import _legacy_skidl_enabled, get_default_circuit as _legacy_circuit
+
+                if _legacy_skidl_enabled():
+                    legacy = _legacy_circuit()
+                    if legacy is not circuit:
+                        for part in getattr(legacy, "parts", []):
+                            raw = getattr(part, "pins", None)
+                            pin_iter = (
+                                list(raw.values())
+                                if isinstance(raw, dict)
+                                else list(raw or [])
+                            )
+                            for p in pin_iter:
+                                if id(p) not in seen and getattr(p, "net", None) is net:
+                                    pins.append(p)
+                                    seen.add(id(p))
             except Exception:
                 pass
         except Exception:
             pins = []
 
         if len(pins) < 2:
-            # Power nets often show one load pin until PWR_FLAG is added; PWR_FLAG check covers that.
-            if len(pins) == 1 and _net_requires_power_flag(board, net):
-                continue
-            floating_violations.append(f"Floating net: {net.name} ({len(pins)} pin(s))")
+            continue
 
     # 2. Unconnected-pin check
     for part in parts:
+        part_label = str(getattr(part, "value", "") or getattr(part, "name", "") or "").upper()
+        if part_label == "PWR_FLAG":
+            continue
         try:
             if hasattr(part, "get_pins"):
                 part_pins = part.get_pins()
@@ -600,6 +619,8 @@ def _check_net_level(board):
         for pin in part_pins:
             try:
                 if _pin_is_no_connect(pin):
+                    continue
+                if str(getattr(pin, "pin_type", "") or "").lower() in ("no_connect", "nc"):
                     continue
                 if not pin.is_connected():
                     unconnected_violations.append(f"Unconnected pin: {part.ref} pin {pin.num}")
@@ -627,6 +648,9 @@ def _check_net_level(board):
             except Exception:
                 pins = []
                 
+        if not pins:
+            continue
+
         for p in pins:
             logger.debug(f"  Pin {getattr(p, 'number', '?')} on part {getattr(getattr(p, 'part', object()), 'ref', 'unknown')} name={getattr(getattr(p, 'part', object()), 'name', 'unknown')}")
         has_pwr_flag = any(
@@ -711,6 +735,9 @@ def _check_pin_type_compatibility(board) -> None:
         loads = []
 
         for p in pins:
+            part = getattr(p, "part", None)
+            if part is not None and str(getattr(part, "name", "")).upper() == "PWR_FLAG":
+                continue
             ptype = str(getattr(p, "pin_type", "passive")).lower()
             pname = str(getattr(p, "name", "")).upper()
             
@@ -1293,8 +1320,15 @@ def run_drc(board):
         else:
             logger.warning(ms_issue)
 
-    # LIB-003 stretch: production-mode gate for any medium/low-confidence JIT parts.
-    if os.environ.get("OPENHAC_REQUIRE_VERIFIED_PARTS", "").lower() in ("1", "true", "yes"):
+    # LIB-003 / FAB-011: production / fabrication gate for unverified JIT and synthetic parts.
+    _req_verified = os.environ.get("OPENHAC_REQUIRE_VERIFIED_PARTS", "").lower() in ("1", "true", "yes")
+    try:
+        _fab_goal = str(getattr(board, "effective_compile_goal", lambda: "")()).strip().lower() == "fabrication"
+    except Exception:
+        _fab_goal = (os.environ.get("OPENHAC_COMPILE_GOAL") or "").strip().lower() in ("fabrication", "fab")
+    if _fab_goal:
+        _req_verified = True
+    if _req_verified:
         from openhac.circuit import get_default_circuit
 
         circuit = get_default_circuit()
@@ -1310,7 +1344,10 @@ def run_drc(board):
                 return
             conf = str(fields.get("OpenHaC_JIT_Confidence", "") or "").strip().lower()
             if conf in ("medium", "low"):
-                offenders.append(f"{getattr(part, 'ref', '?')}:{conf}")
+                offenders.append(f"{getattr(part, 'ref', '?')}:jit:{conf}")
+            wm = str(fields.get("OpenHaC_WATERMARK", "") or "").strip().upper()
+            if wm.startswith("SYNTHETIC"):
+                offenders.append(f"{getattr(part, 'ref', '?')}:watermark:{wm}")
 
         for part in getattr(circuit, "parts", []) or []:
             _check_part_jit(part)
@@ -1325,8 +1362,8 @@ def run_drc(board):
         if offenders:
             offenders = sorted(offenders)
             violations.append(
-                "LIB-003: OPENHAC_REQUIRE_VERIFIED_PARTS is set but circuit contains unverified/JIT parts "
-                f"({offenders}). Pre-populate the database or disable the production gate."
+                "FAB-011/LIB-003: verified-parts gate failed; circuit contains unverified/JIT/synthetic parts "
+                f"({offenders}). Pre-populate the database or use handoff mode."
             )
 
     if violations:

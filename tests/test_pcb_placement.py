@@ -101,7 +101,7 @@ def test_place_circuit_applies_rotation_field(monkeypatch, tmp_path):
         components = [_Child()]
 
     board = Board(size_mm=(10, 10))
-    board.modules = [_Mod()]
+    board._get_all_modules = lambda: [_Mod()]  # type: ignore[method-assign]
     place_circuit_on_board(pcb, board, _PcbNew)
     fps = [x for x in pcb.items if isinstance(x, _Fp)]
     assert fps and fps[0].rot_deg == 45.0
@@ -207,6 +207,7 @@ class TestPinPadCoverageWarnings:
             encoding="utf-8",
         )
         monkeypatch.setenv("KICAD8_FOOTPRINT_DIR", str(root))
+        monkeypatch.setenv("OPENHAC_LEGACY_SKIDL", "1")
 
         n = Net("N")
         r = Part("Device", "R", value="1k", ref="RX", footprint="Resistor_Test:R2")

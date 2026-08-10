@@ -6,13 +6,12 @@ from openhac.core.compile_context import OpenHaCCompileContext, compile_context_
 
 def test_parametric_switching_regulator(tmp_db, monkeypatch):
     """Test that an abstract SwitchingRegulator resolves to a real IC and injects passives."""
-    import os
-    
     # tmp_db returns (db_path, DatabaseManager_instance)
     db_path, db = tmp_db
     
     # Force the ParametricModule to use our tmp_db
     monkeypatch.setenv("OPENHAC_DB_PATH", db_path)
+    monkeypatch.setenv("OPENHAC_NO_NETWORK", "1")
     # Also override the module-level DB_PATH in db_manager so instances use it
     from openhac.database import db_manager
     monkeypatch.setattr(db_manager, "DB_PATH", db_path)

@@ -98,6 +98,7 @@ def test_live_lookup_insert_failure_raises(tmp_db, monkeypatch):
     mock_resp.__exit__ = MagicMock(return_value=False)
 
     with patch.object(Component, "db", dm):
+        monkeypatch.setenv("OPENHAC_COMPILE_GOAL", "fabrication")
         with patch("openhac.core.base.urllib.request.urlopen", return_value=mock_resp):
             with patch.object(dm, "insert_component", side_effect=RuntimeError("disk full")):
                 with pytest.raises(PartDatabaseWriteError, match="Could not store"):

@@ -98,8 +98,8 @@ class Board:
             self.quality_gates = merged
         except Exception:
             pass
-        self.modules = []
-        self.constraints = []
+        self.modules: list = []
+        self.constraints: list = []
         #: When True, :attr:`strict_kicad` and :attr:`strict_jit_lookups` were both enabled (LIB-003 umbrella).
         self.strict: bool = bool(strict)
         #: Optional fab pack name (e.g. ``"jlc"``) merged into DRC geometry defaults (MFG-004).
@@ -158,6 +158,22 @@ class Board:
         else:
             _bp = None
         self.bom_profile: str | None = _bp
+        tpm = test_point_min_count_by_net
+        self.test_point_min_count_by_net: dict[str, int] | None = None
+        if tpm:
+            parsed_tpm: dict[str, int] = {}
+            for k, v in tpm.items():
+                ks = str(k).strip().lower()
+                if not ks:
+                    continue
+                try:
+                    parsed_tpm[ks] = int(v)
+                except (TypeError, ValueError) as e:
+                    raise ValueError(
+                        f"test_point_min_count_by_net[{k!r}] must be an integer, got {v!r}"
+                    ) from e
+            if parsed_tpm:
+                self.test_point_min_count_by_net = parsed_tpm
         rtp = require_test_point_on_nets
         if not rtp:
             self.require_test_point_on_nets: tuple[str, ...] = ()
@@ -165,23 +181,6 @@ class Board:
             self.require_test_point_on_nets = tuple(
                 str(x).strip().lower() for x in rtp if str(x).strip()
             )
-        tpm = test_point_min_count_by_net
-        if tpm:
-            self.test_point_min_count_by_net: dict[str, int] = {}
-            for k, v in tpm.items():
-                ks = str(k).strip().lower()
-                if not ks:
-                    continue
-                try:
-                    self.test_point_min_count_by_net[ks] = int(v)
-                except (TypeError, ValueError) as e:
-                    raise ValueError(
-                        f"test_point_min_count_by_net[{k!r}] must be an integer, got {v!r}"
-                    ) from e
-            if not self.test_point_min_count_by_net:
-                self.test_point_min_count_by_net = None
-        else:
-            self.test_point_min_count_by_net: dict[str, int] | None = None
         #: Copper pour intent for manifest / PCB handoff (PCB-009): ``net``, ``layer``, ``purpose``.
         self._copper_pour_intents: list[dict] = []
         #: Mounting hole intent (PCB-010): ``x_mm``, ``y_mm``, ``diameter_mm``, optional ``note``.
@@ -222,13 +221,13 @@ class Board:
         #: ``\"extended\"``, any other assembly label, or ``\"unset\"`` for empty field). Overrides
         #: :attr:`max_jlc_basic_parts` / :attr:`max_jlc_extended_parts` for keys present in this dict.
         _jcl = jlc_class_line_limits
+        self.jlc_class_line_limits: dict[str, int] | None = None
         if _jcl:
-            self.jlc_class_line_limits: dict[str, int] = {}
+            parsed_jcl: dict[str, int] = {}
             for _k, _v in _jcl.items():
                 _nk = str(_k).strip().lower() or "unset"
-                self.jlc_class_line_limits[_nk] = int(_v)
-        else:
-            self.jlc_class_line_limits: dict[str, int] | None = None
+                parsed_jcl[_nk] = int(_v)
+            self.jlc_class_line_limits = parsed_jcl
         #: When True, :func:`generate_layout` raises if any SKiDL pin number is missing from the footprint
         #: ``.kicad_mod`` pad list (PCB-002 strict pin↔pad parity).
         self.strict_footprint_pin_pad_match = bool(strict_footprint_pin_pad_match)
@@ -617,9 +616,9 @@ class Board:
         except Exception:
             pass
 
-        co_paths: tuple[str | os.PathLike[str], ...] = ()
+        co_paths: tuple[Path, ...] = ()
         if catalog_overlay_paths:
-            co_paths = tuple(catalog_overlay_paths)
+            co_paths = tuple(Path(p) for p in catalog_overlay_paths)
         ctx = OpenHaCCompileContext(
             self,
             allow_risky_part_lookups=allow_risky_part_lookups,
@@ -737,7 +736,7 @@ class Board:
                 lp = ngspice_log_path
                 if lp is None and output_dir is not None:
                     lp = _artifact_path(project_name, ".cir.ngspice.log", output_dir)
-                run_ngspice_headless(cir_path, log_path=lp)
+                run_ngspice_headless(cir_path, log_path=Path(lp) if lp is not None else None)
         except Exception as e:
             logger.error("SIMULATION ABORTED DUE TO PHYSICS RULES!")
             raise e

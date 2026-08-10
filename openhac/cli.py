@@ -134,8 +134,9 @@ def cmd_compile(args):
     _prev_compile_goal = os.environ.get("OPENHAC_COMPILE_GOAL")
     _prev_db_path = os.environ.get("OPENHAC_DB_PATH")
     _prev_symbol_dirs = os.environ.get("OPENHAC_KICAD_SYMBOL_DIRS")
-    _prev_compile_goal = os.environ.get("OPENHAC_COMPILE_GOAL")
     _prev_schematic_strict = os.environ.get("OPENHAC_SCHEMATIC_STRICT")
+    _prev_no_network = os.environ.get("OPENHAC_NO_NETWORK")
+    _prev_strict_fp_pad = os.environ.get("OPENHAC_STRICT_FOOTPRINT_PIN_PAD")
     _kicad_sym_keys = ("KICAD9_SYMBOL_DIR", "KICAD8_SYMBOL_DIR", "KICAD7_SYMBOL_DIR", "KICAD6_SYMBOL_DIR")
     _kicad_fp_keys = ("KICAD9_FOOTPRINT_DIR", "KICAD8_FOOTPRINT_DIR", "KICAD_FOOTPRINT_DIR")
     _prev_kicad_sym = {k: os.environ.get(k) for k in _kicad_sym_keys}
@@ -145,9 +146,15 @@ def cmd_compile(args):
     Component.require_kicad_symbols = bool(getattr(args, "strict_kicad", False))
 
     if getattr(args, "production", False):
+        # FAB-030: --production implies the full fabrication gate set.
         os.environ["OPENHAC_STRICT_KICAD"] = "1"
         os.environ["OPENHAC_STRICT_JIT"] = "1"
         os.environ["OPENHAC_REQUIRE_VERIFIED_PARTS"] = "1"
+        os.environ["OPENHAC_STRICT_FOOTPRINT_PIN_PAD"] = "1"
+        if not getattr(args, "compile_goal", None):
+            os.environ["OPENHAC_COMPILE_GOAL"] = "fabrication"
+        if not os.environ.get("OPENHAC_ALLOW_NETWORK", "").strip():
+            os.environ["OPENHAC_NO_NETWORK"] = "1"
         Component.require_kicad_symbols = True
         Component.strict_jit_lookups = True
     elif getattr(args, "strict_jit", False):
@@ -272,7 +279,20 @@ def cmd_compile(args):
                                     comp.refresh_from_db()
 
         name = args.name or _default_project_name(args.script)
-        export_schematic = not args.no_schematic
+        # FAB-040: --production defaults schematic off unless user explicitly wants it
+        # (omit --no-schematic and set OPENHAC_PRODUCTION_SCHEMATIC=1 to keep sch).
+        if getattr(args, "production", False) and not getattr(args, "no_schematic", False):
+            if os.environ.get("OPENHAC_PRODUCTION_SCHEMATIC", "").strip().lower() not in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            ):
+                export_schematic = False
+            else:
+                export_schematic = not args.no_schematic
+        else:
+            export_schematic = not args.no_schematic
         kicad_erc = bool(getattr(args, "kicad_erc", False))
         if kicad_erc and not export_schematic:
             logger.error("--kicad-erc requires a schematic export (omit --no-schematic).")
@@ -290,8 +310,10 @@ def cmd_compile(args):
         cg = getattr(args, "compile_goal", None)
         if cg:
             board.compile_goal = str(cg)
+        elif getattr(args, "production", False):
+            board.compile_goal = "fabrication"
 
-        if getattr(args, "strict_footprint_pads", False):
+        if getattr(args, "strict_footprint_pads", False) or getattr(args, "production", False):
             board.strict_footprint_pin_pad_match = True
 
         if getattr(args, "strict_kicad", False):
@@ -338,6 +360,20 @@ def cmd_compile(args):
             catalog_overlay_paths=tuple(overlay_paths) if overlay_paths else (),
         )
         logger.info("Compilation complete.")
+
+        # --- Optional interactive webview ---
+        if getattr(args, "webview", False):
+            try:
+                out_dir = getattr(args, "output_dir", None) or os.path.join(
+                    os.path.dirname(os.path.abspath(args.script)), name
+                )
+                webview_path = os.path.join(out_dir, f"{name}.graph-explorer.html")
+                board.export_webview(webview_path)
+                logger.info("Webview written: %s", webview_path)
+                import webbrowser
+                webbrowser.open(f"file://{os.path.abspath(webview_path)}")
+            except Exception as e:
+                logger.warning("Webview generation failed: %s", e)
     finally:
         if _prev_skip_layout is None:
             os.environ.pop("OPENHAC_SKIP_LAYOUT", None)
@@ -355,6 +391,14 @@ def cmd_compile(args):
             os.environ.pop("OPENHAC_REQUIRE_VERIFIED_PARTS", None)
         else:
             os.environ["OPENHAC_REQUIRE_VERIFIED_PARTS"] = _prev_req_verified
+        if _prev_no_network is None:
+            os.environ.pop("OPENHAC_NO_NETWORK", None)
+        else:
+            os.environ["OPENHAC_NO_NETWORK"] = _prev_no_network
+        if _prev_strict_fp_pad is None:
+            os.environ.pop("OPENHAC_STRICT_FOOTPRINT_PIN_PAD", None)
+        else:
+            os.environ["OPENHAC_STRICT_FOOTPRINT_PIN_PAD"] = _prev_strict_fp_pad
         if _prev_db_path is None:
             os.environ.pop("OPENHAC_DB_PATH", None)
         else:
@@ -962,7 +1006,9 @@ def main():
         "--strict",
         action="store_true",
         dest="production",
-        help="Strict KiCad symbols + strict JIT (LIB-004 / LIB-003)",
+        help="FAB-030: fabrication gate set — compile_goal=fabrication, strict KiCad/JIT, "
+        "verified parts, strict footprint pads, OPENHAC_NO_NETWORK=1, schematic off by default "
+        "(set OPENHAC_PRODUCTION_SCHEMATIC=1 to keep .kicad_sch)",
     )
     p_compile.add_argument(
         "--require-verified-parts",
@@ -1081,6 +1127,11 @@ def main():
         metavar="PATH",
         help="JSON catalog overlay file or directory (*.json). Repeatable; merged after bundled overlays. "
         "Same as env OPENHAC_CATALOG_OVERLAY (pathsep-separated). See openhac/database/catalog_overlay.py.",
+    )
+    p_compile.add_argument(
+        "--webview",
+        action="store_true",
+        help="Generate an interactive HTML graph explorer after compilation and open it in the browser.",
     )
     p_compile.set_defaults(func=cmd_compile)
 

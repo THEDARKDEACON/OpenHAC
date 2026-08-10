@@ -252,8 +252,9 @@ def solve_placement_with_relaxation(board, max_relaxations: int = 2) -> bool:
 def assert_footprint_pin_pad_or_raise(board) -> None:
     """Raise :class:`LayoutGenerationError` if strict PCB-002 checks find pad↔pin mismatches.
 
-    Strict mode is enabled by :attr:`Board.strict_footprint_pin_pad_match` or
-    ``OPENHAC_STRICT_FOOTPRINT_PIN_PAD=1``. Uses :func:`openhac.compiler.pcb_placement.pin_pad_coverage_warnings_for_board`
+    Strict mode is enabled by :attr:`Board.strict_footprint_pin_pad_match`,
+    ``OPENHAC_STRICT_FOOTPRINT_PIN_PAD=1``, or ``compile_goal=fabrication`` (FAB-002).
+    Uses :func:`openhac.compiler.pcb_placement.pin_pad_coverage_warnings_for_board`
     so the check matches **OpenHaC board modules** (not only SKiDL's default circuit).
     """
     import os
@@ -266,6 +267,13 @@ def assert_footprint_pin_pad_or_raise(board) -> None:
             "yes",
             "on",
         )
+    if not strict:
+        try:
+            goal = str(getattr(board, "effective_compile_goal", lambda: "")()).strip().lower()
+        except Exception:
+            goal = (os.environ.get("OPENHAC_COMPILE_GOAL") or "").strip().lower()
+        if goal == "fabrication":
+            strict = True
     if not strict:
         return
     from openhac.compiler.pcb_placement import pin_pad_coverage_warnings_for_board

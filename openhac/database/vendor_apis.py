@@ -44,8 +44,17 @@ logger = logging.getLogger("openhac.vendor_apis")
 
 # Cache TTL in seconds (default: 24 hours for API responses)
 DEFAULT_CACHE_TTL = 86400
-_default_cache_db = os.path.join(os.path.dirname(__file__), "api_cache.db")
-CACHE_DB_PATH = os.environ.get("OPENHAC_CACHE_DB", _default_cache_db)
+_default_cache_db = os.path.join(
+    os.environ.get("XDG_CACHE_HOME") or os.path.expanduser("~/.cache"),
+    "openhac",
+    "api_cache.db",
+)
+# Prefer OPENHAC_CACHE_DB / OPENHAC_API_CACHE_PATH; never require a tracked in-tree DB (FAB-012).
+CACHE_DB_PATH = (
+    os.environ.get("OPENHAC_API_CACHE_PATH")
+    or os.environ.get("OPENHAC_CACHE_DB")
+    or _default_cache_db
+)
 
 
 class APICache:
@@ -69,6 +78,10 @@ class APICache:
     def _init_db(self):
         """Initialize cache table."""
         import sqlite3
+        from pathlib import Path
+
+        parent = Path(self.db_path).expanduser().resolve().parent
+        parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(self.db_path, check_same_thread=False)
         with self._lock:
             self.conn.execute("""

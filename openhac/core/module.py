@@ -72,9 +72,12 @@ class Module:
             elif isinstance(item, Module):
                 item.nc_unused_pins()
             else:
-                # Handle raw SKiDL Part objects
+                # Handle raw Part objects - only connect truly floating, non-power pins
                 pins = item.get_pins() if hasattr(item, "get_pins") else []
                 for pin in pins:
+                    pin_type = str(getattr(pin, "func", "") or getattr(pin, "pin_type", "")).lower()
+                    if pin_type in ("pwr", "power", "pwr_out", "power_out", "gnd", "ground", "pwrin", "pwr_in"):
+                        continue  # Never tie power/ground pins to NC
                     if hasattr(pin, "is_connected") and not pin.is_connected():
                         pin += nc_net
                     elif getattr(pin, "net", None) is None:

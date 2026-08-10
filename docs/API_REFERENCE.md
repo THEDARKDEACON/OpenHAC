@@ -2,6 +2,14 @@
 
 OpenHaC (Hardware as Code) is a Python-based framework that allows you to construct modular, production-ready PCBs completely through code. This guide serves as the official reference for defining components, modules, interfaces, and controlling schematic outputs.
 
+## API stability (FAB-042)
+
+**Stable (prefer these):** `openhac.core` (`Board`, `Module`, `Component`, `Net`, `Interface`, …) and the `openhac` CLI.
+
+**Internal (may change without notice):** `openhac.compiler.*`, most of `openhac.database.*` helpers, and compile pipeline phase ordering details (phase list is recorded on the compile manifest for audit).
+
+Fabrication fail-closed gates: see [internal/FABRICATION_READINESS_SPEC.md](internal/FABRICATION_READINESS_SPEC.md).
+
 ---
 
 ## 1. Core Concepts

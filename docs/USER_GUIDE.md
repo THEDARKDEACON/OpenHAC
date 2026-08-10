@@ -87,6 +87,8 @@ Once you've mastered the basics, explore these advanced capabilities:
 OpenHaC produces standard KiCad files. You can open the generated `.kicad_pcb` in KiCad to:
 1.  Fine-tune component placement.
 2.  Adjust routing or trace widths.
-3.  Generate Gerbers via `kicad-cli` or the GUI.
+3.  Generate Gerbers via `openhac export fab`, `kicad-cli`, or the GUI.
 
-For a full list of supported manufacturing features, see the **[Implementation Status](internal/IMPLEMENTATION_STATUS.md)** (Technical).
+Prefer **webview / IR** for connectivity review; auto-generated `.kicad_sch` is optional and not the electrical source of truth.
+
+For capability tiers and non-goals, see **[SCOPE](internal/SCOPE.md)**. For the Phase-2 fail-closed **code → fab** contract (`FAB-*` IDs), see **[Fabrication Readiness Spec](internal/FABRICATION_READINESS_SPEC.md)** and status in **[Implementation Status](internal/IMPLEMENTATION_STATUS.md)**. Release steps: **[RELEASE_CHECKLIST](internal/RELEASE_CHECKLIST.md)**.

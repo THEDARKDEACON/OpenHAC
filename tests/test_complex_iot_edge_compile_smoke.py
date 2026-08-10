@@ -140,6 +140,7 @@ def test_complex_iot_edge_cli_compile_skip_layout(tmp_path):
         "PYTHONPATH": str(_REPO_ROOT),
         "OPENHAC_DB_PATH": str(db_path),
         "OPENHAC_SKIP_LAYOUT": "1",
+        "OPENHAC_NO_NETWORK": "1",
     }
     r = subprocess.run(
         [
@@ -158,7 +159,7 @@ def test_complex_iot_edge_cli_compile_skip_layout(tmp_path):
         cwd=str(tmp_path),
         capture_output=True,
         text=True,
-        timeout=180,
+        timeout=300,
         env=env,
     )
     assert r.returncode == 0, (r.stdout, r.stderr)

@@ -27,9 +27,9 @@ jobs:
       - name: Ruff
         run: ruff check openhac tests
 
-      - name: Mypy (core + pin resolution) FAB-050
-        run: mypy openhac/core openhac/compiler/pcb_placement.py openhac/compiler/layout_gen.py --ignore-missing-imports --no-error-summary || true
-        # Soft gate initially: log failures; harden once clean.
+      - name: Mypy (core + placement) FAB-050
+        run: mypy openhac/core openhac/compiler/pcb_placement.py openhac/compiler/layout_gen.py --ignore-missing-imports --follow-imports=silent --no-error-summary
+
 
       - name: Verify package version vs pyproject (SW-004)
         run: python scripts/verify_openhac_version.py

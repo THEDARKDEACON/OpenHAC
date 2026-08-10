@@ -28,6 +28,17 @@ def _sanitize_net_name(name: str) -> str:
     return name.replace(" ", "_").replace("-", "_").replace("/", "_")
 
 
+def _iter_connected_pins(part):
+    """Yield pins on *part* that may carry a net (SKiDL dict or native list)."""
+    pins = getattr(part, "pins", None)
+    if pins is None:
+        return
+    if isinstance(pins, dict):
+        yield from pins.values()
+    elif isinstance(pins, (list, tuple)):
+        yield from pins
+
+
 def generate_spice(
     output_cir_path: str,
     *,
@@ -81,7 +92,7 @@ def generate_spice(
                     continue
 
                 nodes_with_num: list[tuple[str, str]] = []
-                for p in part.pins.values():
+                for p in _iter_connected_pins(part):
                     if p.net is not None:
                         net_name = _sanitize_net_name(str(p.net.name))
                         nodes_with_num.append((str(getattr(p, "num", "") or ""), net_name))

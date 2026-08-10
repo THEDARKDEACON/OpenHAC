@@ -140,12 +140,22 @@ def _truthy(v: str | None) -> bool:
 
 
 def network_allowed() -> bool:
-    """Policy gate for network access (defaults to allowed)."""
+    """Policy gate for network access.
+
+    Defaults to allowed in handoff/dev. Denied when:
+    - ``OPENHAC_NO_NETWORK`` is set, or
+    - deterministic mode without ``OPENHAC_ALLOW_NETWORK``, or
+    - fabrication compile goal without ``OPENHAC_ALLOW_NETWORK`` (FAB-010).
+    """
     if _truthy(os.environ.get("OPENHAC_NO_NETWORK")):
         return False
-    # Deterministic builds should not silently depend on network.
-    if _truthy(os.environ.get("OPENHAC_DETERMINISTIC")) and not _truthy(os.environ.get("OPENHAC_ALLOW_NETWORK")):
+    allow_break_glass = _truthy(os.environ.get("OPENHAC_ALLOW_NETWORK"))
+    if _truthy(os.environ.get("OPENHAC_DETERMINISTIC")) and not allow_break_glass:
         return False
+    goal = (os.environ.get("OPENHAC_COMPILE_GOAL") or "").strip().lower()
+    if goal in ("fabrication", "fab", "push_button_fab", "push-button-fab", "pushbuttonfab"):
+        if not allow_break_glass:
+            return False
     return True
 
 
@@ -587,6 +597,20 @@ def enrich_component_in_db(
     existing_po = _pinout_list_from_raw(row.get("pinout_json"))
     row_d = dict(row)
 
+    if not allow_network:
+        pref = (os.environ.get("OPENHAC_ENRICH_PINOUT_PREFERENCE") or "auto").strip().lower()
+        local_po_offline = _local_pinout_for_row(row_d)
+        if (
+            local_po_offline
+            and pref != "vendor"
+            and _pinout_is_sufficient(local_po_offline, row_d)
+            and _persist_pinout_only(db, gn, local_po_offline, pinout_source="kicad_symbol")
+        ):
+            return EnrichResult(attempted=False, updated=True, vendor=None, reason="kicad_symbol")
+        if _pinout_is_sufficient(existing_po, row_d):
+            return EnrichResult(attempted=False, updated=False, vendor=None, reason="already_has_pinout")
+        return EnrichResult(attempted=False, updated=False, vendor=None, reason="network_disallowed")
+
     # Step: EasyEDA Footprint & 3D Model Generation (PCB-008)
     # Moved before pinout check to ensure 3D models are generated even if pinout is sufficient.
     try:
@@ -853,11 +877,21 @@ def discover_enrich_targets_from_board(board: Any) -> list[dict[str, Any]]:
             except Exception:
                 row = None
             row_d = dict(row) if row else None
-            # Targeted Enrichment check: lacks pinout OR lacks 3D model (Universal 3D goal)
-            has_po = not needs_pinout_database_enrich(cd.get("pinout_json"), catalog_row=row_d)
-            has_3d = bool(row_d and row_d.get("model_3d_local") and os.path.isfile(str(row_d.get("model_3d_local"))))
-            
-            if has_po and has_3d:
+            instance_po = cd.get("pinout_json")
+            if instance_po is None and row_d is not None:
+                instance_po = row_d.get("pinout_json")
+            needs_pinout = needs_pinout_database_enrich(instance_po, catalog_row=row_d)
+            needs_3d = False
+            if row_d:
+                sku = str(row_d.get("supplier_sku") or "").strip()
+                has_lcsc = sku.upper().startswith("C") and sku[1:].isdigit()
+                has_3d = bool(
+                    row_d.get("model_3d_local")
+                    and os.path.isfile(str(row_d.get("model_3d_local")))
+                )
+                needs_3d = has_lcsc and not has_3d
+
+            if not needs_pinout and not needs_3d:
                 continue
                 
             rec: dict[str, Any] = {"generic_name": gn}

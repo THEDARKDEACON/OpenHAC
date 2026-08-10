@@ -54,10 +54,23 @@ def compute_pcb_metrics(pcb_path: str | Path, *, pcbnew_mod=None) -> dict:
         except Exception:
             net_count = 0
 
+    # FAB-021: best-effort unrouted connectivity via pcbnew connectivity API.
+    unrouted = 0
+    try:
+        conn = pcb.GetConnectivity()
+        # KiCad: GetUnconnectedCount() when available
+        if hasattr(conn, "GetUnconnectedCount"):
+            unrouted = int(conn.GetUnconnectedCount() or 0)
+        elif hasattr(pcb, "GetUnconnectedCount"):
+            unrouted = int(pcb.GetUnconnectedCount() or 0)
+    except Exception:
+        unrouted = 0
+
     return {
         "track_count": int(track_count),
         "via_count": int(via_count),
         "footprint_count": int(fp_count),
         "net_count": int(net_count),
+        "unrouted_net_count": int(unrouted),
     }
 

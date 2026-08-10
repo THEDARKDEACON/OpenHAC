@@ -3,6 +3,11 @@
 import pytest
 from unittest.mock import patch, MagicMock
 
+try:
+    from builtins import BaseExceptionGroup
+except ImportError:
+    from exceptiongroup import BaseExceptionGroup
+
 from openhac.core.base import Module
 from openhac.core.board import Board
 from openhac.compiler.rule_check import (
@@ -413,7 +418,7 @@ class TestDRC:
 class TestSCH004DeclarePowerRail:
     def test_declare_power_rail_requires_pwr_flag(self, tmp_db, monkeypatch):
         import openhac.core  # noqa: F401
-        from skidl import Net, Part
+        from openhac.core.net import Net
 
         from openhac.core.base import Component
 
@@ -432,7 +437,6 @@ class TestSCH004DeclarePowerRail:
         monkeypatch.setattr(Component, "db", dm)
 
         gnd = Net("GND")
-        Part("power", "PWR_FLAG")[1] += gnd
         rail = Net("XRAIL_CUSTOM")
         board = Board(size_mm=(10, 10))
         board.declare_power_rail("VPP", rail)
@@ -440,7 +444,7 @@ class TestSCH004DeclarePowerRail:
         r["1"] += rail
         r["2"] += gnd
 
-        with pytest.raises(Exception) as ei:
+        with pytest.raises((Exception, BaseExceptionGroup)) as ei:
             run_erc(board)
         exc = ei.value
         nested = getattr(exc, "exceptions", None)

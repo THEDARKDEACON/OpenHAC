@@ -21,9 +21,9 @@ def test_schematic_default_multisheet_threshold(monkeypatch, tmp_path: Path) -> 
     script.write_text(
         """
 import openhac.core  # noqa: F401
-from skidl import Net, Part
+from openhac.core.net import Net
 from openhac.core import Board
-from openhac.core.base import Module
+from openhac.core.base import Module, Component
 
 n = Net("N")
 g = Net("G")
@@ -31,22 +31,30 @@ g = Net("G")
 class A(Module):
     def __init__(self):
         super().__init__("A")
-        r = Part("Device", "R", value="10k", footprint="Resistor_SMD:R_0603_1608Metric")
+        r = self.add(
+            Component(
+                "R_A",
+                pins={"1": ("1", "passive"), "2": ("2", "passive")},
+            )
+        )
         r.fields["OpenHaC_Module"] = "A"
-        self._n = n
-        self._n += r[1]
-        self._g = g
-        self._g += r[2]
+        r.fields["kicad_footprint"] = "Resistor_SMD:R_0603_1608Metric"
+        r["1"] += n
+        r["2"] += g
 
 class B(Module):
     def __init__(self):
         super().__init__("B")
-        r = Part("Device", "R", value="10k", footprint="Resistor_SMD:R_0603_1608Metric")
+        r = self.add(
+            Component(
+                "R_B",
+                pins={"1": ("1", "passive"), "2": ("2", "passive")},
+            )
+        )
         r.fields["OpenHaC_Module"] = "B"
-        self._n = n
-        self._n += r[1]
-        self._g = g
-        self._g += r[2]
+        r.fields["kicad_footprint"] = "Resistor_SMD:R_0603_1608Metric"
+        r["1"] += n
+        r["2"] += g
 
 board = Board((20, 20))
 board.add_module(A())
@@ -55,7 +63,7 @@ board.add_module(B())
         encoding="utf-8",
     )
 
-    env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT)}
+    env = {**os.environ, "PYTHONPATH": str(_REPO_ROOT), "OPENHAC_NO_NETWORK": "1"}
     r = subprocess.run(
         [
             sys.executable,

@@ -10,6 +10,8 @@
 
 **Scope:** Product capability tiers and non-goals: [SCOPE.md](./SCOPE.md).
 
+**Phase-2 (follow-and-implement):** Fail-closed **code → fab package** gates live in [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md) (`FAB-*` IDs). That document is the active contract for production-grade fabrication readiness; this Phase-1 spec remains historical for the closed 48 IDs.
+
 ### Phase-1 completion (2026)
 
 All **48** numbered requirement IDs are **closed** in [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md) with status **Done**.
@@ -18,7 +20,7 @@ All **48** numbered requirement IDs are **closed** in [IMPLEMENTATION_STATUS.md]
 
 Per-ID **Current state** / **Approach** sections below remain historical context; if they conflict with **Done** notes in IMPLEMENTATION_STATUS, **IMPLEMENTATION_STATUS wins** for completion claims until a future spec revision realigns the prose.
 
-**Future revisions** may introduce **Phase-2** IDs or re-open scope; this document still lists aspirational **Target state** text as **roadmap**, not as open Phase-1 gaps.
+**Phase-2** is defined separately in [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md); aspirational **Target state** prose below that exceeds Phase-1 Done notes is roadmap only and does **not** reopen Phase-1 gaps.
 
 **Conventions**
 

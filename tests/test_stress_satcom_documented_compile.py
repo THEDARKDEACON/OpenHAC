@@ -16,9 +16,11 @@ _SEED = _REPO_ROOT / "seeds" / "stress_satcom_seed.json"
 
 @pytest.mark.skipif(not _EXAMPLE.is_file(), reason="stress example missing")
 def test_stress_satcom_docs_compile_offline(tmp_path: Path) -> None:
+    db_path = tmp_path / "stress_satcom.db"
     env = {
         **os.environ,
         "PYTHONPATH": str(_REPO_ROOT),
+        "OPENHAC_DB_PATH": str(db_path),
         "OPENHAC_SKIP_LAYOUT": "1",
         "OPENHAC_NO_NETWORK": "1",
         # Force multi-sheet so this stays stable even if default threshold changes.

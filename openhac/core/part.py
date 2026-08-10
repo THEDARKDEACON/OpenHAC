@@ -57,7 +57,7 @@ class Pin:
         """Compatibility alias for SKiDL-like APIs."""
         return self.number
         
-    def __add__(self, other) -> Pin:
+    def __add__(self, other: Any) -> Pin:
         """Connect this pin to a net or another pin using + operator.
 
         Accepts both native ``openhac.core.net.Net`` objects and any duck-typed
@@ -120,7 +120,7 @@ class Pin:
         else:
             raise TypeError(f"Cannot connect Pin to {type(other)}")
     
-    def __iadd__(self, other: Net) -> Pin:
+    def __iadd__(self, other: Any) -> Pin:
         """Connect this pin to a net using += operator."""
         return self.__add__(other)
     

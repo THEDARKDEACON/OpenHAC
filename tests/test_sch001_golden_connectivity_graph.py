@@ -48,13 +48,14 @@ def test_exported_schematic_wires_match_expected_pin_edges(tmp_path: Path, monke
     expected = set(schematic_wire_endpoint_pairs(circuit))
 
     # Build a coordinate -> (ref,pin) lookup from the generator’s own placements and stub pin model.
-    geom = schematic_geometry(circuit, symbol_resolver=EmptySymbolPinResolver())
+    resolver = EmptySymbolPinResolver()
+    geom = schematic_geometry(circuit, symbol_resolver=resolver)
     placements = geom["part_placements"]
     pt_to_pin: dict[tuple[int, int], tuple[str, str]] = {}
     for part, (px, py) in placements.items():
         ref = str(getattr(part, "ref", "") or "?")
         for pin in getattr(part, "pins", []) or []:
-            x, y, _rot = _pin_world_xy(pin, part, (px, py), None)
+            x, y, _rot = _pin_world_xy(pin, part, (px, py), resolver)
             pt_to_pin[_pt_key(x, y)] = (ref, str(getattr(pin, "num", "?")))
 
     # Build a graph of wire segments to find connected components.

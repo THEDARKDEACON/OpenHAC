@@ -1,0 +1,9 @@
+### Missing 3D models - created on 2026-05-31 14:29
+### Printed by checking_3D_models plugin
+Board file: /home/gareth-joel/Downloads/Hardware_as_Code/examples/complex_sdr_node/complex_sdr_node.kicad_pcb
+3D missing models written to:
+/home/gareth-joel/Downloads/Hardware_as_Code/examples/complex_sdr_node/complex_sdr_node_missing3Dmodels.txt
+-------
+-------
+NUM of 3D missing models:0
+checked extensions ['.stp', '.step', '.stpZ']

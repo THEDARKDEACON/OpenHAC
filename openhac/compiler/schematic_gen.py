@@ -152,7 +152,7 @@ def _module_field(part) -> str:
                 return str(v).strip()
     except Exception:
         pass
-    return None
+    return ""
 
 def _module_layer(part) -> int | None:
     try:
@@ -180,7 +180,7 @@ def _assign_positions_grouped_by_module(parts, resolver: SchematicPinResolver | 
     for p in parts:
         groups.setdefault(_module_field(p), []).append(p)
 
-    module_names = sorted(groups.keys(), key=lambda s: (s == "", s))
+    module_names = sorted(groups.keys(), key=lambda s: (not s, s))
     positions: dict = {}
     
     # 50mil Snap Utility (1.27mm)
@@ -277,18 +277,18 @@ def _assign_positions_grouped_by_module(parts, resolver: SchematicPinResolver | 
                             py = _snap(cur_y + off[1]) - off[1]
                 
                 lpos[p] = (px, py)
-                # Rule: Aggressive 25.4mm (1 inch) padding between parts vertically
-                cur_y += ph + 25.4
+                # Rule: 12.7mm (0.5 inch) padding between parts vertically for native symbols
+                cur_y += ph + 12.7
             
             max_mod_y = max(max_mod_y, cur_y)
-            # Rule: Large 101.6mm (4 inch) gap between stages horizontally for labels/wires
-            cur_x += 101.6
+            # Rule: 50.8mm (2 inch) gap between stages horizontally
+            cur_x += 50.8
 
         for p, (lx, ly) in lpos.items():
             positions[p] = (lx, ly + cur_mod_y)
         
         # Rule: Advance the module vertical offset to prevent block overlap
-        cur_mod_y += max_mod_y + 101.6
+        cur_mod_y += max_mod_y + 50.8
 
     return positions
 
@@ -603,6 +603,12 @@ def write_generated_symbol_library(
     
     for name in names:
         part = by_name[name]
+        
+        # Professional Grade: Skip synthetic generation for native KiCad symbols
+        lib_nick = part_library_name(part)
+        if lib_nick in ("Device", "power"):
+            continue
+            
         val = str(getattr(part, 'value', '') or name)
         ref_prefix = _get_ref_prefix(part)
         stype = _detect_symbol_type(part)
@@ -659,7 +665,8 @@ def _snap(val: float) -> float:
 def _emit_symbol_instance(f, part, x, y, uuid_str: str) -> None:
     sym_name = schematic_symbol_lib_key(part)
     lib_nick = part_library_name(part)
-    if not lib_nick or lib_nick == "Device":
+    # Professional Grade: Allow native KiCad library symbols to render
+    if not lib_nick:
         lib_nick = "OpenHaC"
     lib_id = f"{lib_nick}:{sym_name}"
     
@@ -948,7 +955,9 @@ class _RecordingPinResolver:
         sname = symbol_name or (getattr(part, "name", "") or "")
         key = f"{lib}:{sname}"
         stats = self.by_symbol.setdefault(key, {"resolved": 0, "stub": 0})
-        if off is not None:
+        from openhac.compiler.kicad_sym_pinpos import EmptySymbolPinResolver
+
+        if off is not None and not isinstance(self._inner, EmptySymbolPinResolver):
             self.resolved_pin_count += 1
             stats["resolved"] += 1
         else:

@@ -35,6 +35,7 @@ def seeded_resistor_db(tmp_db, monkeypatch):
             "manufacturer": "",
             "mpn": "PWR_FLAG",
             "description": "Power Flag",
+            "pinout_json": '[{"num": "1", "name": "pwr", "type": "power_out"}]',
         }
     )
     monkeypatch.setattr(Component, "db", dm)

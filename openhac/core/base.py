@@ -111,7 +111,7 @@ class Component:
     def __init__(
         self,
         generic_name: str,
-        comp_data: dict = None,
+        comp_data: dict | None = None,
         *,
         parent_module: "Module | None" = None,
         pins: dict | None = None,
@@ -207,7 +207,7 @@ class Component:
         self._comp_data = dict(comp_data)
 
         # Get pinout from database (best-effort auto-enrich if missing and network allowed).
-        pins = self._get_pins_from_data(comp_data)
+        pin_objs = self._get_pins_from_data(comp_data)
         # Prefer constructor-supplied metadata; do not let an empty/stale DB row
         # overwrite explicit pinout (breaks fab golden / offline parts).
         try:
@@ -235,14 +235,14 @@ class Component:
         import openhac.core.circuit
         refdes = kwargs.get('refdes') or openhac.core.circuit.default_circuit.auto_generate_refdes(ref_prefix)
         
-        footprint = kwargs.get("footprint") or comp_data.get('kicad_footprint')
+        footprint = str(kwargs.get("footprint") or comp_data.get("kicad_footprint") or "")
         
         try:
             self.part = Part(
                 refdes=refdes,
                 footprint=footprint,
                 fields={},
-                pins=pins,
+                pins=list(pin_objs or []),
                 value=generic_name,
             )
         except Exception as e:
@@ -289,7 +289,7 @@ class Component:
         )
         self.part.fields["Alternate_Count"] = str(alt_line_count)
 
-        offer_bits: list[str] = []
+        offer_bits: list[tuple[int, str]] = []
         for row in self.db.list_part_offers(generic_name):
             sup = (row.get("supplier") or "").strip()
             if not sup:
@@ -715,23 +715,6 @@ class Component:
         self.layout_zone = zone
         zone.add_member(self)
         return self
-
-    def nc_unused_pins(self) -> None:
-        """Connect all unconnected pins to the __NOCONNECT net."""
-        import openhac.core.circuit
-        from openhac.core.net import Net
-        
-        nc_net = None
-        for n in getattr(openhac.core.circuit.default_circuit, "nets", []):
-            if str(getattr(n, "name", "")).upper() == "NC":
-                nc_net = n
-                break
-        if not nc_net:
-            nc_net = Net("NC")
-            
-        for pin in self.part.pins.values():
-            if not pin.is_connected():
-                pin += nc_net
 
     def refresh_from_db(self):
         """Re-read component metadata from the database and update Part fields.

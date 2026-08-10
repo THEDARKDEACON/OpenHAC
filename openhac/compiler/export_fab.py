@@ -127,6 +127,14 @@ def export_fabrication_bundle(
     out = Path(output_dir)
     if not pcb.is_file():
         raise FabExportError(f"PCB file not found: {pcb}")
+    goal = (os.environ.get("OPENHAC_COMPILE_GOAL") or "").strip().lower()
+    raw_omit = (os.environ.get("OPENHAC_OMITTED_FOOTPRINT_REFS") or "").strip()
+    if raw_omit and goal in ("fabrication", "fab"):
+        refs = [x.strip() for x in raw_omit.split(",") if x.strip()]
+        if refs:
+            raise FabExportError(
+                "FAB-003: refusing fab export with omitted footprints: " + ", ".join(refs)
+            )
     kicad_cli = _which_kicad_cli()
     if not kicad_cli:
         raise FabExportError(
