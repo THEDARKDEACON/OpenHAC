@@ -191,10 +191,11 @@ class Part:
     def __getitem__(self, pin_id: str) -> Pin:
         """Get a pin by number or name.
         
-        Example: part['1'] or part['VCC']
+        Example: part['1'] or part['VCC'] (ints are coerced to str).
         """
-        if pin_id in self.pins:
-            return self.pins[pin_id]
+        key = pin_id if isinstance(pin_id, str) else str(pin_id)
+        if key in self.pins:
+            return self.pins[key]
         raise KeyError(f"Pin '{pin_id}' not found in {self.refdes}")
     
     def __setitem__(self, pin_id: str, net: Net):

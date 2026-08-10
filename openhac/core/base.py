@@ -208,13 +208,21 @@ class Component:
 
         # Get pinout from database (best-effort auto-enrich if missing and network allowed).
         pins = self._get_pins_from_data(comp_data)
-        # Refresh cached comp_data in case enrichment updated DB fields (pinout/symbol/footprint).
+        # Prefer constructor-supplied metadata; do not let an empty/stale DB row
+        # overwrite explicit pinout (breaks fab golden / offline parts).
         try:
             fresh = self.db.get_component(generic_name)
             if fresh:
                 fresh = strip_openhac_internal_fields(fresh)
-                self._comp_data = dict(fresh)
-                comp_data = fresh
+                merged = dict(fresh)
+                # Keep explicit pinout/footprint/symbol from constructor when present.
+                for k in ("pinout_json", "kicad_footprint", "kicad_symbol", "package", "category"):
+                    if comp_data.get(k) and not merged.get(k):
+                        merged[k] = comp_data.get(k)
+                    elif comp_data.get(k) and k == "pinout_json":
+                        merged[k] = comp_data.get(k)
+                self._comp_data = merged
+                comp_data = merged
         except Exception:
             pass
         
@@ -226,7 +234,6 @@ class Component:
         )
         import openhac.core.circuit
         refdes = kwargs.get('refdes') or openhac.core.circuit.default_circuit.auto_generate_refdes(ref_prefix)
-        print("DEBUG refdes:", refdes)
         
         footprint = kwargs.get("footprint") or comp_data.get('kicad_footprint')
         
@@ -379,11 +386,23 @@ class Component:
                 ignore_duplicate=True,
             )
         except Exception as e:
-            # strict mode
-            logger.exception("Failed to cache live lookup for %r", generic_name)
-            raise PartDatabaseWriteError(
+            msg = (
                 f"Could not store JIT-resolved component {generic_name!r} in the local database."
-            ) from e
+            )
+            import os
+
+            goal = (os.environ.get("OPENHAC_COMPILE_GOAL") or "").strip().lower()
+            strict_db = (os.environ.get("OPENHAC_STRICT_DB_WRITES") or "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+            if goal in ("fabrication", "fab") or strict_db:
+                logger.exception("Failed to cache live lookup for %r", generic_name)
+                raise PartDatabaseWriteError(msg) from e
+            logger.warning("%s (%s)", msg, e)
+            warnings.warn(msg, UserWarning, stacklevel=4)
 
         return comp_data
 
@@ -426,9 +445,10 @@ class Component:
             return pins
 
         try:
-            return self.part[key]
+            return self.part[key if isinstance(key, str) else str(key)]
         except KeyError:
-            for alt in _component_pin_access_aliases(key):
+            key_s = str(key)
+            for alt in _component_pin_access_aliases(key_s):
                 try:
                     return self.part[alt]
                 except KeyError:
@@ -457,9 +477,9 @@ class Component:
                                     except Exception:
                                         pass
                                 try:
-                                    return self.part[key]
+                                    return self.part[key_s]
                                 except KeyError:
-                                    for alt in _component_pin_access_aliases(key):
+                                    for alt in _component_pin_access_aliases(key_s):
                                         try:
                                             return self.part[alt]
                                         except KeyError:
@@ -532,7 +552,7 @@ class Component:
             else:
                 new_pin = Pin(key_s, key_s, "bidirectional")
             self.part.add_pin(new_pin)
-            return self.part[key]
+            return self.part[key_s]
 
     def __setitem__(self, key, value):
         """Connect ``value`` to pin ``key``, resolving the same aliases as :meth:`__getitem__`.
@@ -549,45 +569,13 @@ class Component:
         pin += value
 
     def _get_pins_from_data(self, comp_data: dict) -> list[Pin]:
-        """Get pinout from explicit definitions, database, or generate fallback.
-        
-        Priority:
-        1. Explicit pins provided in constructor
-        2. Database pinout_json
-        3. Package template
-        4. Generic numbered pins (last resort)
-        """
-        import json
+        """Get pinout via :func:`openhac.core.pin_resolution.get_pins_from_data` (FAB-001)."""
+        from openhac.core.pin_resolution import get_pins_from_data
 
-        # Priority 1: Explicit pins from constructor
-        if getattr(self, "_explicit_pins", None):
-            return self._pins_from_explicit(self._explicit_pins)
-
-        # Priority 2: Database pinout
-        try:
-            pinout_json = comp_data.get("pinout_json")
-            symbol_data = comp_data.get("symbol_data")
-        except Exception:
-            pinout_json = None
-            symbol_data = None
-
-        if pinout_json:
-            try:
-                pinout = json.loads(pinout_json)
-                return [Pin(p["num"], p["name"], p.get("type", "bidirectional")) for p in pinout]
-            except (json.JSONDecodeError, KeyError):
-                pass
-
-        # Priority 3: Package template
-        package = comp_data.get("package", "")
-        category = comp_data.get("category", "")
-        if package:
-            template_pins = self._get_package_template_pins(package, category)
-            if template_pins:
-                return template_pins
-
-        # Priority 4: Generic numbered pins
-        return self._generate_generic_pins(comp_data)
+        return get_pins_from_data(
+            comp_data,
+            explicit_pins=getattr(self, "_explicit_pins", None),
+        )
     
     def _pins_from_explicit(self, pins: dict) -> list[Pin]:
         """Convert explicit pin definitions to Pin objects."""
@@ -658,6 +646,7 @@ class Component:
         pin_count = len(pins)
         package = self._infer_package(pin_count)
         
+        from openhac.core.pin_resolution import _fallback_footprint
         comp_data = {
             "generic_name": generic_name,
             "mpn": generic_name.split("_")[-1] if "_" in generic_name else generic_name,
@@ -665,8 +654,8 @@ class Component:
             "description": f"User-defined component with {pin_count} pins",
             "category": "unknown",
             "package": package,
-            "kicad_symbol": f"Device:IC_{pin_count}PIN",
-            "kicad_footprint": f"Package_SMD:Generic_{pin_count}PIN",
+            "kicad_symbol": "Device:IC_Generic",
+            "kicad_footprint": _fallback_footprint(pin_count),
             "pinout_json": json.dumps(pinout),
         }
         

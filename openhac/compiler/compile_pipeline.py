@@ -46,6 +46,11 @@ class CompileState:
     erc_report_name: str | None = field(default=None, init=False)
     pcb_metrics: dict = field(default_factory=dict, init=False)
     enrich_metrics: dict = field(default_factory=lambda: {"poisoned_parts": []}, init=False)
+    omitted_footprint_refs: list[str] = field(default_factory=list, init=False)
+    enrich_failures: list[dict] = field(default_factory=list, init=False)
+    pad_pin_warnings: list[str] = field(default_factory=list, init=False)
+    network_allowed_at_compile: bool | None = field(default=None, init=False)
+    kicad_pcb_drc_report: str | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.skip_layout = os.environ.get("OPENHAC_SKIP_LAYOUT", "").lower() in ("1", "true", "yes")
@@ -77,10 +82,18 @@ def phase_enrich_parts(state: CompileState) -> None:
     failed = 0
     try:
         from openhac.database.enrich import enrich_component_in_db, needs_pinout_database_enrich, network_allowed
-    except Exception:
+    except Exception as e:
+        logger.exception("Enrich module import failed (FAB-013)")
+        state.enrich_failures.append({"generic_name": "*", "reason": f"import_failed:{e}"})
+        state.enrich_metrics.update(
+            {"attempted": 0, "updated": 0, "skipped": 0, "failed": 1, "network": None, "import_error": str(e)}
+        )
+        if state.compile_goal == "fabrication":
+            raise RuntimeError(f"FAB-013: enrich import failed in fabrication mode: {e}") from e
         return
 
     allow_net = network_allowed()
+    state.network_allowed_at_compile = bool(allow_net)
     if not allow_net and state.compile_goal == "fabrication":
         # Still allow the existing pinout gate to fail with a clearer list later.
         state.enrich_metrics.update({"attempted": 0, "updated": 0, "skipped": 0, "failed": 0, "network": False})
@@ -123,8 +136,11 @@ def phase_enrich_parts(state: CompileState) -> None:
                     updated += 1
                 elif res.attempted and not res.updated and (res.reason or "").startswith("lookup_failed"):
                     failed += 1
-            except Exception:
+                    state.enrich_failures.append({"generic_name": gn, "reason": res.reason or "lookup_failed"})
+            except Exception as e:
                 failed += 1
+                state.enrich_failures.append({"generic_name": gn, "reason": str(e)})
+                logger.warning("Enrich failed for %s: %s", gn, e)
 
     state.enrich_metrics.update({
         "attempted": attempted,
@@ -378,10 +394,13 @@ def phase_fixup_power_flags(state: CompileState) -> None:
     """Automatically add PWR_FLAG components to nets categorized as 'power' or 'gnd' (SCH-004)."""
     from openhac.circuit import get_default_circuit
     from openhac.core.base import Component
+    from openhac.compiler.rule_check import _net_requires_power_flag
     
     circuit = get_default_circuit()
     for net in circuit.nets:
-        if str(getattr(net, "name", "")) == "__NOCONNECT":
+        # Skip the __NOCONNECT sentinel and any net literally named 'NC'
+        net_name = str(getattr(net, "name", ""))
+        if net_name in ("__NOCONNECT", "NC") or net_name.upper().startswith("NC"):
             continue
         ntype = getattr(net, "_openhac_net_type", None)
         logger.debug(f"Checking net {getattr(net, 'name', net)} for PWR_FLAG: type={ntype}")
@@ -398,6 +417,11 @@ def phase_fixup_power_flags(state: CompileState) -> None:
                 # We provide minimal pin definition to satisfy native Component logic
                 try:
                     flag = Component("PWR_FLAG", pins={"1": ("pwr", "power_out")})
+                    flag.fields = {
+                        "kicad_symbol": "power:PWR_FLAG",
+                        "in_bom": False,
+                        "on_board": False
+                    }
                     flag["1"] += net
                     logger.info(f"Injected PWR_FLAG on net {net.name}")
                 except Exception as e:
@@ -420,6 +444,11 @@ def phase_kicad_pcb_drc(state: CompileState) -> None:
         return
     if state.skip_layout:
         return
+    if not state.auto_route:
+        # --no-route leaves ratsnest unconnected; KiCad DRC then fails on "unconnected items".
+        # Connectivity DRC is meaningful after autoroute (FAB-021/022).
+        logger.info("Skipping KiCad PCB DRC while auto_route is disabled (--no-route).")
+        return
     if not Path(state.pcb_path).is_file():
         return
     from openhac.compiler.kicad_pcb_drc import run_kicad_pcb_drc
@@ -431,6 +460,12 @@ def phase_kicad_pcb_drc(state: CompileState) -> None:
     except Exception:
         report = None
     run_kicad_pcb_drc(state.pcb_path, output_report=report, strict=True)
+    if report is not None:
+        state.kicad_pcb_drc_report = str(report)
+        try:
+            state.board._last_kicad_pcb_drc_report = str(report)
+        except Exception:
+            pass
 
 
 def phase_erc_drc(state: CompileState) -> None:
@@ -463,9 +498,13 @@ def phase_pinout_coverage(state: CompileState) -> None:
                     cd = getattr(comp, "_comp_data", {})  # if cached
                     pinout_json = (cd or {}).get("pinout_json")
                     symbol_data = (cd or {}).get("symbol_data")
+                    explicit = getattr(comp, "_explicit_pins", None)
                 except Exception:
                     pinout_json = None
                     symbol_data = None
+                    explicit = None
+                if explicit:
+                    continue
                 if pinout_json:
                     continue
                 if symbol_data:
@@ -589,6 +628,27 @@ def phase_layout(state: CompileState) -> None:
     from openhac.compiler.layout_gen import generate_layout
 
     generate_layout(state.net_path, state.pcb_path, state.board)
+    try:
+        from openhac.compiler.pcb_placement import drain_omitted_footprint_refs
+
+        omitted = drain_omitted_footprint_refs()
+        state.omitted_footprint_refs = list(omitted)
+        try:
+            state.board._last_omitted_footprint_refs = list(omitted)
+        except Exception:
+            pass
+        pad_w = getattr(state.board, "_last_pad_pin_warnings", None)
+        if isinstance(pad_w, list):
+            state.pad_pin_warnings = list(pad_w)
+    except Exception as e:
+        logger.debug("omitted footprint drain skipped: %s", e)
+    if state.compile_goal == "fabrication" and state.omitted_footprint_refs:
+        from openhac.core.base import LayoutGenerationError
+
+        raise LayoutGenerationError(
+            "FAB-003: omitted footprints in fabrication mode:\n"
+            + "\n".join(f"  - {r}" for r in state.omitted_footprint_refs)
+        )
 
 
 def phase_autoroute(state: CompileState) -> None:
@@ -688,6 +748,14 @@ def phase_routing_metrics(state: CompileState) -> None:
         raise AutorouterFailedError(
             f"Fabrication mode routing gate: via_count={vc} exceeds max_via_count={thr['max_via_count']}."
         )
+    # FAB-021: unrouted connectivity fails fabrication (unless quality_gates allow).
+    allow_unrouted = bool(state.quality_gates.get("allow_unrouted_nets", False))
+    ur = int(state.pcb_metrics.get("unrouted_net_count", 0) or 0)
+    if ur > 0 and not allow_unrouted:
+        raise AutorouterFailedError(
+            f"FAB-021: fabrication mode routing gate: unrouted_net_count={ur} "
+            "(set Board.quality_gates['allow_unrouted_nets']=True only for intentional open nets)."
+        )
 
 
 def phase_schematic(state: CompileState) -> None:
@@ -718,6 +786,11 @@ def phase_schematic(state: CompileState) -> None:
         for mod in all_mods:
             for child in getattr(mod, "components", []) or []:
                 p = getattr(child, "part", None)
+                if p is None and not isinstance(child, type(None)):
+                    from openhac.core.base import Component as _Comp
+
+                    if not isinstance(child, _Comp) and hasattr(child, "pins"):
+                        p = child
                 if p is None:
                     continue
                 pid = id(p)
@@ -788,6 +861,16 @@ def phase_manifest(state: CompileState) -> None:
     except Exception as e:
         logger.debug("Post-report generation failed (continuing): %s", e)
 
+    try:
+        state.board._last_enrich_metrics = dict(state.enrich_metrics or {})
+        state.board._last_enrich_failures = list(state.enrich_failures or [])
+        state.board._last_omitted_footprint_refs = list(state.omitted_footprint_refs or [])
+        state.board._last_pad_pin_warnings = list(state.pad_pin_warnings or [])
+        state.board._last_network_allowed = state.network_allowed_at_compile
+        state.board._last_kicad_pcb_drc_report = state.kicad_pcb_drc_report
+    except Exception:
+        pass
+
     write_compile_manifest(
         state.project_name,
         state.board,
@@ -806,6 +889,14 @@ def phase_manifest(state: CompileState) -> None:
 def phase_release_zip(state: CompileState) -> None:
     if not state.release_zip_path:
         return
+    omitted = list(state.omitted_footprint_refs or []) or list(
+        getattr(state.board, "_last_omitted_footprint_refs", None) or []
+    )
+    if omitted and state.compile_goal == "fabrication":
+        raise RuntimeError(
+            "FAB-003: refusing --zip-release in fabrication mode with omitted footprints:\n"
+            + "\n".join(f"  - {r}" for r in omitted)
+        )
     from openhac.compiler.compile_manifest import patch_manifest_release_zip_sha256
     from openhac.compiler.release_bundle import zip_project_outputs
 
