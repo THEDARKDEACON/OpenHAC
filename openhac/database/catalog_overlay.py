@@ -36,6 +36,10 @@ _MERGE_KEYS = frozenset(
         "symbol_data",
         "datasheet_url",
         "product_url",
+        "spice_include",
+        "spice_subckt",
+        "spice_model_path",
+        "spice_pin_map_json",
     }
 )
 

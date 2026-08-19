@@ -72,7 +72,7 @@ def _seed_iot_edge_db(dm) -> None:
         ("C_100NF_0402", "Capacitor_SMD:C_0402_1005Metric"),
     ):
         ins(g, "Device:C", fp, cat="capacitors")
-    for g in ("R_100K_0603", "R_32K4_0603", "R_1K_0603"):
+    for g in ("R_100K_0603", "R_32K4_0603", "R_1K_0603", "R_120_0603"):
         ins(g, "Device:R", "Resistor_SMD:R_0603_1608Metric", cat="resistors")
 
     ins(

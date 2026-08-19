@@ -35,8 +35,9 @@ def test_recalculate_bbox_grid_exceeds_legacy_for_many_passives(monkeypatch) -> 
     assert m.height >= 6.2 - 1e-6
 
 
-def test_z3_module_clearance_requires_separation() -> None:
+def test_z3_module_clearance_requires_separation(monkeypatch) -> None:
     pytest.importorskip("z3")
+    monkeypatch.setenv("OPENHAC_PLACEMENT_ENGINE", "z3")
     from openhac.core.board import Board
     from openhac.compiler.layout_gen import solve_placement
 
@@ -51,3 +52,28 @@ def test_z3_module_clearance_requires_separation() -> None:
     assert solve_placement(b)
     # 10 + 3 + 10 = 23 mm horizontal span — positions must not share the same x band.
     assert abs(a.placed_x - c.placed_x) >= 13 or abs(a.placed_y - c.placed_y) >= 13
+
+
+def test_z3_compacts_modules_instead_of_filling_outline(monkeypatch) -> None:
+    pytest.importorskip("z3")
+    from openhac.core.board import Board
+    from openhac.compiler.layout_gen import solve_placement
+
+    monkeypatch.setenv("OPENHAC_Z3_COMPACT", "1")
+    monkeypatch.setenv("OPENHAC_PLACEMENT_ENGINE", "z3")
+    monkeypatch.setenv("OPENHAC_AUTO_BOARD_MIN_EDGE_MARGIN_MM", "2")
+    b = Board(size_mm=(200, 200))
+    a, c = Module("A"), Module("B")
+    a.width = a.height = 10
+    c.width = c.height = 10
+    b.modules = [a, c]
+    b.all_modules = [a, c]
+    b.constraints = []
+    b.module_clearance_mm = 2.0
+    assert solve_placement(b)
+    max_r = max(a.placed_x + a.width, c.placed_x + c.width)
+    max_b = max(a.placed_y + a.height, c.placed_y + c.height)
+    assert max_r <= 30
+    assert max_b <= 30
+    assert b.size_mm[0] <= 40
+    assert b.size_mm[1] <= 40

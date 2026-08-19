@@ -17,6 +17,21 @@ from openhac.core.dotenv_load import apply_kicad_env_aliases, load_repo_dotenv
 load_repo_dotenv(quiet=True)
 apply_kicad_env_aliases()
 
+# Machine `.env` force-overrides OPENHAC_FREEROUTING_* (and may set pad-strict).
+# Those knobs must not change unit-test gate semantics; tests that need them setenv.
+_TEST_ISOLATE_ENV = (
+    "OPENHAC_FREEROUTING_GUI",
+    "OPENHAC_STRICT_FOOTPRINT_PIN_PAD",
+    "OPENHAC_COMPILE_GOAL",
+    "OPENHAC_LEGACY_SKIDL",
+)
+
+
+@pytest.fixture(autouse=True)
+def _isolate_machine_openhac_env(monkeypatch):
+    for key in _TEST_ISOLATE_ENV:
+        monkeypatch.delenv(key, raising=False)
+
 
 @pytest.fixture()
 def tmp_db(tmp_path):

@@ -137,10 +137,20 @@ class Bus:
         self.width = width
         self.nets: list[Net] = []
         
-        # Create individual nets for each bus line
+        # KiCad bus members use NAME[i] so schematic bus graphics + ERC group them.
         for i in range(width):
-            net = Net(f"{name}_{i}")
+            net = Net(f"{name}[{i}]")
+            try:
+                net._openhac_net_type = "bus"
+            except Exception:
+                pass
             self.nets.append(net)
+        try:
+            from openhac.core.circuit import default_circuit
+
+            default_circuit.add_bus(self)
+        except (ImportError, AttributeError):
+            pass
     
     def __getitem__(self, index: int) -> Net:
         """Get a specific net from the bus by index."""

@@ -1,0 +1,20 @@
+# Locked runtime + dev extras for CI (Python 3.11/3.12).
+# Refresh: pip install -e ".[dev]" && pip freeze --exclude-editable > requirements.lock
+# Then restore this header and drop unrelated site packages.
+coverage==7.4.4
+graphviz==0.21
+iniconfig==1.1.1
+librt==0.15.0
+mypy==2.3.0
+mypy_extensions==1.1.0
+packaging==24.0
+pathspec==1.1.1
+pluggy==1.4.0
+pyparsing==3.1.1
+pytest==7.4.4
+pytest-cov==4.1.0
+PyYAML==6.0.1
+ruff==0.9.10
+skidl==2.2.1
+typing_extensions==4.15.0
+z3-solver==4.16.0.0

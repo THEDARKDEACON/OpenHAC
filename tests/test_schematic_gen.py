@@ -55,9 +55,8 @@ def test_net_connectivity_signatures_and_wire_pairs():
     assert sigs["BUS"] == frozenset({("R1", "1"), ("R2", "2"), ("R3", "1")})
 
     edges = schematic_wire_endpoint_pairs(c)
-    assert len(edges) == 2
-    assert frozenset({("R1", "1"), ("R2", "2")}) in edges
-    assert frozenset({("R2", "2"), ("R3", "1")}) in edges
+    # SSO-022: fanout >= 3 uses labels, not a spanning-tree wire list.
+    assert edges == []
 
 
 def test_generate_schematic_wire_and_label_counts(tmp_path, monkeypatch):
@@ -82,10 +81,11 @@ def test_generate_schematic_wire_and_label_counts(tmp_path, monkeypatch):
 
     text = out.read_text(encoding="utf-8")
     assert text.startswith("(kicad_sch ")
-    # THREE: 3 pins → 2 wires + 1 label; PAIR: 2 pins → 1 wire, no label
-    assert text.count("(wire (pts") == 3
+    # SSO-022: THREE (fanout 3) → labels. PAIR uses stubs+labels when a
+    # through-wire would cross unused pins on the same column.
     assert '  (label "THREE"' in text
-    assert "PAIR" not in text or text.count("(label ") == 1
+    assert text.count('(label "THREE"') >= 1
+    assert text.count("(wire (pts") >= 1
 
     data = json.loads(rep.read_text(encoding="utf-8"))
     assert data.get("schema") == "openhac.sch_pinpos_report.v1"
@@ -199,7 +199,7 @@ def test_schematic_geometry_round_trip_matches_parsed_file(tmp_path, monkeypatch
 
     assert _norm_wires(parsed_w) == _norm_wires(geom["wires"])
     assert _norm_labels(parsed_l) == _norm_labels(geom["labels"])
-    assert {lbl[0] for lbl in parsed_l} == {"THREE"}
+    assert {lbl[0] for lbl in parsed_l} >= {"THREE"}
 
 
 def test_schematic_geometry_is_stable_across_part_insertion_order(tmp_path, monkeypatch):

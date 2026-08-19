@@ -1,10 +1,14 @@
 from __future__ import annotations
 
+import re
 import shutil
 import subprocess
 from pathlib import Path
 
 from openhac.core.base import OpenHaCError
+
+_V_EQ = re.compile(r"v\(\s*([^)]+?)\s*\)\s*=\s*([-+0-9.eE]+)", re.IGNORECASE)
+_PRINT_PAIR = re.compile(r"^([A-Za-z_][\w().]*)\s*=\s*([-+0-9.eE]+)\s*$")
 
 
 def parse_ngspice_log(text: str) -> dict:
@@ -19,6 +23,35 @@ def parse_ngspice_log(text: str) -> dict:
         "error_line_count": int(sum(1 for ln in low.splitlines() if "error" in ln)),
         "warning_line_count": int(sum(1 for ln in low.splitlines() if "warn" in ln)),
     }
+
+
+def parse_ngspice_op_voltages(text: str) -> dict[str, float]:
+    """Extract node voltages from ngspice batch log / print output (SPS-032).
+
+    Keys are lowercased node tokens without ``v()``.
+    """
+    out: dict[str, float] = {}
+    s = text or ""
+    for m in _V_EQ.finditer(s):
+        node = m.group(1).strip().lower()
+        if node.startswith("v(") and node.endswith(")"):
+            node = node[2:-1]
+        try:
+            out[node] = float(m.group(2))
+        except ValueError:
+            continue
+    for ln in s.splitlines():
+        m = _PRINT_PAIR.match(ln.strip())
+        if not m:
+            continue
+        node = m.group(1).strip().lower()
+        if node.startswith("v(") and node.endswith(")"):
+            node = node[2:-1]
+        try:
+            out[node] = float(m.group(2))
+        except ValueError:
+            continue
+    return out
 
 
 def run_ngspice_headless(

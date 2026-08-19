@@ -3,9 +3,6 @@ from __future__ import annotations
 import builtins
 import os
 
-from openhac.core.circuit import default_circuit as native_default_circuit
-
-
 def _legacy_skidl_enabled() -> bool:
     """Opt-in for SKiDL ``builtins.default_circuit`` (schematic / migration tooling)."""
     return os.environ.get("OPENHAC_LEGACY_SKIDL", "").strip().lower() in (
@@ -24,7 +21,9 @@ def get_default_circuit():
     """
     if _legacy_skidl_enabled() and hasattr(builtins, "default_circuit"):
         return builtins.default_circuit
-    return native_default_circuit
+    from openhac.core import circuit as _core_circuit
+
+    return _core_circuit.default_circuit
 
 
 def get_circuit():

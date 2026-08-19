@@ -110,6 +110,7 @@ def test_manifest_round4_traceability_fields(tmp_path, tmp_db, monkeypatch):
             "supplier_sku": "",
             "description": "",
             "category": "testability",
+            "pinout_json": '[{"num": "1", "name": "1", "type": "passive"}]',
         }
     )
     monkeypatch.setattr(Component, "db", dm)
@@ -129,7 +130,6 @@ def test_manifest_round4_traceability_fields(tmp_path, tmp_db, monkeypatch):
             r["2"] += gnd
             tp = self.add(Component("TP_Mech_1mm"))
             tp["1"] += vcc
-            tp["2"] += vcc
             self.declare_interface("power", vcc, gnd)
 
     class Peer(Module):
@@ -178,6 +178,7 @@ def test_manifest_round4_traceability_fields(tmp_path, tmp_db, monkeypatch):
     assert sf.get("spice_line") == "--spice-line"
     assert sf.get("spice_preset") == "--spice-preset"
     assert sf.get("spice_analysis_json") == "--spice-analysis-json"
+    assert sf.get("spice_signoff") == "--spice-signoff"
 
 
 def test_manifest_jlc_line_policy_includes_per_class_limits(tmp_path, tmp_db, monkeypatch):

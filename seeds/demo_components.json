@@ -121,6 +121,17 @@
     "attributes_json": "{}"
   },
   {
+    "generic_name": "R_120_0603",
+    "kicad_symbol": "Device:R",
+    "kicad_footprint": "Resistor_SMD:R_0603_1608Metric",
+    "manufacturer": "",
+    "mpn": "R_120_0603",
+    "supplier_sku": "C22787",
+    "description": "120 ohm CAN terminator (demo seed)",
+    "category": "resistors",
+    "attributes_json": "{}"
+  },
+  {
     "generic_name": "LED_GREEN_0603",
     "kicad_symbol": "Device:LED",
     "kicad_footprint": "LED_SMD:LED_0603_1608Metric",

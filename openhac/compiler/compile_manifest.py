@@ -553,7 +553,10 @@ def _write_si_stackup_reminder_md(base: Path, project_name: str, board, diff_pai
     """SIG-001 / PCB-003: short checklist when stackup or SI-relevant metadata exists."""
     reasons: list[str] = []
     if int(getattr(board, "layers", 2) or 2) > 2:
-        reasons.append(f"**PCB-003:** {int(board.layers)} copper layers — complete stackup in KiCad; see `docs/stackup_template.yaml`.")
+        reasons.append(
+            f"**PCB-003:** {int(board.layers)} copper layers are enabled in the .kicad_pcb; "
+            "declare inner-plane pours and see `docs/stackup_template.yaml` for Dk/Df."
+        )
     if getattr(board, "_stackup_references", None):
         reasons.append("**SIG-001 / PCB-004:** stackup reference paths are recorded — correlate Dk/Df with impedance targets.")
     if diff_pairs:
@@ -664,7 +667,10 @@ def _write_autoroute_policy_md(
         lines.append("**Differential pairs** are recorded for handoff — complete impedance-controlled routing in KiCad.")
         lines.append("")
     if not auto_route and not skip_layout:
-        lines.append("**Auto-route:** disabled for this compile (`auto_route=False`).")
+        lines.append(
+            "**Auto-route:** disabled for this compile (`auto_route=False`). "
+            "Specctra DSN is still exported next to the `.kicad_pcb` (IPC widths patched) for an external router."
+        )
         lines.append("")
     elif not nar and auto_route and not skip_layout:
         lines.append("This build allowed auto-route on remaining nets (if layout ran).")
@@ -1180,6 +1186,7 @@ def write_compile_manifest(
     add_if_exists(f"{project_name}.openhac-si-stackup-reminder.md")
     add_if_exists(f"{project_name}.openhac-bom-expand-hint.md")
     add_if_exists(f"{project_name}.openhac-spice-model-hint.md")
+    add_if_exists(f"{project_name}.openhac-spice-signoff-audit.json")
     add_if_exists(f"{project_name}.openhac-autoroute-policy.md")
     add_if_exists(f"{project_name}.openhac-evidence.md")
     add_if_exists(f"{project_name}.openhac-attestation.json")
@@ -1217,6 +1224,8 @@ def write_compile_manifest(
         "spice_line": "--spice-line",
         "spice_preset": "--spice-preset",
         "spice_analysis_json": "--spice-analysis-json",
+        "spice_signoff": "--spice-signoff",
+        "spice_vendor_dir": "--spice-vendor-dir",
     }
     if gbr:
         manifest["git_branch"] = gbr
@@ -1224,8 +1233,9 @@ def write_compile_manifest(
         manifest["git_describe"] = gdesc
     if int(board.layers) > 2:
         manifest["pcb_stackup_layer_note"] = (
-            f"PCB-003: {int(board.layers)} copper layers declared; OpenHaC does not emit KiCad stackup metadata. "
-            "Use Board.declare_stackup_reference() and docs/stackup_template.yaml for fab / SI handoff."
+            f"PCB-003: {int(board.layers)} copper layers declared; OpenHaC enables them in the "
+            ".kicad_pcb (SetCopperLayerCount). Inner plane pours still need "
+            "declare_copper_pour_intent; use docs/stackup_template.yaml for fab / SI Dk/Df."
         )
     nar = getattr(board, "_no_autoroute_net_names", None) or []
     if nar:
@@ -1648,6 +1658,8 @@ def write_compile_manifest(
 
     manifest["fab_profiles_catalog"] = _fab_profile_bundle_names()
     manifest["sim001_spice_database_fields"] = ["spice_include", "spice_subckt"]
+    manifest["sps_spice_signoff_spec"] = "docs/internal/SPICE_SIGN_OFF_SPEC.md"
+    manifest["sps_spice_model_registry_module"] = "openhac.compiler.spice_models"
     manifest["sch003_schematic_erc_cli"] = "kicad-cli sch erc"
     manifest["sig001_stackup_template_reference"] = "docs/stackup_template.yaml"
     manifest["lib003_jit_bom_columns"] = ["OpenHaC_JIT_Confidence", "OpenHaC_JIT_Score"]
@@ -1769,7 +1781,7 @@ def write_compile_manifest(
     manifest["sch001_kicad_sym_pinpos_module"] = "openhac.compiler.kicad_sym_pinpos"
     manifest["sch001_pinpos_report_schema"] = "openhac.sch_pinpos_report.v1"
     manifest["sch001_pinpos_report_suffix"] = ".openhac-sch-pinpos-report.json"
-    manifest["sch001_pinpos_report_writer"] = "openhac.compiler.schematic_gen.generate_schematic"
+    manifest["sch001_pinpos_report_writer"] = "openhac.schematic.emit_kicad.generate_schematic"
     manifest["str002_core_board_module"] = "openhac.core.board"
     manifest["str002_core_base_module"] = "openhac.core.base"
     manifest["str002_core_compile_context_module"] = "openhac.core.compile_context"

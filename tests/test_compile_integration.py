@@ -193,12 +193,14 @@ def test_compile_writes_net_csv_and_manifest(tmp_path, seeded_resistor_db, monke
     assert data.get("sch001_kicad_sym_pinpos_module") == "openhac.compiler.kicad_sym_pinpos"
     assert data.get("sch001_pinpos_report_schema") == "openhac.sch_pinpos_report.v1"
     assert data.get("sch001_pinpos_report_suffix") == ".openhac-sch-pinpos-report.json"
-    assert data.get("sch001_pinpos_report_writer") == "openhac.compiler.schematic_gen.generate_schematic"
+    assert data.get("sch001_pinpos_report_writer") == "openhac.schematic.emit_kicad.generate_schematic"
     bcat = data.get("pwr002_stdlib_helpers_catalog") or []
     assert "buck_input_current_ma" in bcat
     assert "jlc" in (data.get("fab_profiles_catalog") or [])
     assert len(data.get("fab_profiles_catalog") or []) >= 4
     assert data.get("sim001_spice_database_fields") == ["spice_include", "spice_subckt"]
+    assert data.get("sps_spice_signoff_spec") == "docs/internal/SPICE_SIGN_OFF_SPEC.md"
+    assert data.get("sps_spice_model_registry_module") == "openhac.compiler.spice_models"
     assert data.get("sch003_schematic_erc_cli") == "kicad-cli sch erc"
     assert data.get("sig001_stackup_template_reference") == "docs/stackup_template.yaml"
     assert data.get("lib003_jit_bom_columns") == ["OpenHaC_JIT_Confidence", "OpenHaC_JIT_Score"]
@@ -235,9 +237,10 @@ def test_compile_writes_net_csv_and_manifest(tmp_path, seeded_resistor_db, monke
     assert len(data.get("compile_warnings") or []) >= 0
     jlc = data.get("jlc_assembly_line_summary") or {}
     assert jlc.get("extended_line_items") == 2
-    assert jlc.get("unset_line_items") == 2  # e.g. PWR_FLAG symbols without JLC_Class
-    assert jlc.get("total_line_items") == 4
-    assert jlc.get("by_class") == {"extended": 2, "unset": 2}
+    # SSO-021: graph PWR_FLAG anchors are not BOM line items (emitter places power:PWR_FLAG).
+    assert jlc.get("unset_line_items") == 0
+    assert jlc.get("total_line_items") == 2
+    assert jlc.get("by_class") == {"extended": 2}
     sch = data.get("schematic_hierarchy_handoff") or {}
     assert sch.get("logical_module_count") == 2
     assert "flat .kicad_sch" in sch.get("note", "")

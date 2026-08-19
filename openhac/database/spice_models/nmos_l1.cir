@@ -1,0 +1,5 @@
+* OpenHaC in-repo LEVEL-1 NMOS (kind=physics, Apache-2.0). Not a vendor macromodel.
+.subckt NMOS_L1 D G S
+M1 D G S S NMOS_L1_MOD L=2u W=200u
+.model NMOS_L1_MOD NMOS (LEVEL=1 VTO=1.5 KP=2.0e-5 LAMBDA=0)
+.ends NMOS_L1

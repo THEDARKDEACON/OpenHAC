@@ -220,3 +220,31 @@ def test_apply_net_tie_intents_adds_footprint_and_sets_pad_nets(monkeypatch):
     assert pads[0].net.GetNetCode() == 1
     assert pads[1].net.GetNetCode() == 2
 
+
+def test_high_current_polygons_skip_ipc_track_currents():
+    """set_net_current(1–2 A) is IPC width, not a board-wide pour."""
+    from openhac.compiler.pcb_postprocess import apply_high_current_polygons
+
+    class _Board:
+        _high_current_nets = {"GND": {"current_a": 2.0}, "3V3": {"current_a": 0.8}}
+
+    assert apply_high_current_polygons(object(), _Board(), object()) == 0
+
+
+def test_enable_copper_layers_four():
+    import pytest
+
+    pytest.importorskip("pcbnew")
+    import pcbnew
+
+    from openhac.compiler.pcb_postprocess import enable_copper_layers
+
+    pcb = pcbnew.BOARD()
+    assert pcb.GetCopperLayerCount() == 2
+    n = enable_copper_layers(pcb, pcbnew, 4)
+    assert n == 4
+    assert pcb.GetCopperLayerCount() == 4
+    en = pcb.GetEnabledLayers()
+    assert en.Contains(pcb.GetLayerID("In1.Cu"))
+    assert en.Contains(pcb.GetLayerID("In2.Cu"))
+

@@ -39,6 +39,28 @@ def test_summarize_json_violations_wrapper(tmp_path):
     assert s["warning_count"] == 1
 
 
+def test_summarize_json_kicad9_sheets(tmp_path):
+    p = tmp_path / "erc.json"
+    p.write_text(
+        json.dumps(
+            {
+                "sheets": [
+                    {
+                        "violations": [
+                            {"severity": "error", "type": "pin_not_connected"},
+                            {"severity": "warning", "type": "lib_symbol_mismatch"},
+                        ]
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+    s = summarize_kicad_erc_report(p)
+    assert s["error_count"] == 1
+    assert s["warning_count"] == 1
+
+
 def test_summarize_text_heuristic(tmp_path):
     p = tmp_path / "erc.txt"
     p.write_text("ERC report\nError: floating pin\nwarning: minor\n", encoding="utf-8")

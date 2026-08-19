@@ -325,6 +325,12 @@ def fetch_and_map_part(query_params: dict) -> dict | None:
         "spice_include": "",
         LOOKUP_CONFIDENCE_KEY: _jit_lookup_confidence(category, package, matched_item),
     }
+    try:
+        from openhac.database.passive_ratings import enrich_comp_data_from_jlc_item
+
+        enrich_comp_data_from_jlc_item(comp_data, best)
+    except Exception:
+        pass
 
     # Emit visible terminal notice
     # Normalize supplier_sku to C12345 form.

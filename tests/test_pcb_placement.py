@@ -23,6 +23,7 @@ def test_place_circuit_applies_rotation_field(monkeypatch, tmp_path):
     class _Fp:
         def __init__(self):
             self.rot_deg = None
+            self.path = None
 
         def SetReference(self, _):
             pass
@@ -32,6 +33,9 @@ def test_place_circuit_applies_rotation_field(monkeypatch, tmp_path):
 
         def SetPosition(self, _):
             pass
+
+        def SetPath(self, p):
+            self.path = p
 
         def SetOrientationDegrees(self, d):
             self.rot_deg = float(d)
@@ -70,6 +74,9 @@ def test_place_circuit_applies_rotation_field(monkeypatch, tmp_path):
         def VECTOR2I(x, y):
             return (x, y)
 
+        class KIID_PATH(str):
+            pass
+
         class NETINFO_ITEM:
             def __init__(self, *_args, **_kwargs):
                 pass
@@ -105,6 +112,9 @@ def test_place_circuit_applies_rotation_field(monkeypatch, tmp_path):
     place_circuit_on_board(pcb, board, _PcbNew)
     fps = [x for x in pcb.items if isinstance(x, _Fp)]
     assert fps and fps[0].rot_deg == 45.0
+    from openhac.schematic.kicad_links import footprint_schematic_path
+
+    assert str(fps[0].path) == footprint_schematic_path(p, parts=[p])
 
 
 class TestParseFootprintId:
@@ -226,3 +236,27 @@ def test_pin_covers_footprint_pad_usb_typec_synonyms():
     assert _pin_covers_footprint_pad("", "DM", pads)
     assert _pin_covers_footprint_pad("", "CC1", pads)
     assert _pin_covers_footprint_pad("99", "VBUS", pads)
+
+
+def test_footprint_pack_bbox_excludes_silk_text():
+    from openhac.compiler.pcb_placement import _footprint_pack_bbox, _module_pack_cols
+
+    class _Box:
+        def __init__(self, w):
+            self._w = w
+
+        def GetWidth(self):
+            return self._w
+
+    class _Fp:
+        def GetBoundingBox(self, *args):
+            if args == (False, False):
+                return _Box(3_010_000)
+            if not args:
+                return _Box(14_917_000)
+            raise TypeError("unexpected")
+
+    bb = _footprint_pack_bbox(_Fp())
+    assert bb.GetWidth() == 3_010_000
+    assert _module_pack_cols(6) == 3
+    assert _module_pack_cols(1) == 1

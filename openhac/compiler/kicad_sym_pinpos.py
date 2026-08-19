@@ -172,6 +172,44 @@ def resolve_symbol_tree_for_pins(lib_text: str, symbol_name: str, *, _depth: int
     return resolve_symbol_tree_for_pins(lib_text, parent, _depth=_depth + 1)
 
 
+def schematic_lib_symbol_sexp(lib_id: str) -> str | None:
+    """Return a ``lib_symbols``-ready ``(symbol "Lib:Name" ...)`` body, or None.
+
+    Flattens ``(extends ...)`` so the cached copy is self-contained. Unit children
+    are named ``{short}_N_M`` to match the name after the colon (KiCad 9).
+    """
+    parsed = parse_kicad_symbol_id(lib_id)
+    if not parsed:
+        return None
+    lib, inst_name = parsed
+    if lib in ("OpenHaC",):
+        return None
+    path = find_symbol_library_file(lib)
+    if path is None:
+        return None
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    tree = resolve_symbol_tree_for_pins(text, inst_name)
+    if tree is None:
+        return None
+    pm = re.match(r'\(symbol\s+"([^"]+)"', tree.lstrip())
+    source_name = pm.group(1) if pm else inst_name
+    # Flatten extends into a self-contained cache. KiCad 9 will not load a stub
+    # that ``(extends ...)`` a sibling in lib_symbols. Unit children must use
+    # the instance short name (``{name}_0_1`` / ``_1_1``).
+    tree = _EXTENDS_RE.sub("", tree, count=1)
+    tree = tree.replace(f'(symbol "{source_name}"', f'(symbol "{lib}:{inst_name}"', 1)
+    if source_name != inst_name:
+        tree = re.sub(
+            rf'\(symbol\s+"{re.escape(source_name)}_(\d+)_(\d+)"',
+            rf'(symbol "{inst_name}_\1_\2"',
+            tree,
+        )
+    return tree
+
+
 def parse_kicad_symbol_id(symbol_library_id: str) -> tuple[str, str] | None:
     """Split ``Library:SymbolName`` (same convention as ``kicad_footprint``)."""
     s = str(symbol_library_id or "").strip()
@@ -201,6 +239,98 @@ def parse_pinout_from_symbol_tree(symbol_tree: str) -> list[dict]:
         etype = _pin_electrical_type(blk)
         out.append({"num": pin_num, "name": pin_name, "type": etype})
     return out
+
+
+def iter_library_symbol_names(lib_file: Path) -> list[str]:
+    """Top-level symbol names in a ``.kicad_sym`` (excludes ``_N_M`` unit children)."""
+    try:
+        text = Path(lib_file).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return []
+    names: list[str] = []
+    seen: set[str] = set()
+    for m in re.finditer(r'\(symbol\s+"([^"]+)"', text):
+        name = m.group(1).strip()
+        if not name or name in seen:
+            continue
+        if re.search(r"_\d+_\d+$", name):
+            continue
+        seen.add(name)
+        names.append(name)
+    return names
+
+
+def normalize_symbol_pin_name(name: str) -> str:
+    """Strip KiCad/SKiDL decoration so SCS matches ~{SCS} and ALERT/RDY matches ALERT."""
+    s = str(name or "").strip().upper()
+    s = s.replace("~", "").replace("{", "").replace("}", "")
+    if "/" in s:
+        s = s.split("/", 1)[0]
+    return re.sub(r"[^A-Z0-9]+", "", s)
+
+
+def rewrite_symbol_pin_electrical_types(tree: str, by_num: dict[str, str]) -> str:
+    """Replace ``(pin <type>`` on numbered pins. Geometry and names stay library-owned."""
+    if not tree or not by_num:
+        return tree
+    out = tree
+    for blk in _iter_pin_blocks(tree):
+        nm = _NUMBER_RE.search(blk)
+        if not nm:
+            continue
+        new_t = str(by_num.get(nm.group(1).strip()) or "").strip()
+        if not new_t:
+            continue
+        new_blk = re.sub(r"^\(pin\s+\S+", f"(pin {new_t}", blk, count=1)
+        if new_blk != blk:
+            out = out.replace(blk, new_blk, 1)
+    return out
+
+
+def map_graph_pin_to_library_number(
+    pin,
+    pmap: dict,
+    pinout_by_num: dict | None = None,
+) -> str | None:
+    """Library pin number for a graph pin: same number if names agree, else unique name match.
+
+    Offline / SKiDL tables often number VDD as 24 while KiCad's body uses 24 for an LED.
+    Connecting by name keeps ERC on the library pin that actually is VDD/SDA/SCS.
+    """
+    gnum = str(getattr(pin, "num", None) or getattr(pin, "number", "") or "").strip()
+    gname = normalize_symbol_pin_name(str(getattr(pin, "name", "") or ""))
+    pinout_by_num = pinout_by_num or {}
+
+    def _lib_name(num: str) -> str:
+        rec = pinout_by_num.get(str(num)) or {}
+        return normalize_symbol_pin_name(str(rec.get("name") or ""))
+
+    mapped = None
+    if gnum and gnum in pmap:
+        ln = _lib_name(gnum)
+        if not gname or not ln or gname == ln:
+            mapped = gnum
+    if mapped is None and gname:
+        hits = [n for n in pmap if _lib_name(n) == gname]
+        if len(hits) == 1:
+            mapped = hits[0]
+        elif gnum in hits:
+            mapped = gnum
+        elif hits:
+            mapped = sorted(hits, key=lambda s: (len(s), s))[0]
+    if mapped is None and gnum and gnum in pmap:
+        mapped = gnum
+    if mapped is None:
+        mapped = gnum or None
+    # Hidden library NC pads are not VIO/VCC: attaching a power symbol there is ERC pin_not_connected.
+    if mapped and _library_pin_is_nc(pinout_by_num, mapped) and gname not in ("NC", "NOCONNECT"):
+        return None
+    return mapped
+
+
+def _library_pin_is_nc(pinout_by_num: dict, num: str | None) -> bool:
+    rec = pinout_by_num.get(str(num or "")) or {}
+    return str(rec.get("type") or "").lower() in ("no_connect", "free")
 
 
 def pinout_from_kicad_symbol_id(kicad_symbol: str) -> list[dict] | None:
@@ -344,7 +474,15 @@ class SymbolPinResolver:
     def offset_for_pin(self, part, pin, symbol_name: str | None = None) -> tuple[float, float, float] | None:
         """Return (dx, dy) relative to the symbol instance origin, or None to use stub layout."""
         lib = part_library_name(part)
-        if symbol_name:
+        if not lib and "OpenHaC" in self._explicit_libs:
+            lib = "OpenHaC"
+        if symbol_name and ":" in str(symbol_name):
+            parsed = parse_kicad_symbol_id(str(symbol_name))
+            if parsed:
+                lib, name = parsed
+            else:
+                name = str(symbol_name).split(":", 1)[-1]
+        elif symbol_name:
             name = symbol_name
         else:
             name = (getattr(part, "name", None) or "").strip()
@@ -370,19 +508,25 @@ class SymbolPinResolver:
             else:
                 logger.debug(f"Resolver loading: {path} for {name}")
                 self._cache[key] = load_symbol_pin_positions(path, name)
+            nkey = (lib, name, "names")
+            po: list[dict] = []
+            if path is not None:
+                try:
+                    text = Path(path).read_text(encoding="utf-8", errors="replace")
+                    tree = resolve_symbol_tree_for_pins(text, name)
+                    if tree:
+                        po = parse_pinout_from_symbol_tree(tree)
+                except OSError:
+                    po = []
+            self._cache[nkey] = {str(r.get("num") or ""): r for r in po if r.get("num") not in (None, "")}
         pmap = self._cache[key]
         if not pmap:
             logger.debug(f"Resolver fail: No pin map for {key}")
             return None
-        pnum = str(getattr(pin, "num", "") or "").strip()
-        pdata = pmap.get(pnum)
-        if pdata is None:
-            # Try numeric if string fails (sometimes libs use ints)
-            try:
-                pdata = pmap.get(str(int(pnum)))
-            except (ValueError, TypeError):
-                pass
-                
+        nkey = (lib, name, "names")
+        by_num = self._cache.get(nkey) or {}
+        pnum = map_graph_pin_to_library_number(pin, pmap, by_num)
+        pdata = pmap.get(pnum) if pnum else None
         if pdata is None:
             return None
             

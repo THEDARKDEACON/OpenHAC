@@ -22,7 +22,8 @@ jobs:
       - name: Install package and dev tools
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
+          pip install -r requirements.lock
+          pip install -e . --no-deps
 
       - name: Ruff
         run: ruff check openhac tests
@@ -59,9 +60,10 @@ jobs:
       - name: Install OpenHaC for system Python
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install -e ".[dev]"
+          python3 -m pip install -r requirements.lock
+          python3 -m pip install -e . --no-deps
 
-      - name: Golden schematic ERC (SCH-003)
+      - name: Golden schematic ERC (SCH-003 / SSO-041)
         env:
           KICAD_FOOTPRINT_DIR: /usr/share/kicad/footprints
           KICAD9_SYMBOL_DIR: /usr/share/kicad/symbols
@@ -82,7 +84,8 @@ jobs:
       - name: Install OpenHaC for system Python
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install -e ".[dev]"
+          python3 -m pip install -r requirements.lock
+          python3 -m pip install -e . --no-deps
 
       - name: Full compile with layout (SW-006)
         env:
@@ -104,10 +107,76 @@ jobs:
       - name: Install OpenHaC for system Python
         run: |
           python3 -m pip install --upgrade pip
-          python3 -m pip install -e ".[dev]"
+          python3 -m pip install -r requirements.lock
+          python3 -m pip install -e . --no-deps
 
       - name: Fab gate validation (golden + negatives)
         env:
           KICAD_FOOTPRINT_DIR: /usr/share/kicad/footprints
           OPENHAC_NO_NETWORK: "1"
         run: python3 scripts/ci_validate_fab_gates.py --require-layout
+
+  # Full software production claim: ERC → DRC → place → FreeRouting → PCB DRC → Gerbers.
+  kicad-production-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install KiCad + Java (FreeRouting)
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y kicad default-jre-headless
+          java -version
+
+      - name: Install OpenHaC for system Python
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements.lock
+          python3 -m pip install -e . --no-deps
+
+      - name: Production validation (require-all + fetch FreeRouting)
+        env:
+          KICAD_FOOTPRINT_DIR: /usr/share/kicad/footprints
+          KICAD9_SYMBOL_DIR: /usr/share/kicad/symbols
+          OPENHAC_NO_NETWORK: "1"
+          OPENHAC_FREEROUTING_TIMEOUT_S: "300"
+        run: python3 scripts/ci_validate_production.py --require-all --fetch-freerouting
+
+  # ABC-008: complex multi-IC green route subset (non-blocking until stable on runners).
+  kicad-complex-route-subset:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install KiCad + Java (FreeRouting)
+        run: |
+          sudo apt-get update
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y kicad default-jre-headless
+          java -version
+
+      - name: Install OpenHaC for system Python
+        run: |
+          python3 -m pip install --upgrade pip
+          python3 -m pip install -r requirements.lock
+          python3 -m pip install -e . --no-deps
+
+      - name: Complex route subset (esp32c3_usb, rs485_node)
+        env:
+          KICAD_FOOTPRINT_DIR: /usr/share/kicad/footprints
+          KICAD9_SYMBOL_DIR: /usr/share/kicad/symbols
+          OPENHAC_NO_NETWORK: "1"
+          OPENHAC_FREEROUTING_TIMEOUT_S: "600"
+          OPENHAC_POUR_PAD_CONNECTION: "solid"
+        run: |
+          set -euo pipefail
+          JAR="$HOME/.cache/openhac/freerouting-2.2.4.jar"
+          mkdir -p "$(dirname "$JAR")"
+          if [ ! -f "$JAR" ]; then
+            curl -fsSL -o "$JAR" \
+              "https://github.com/freerouting/freerouting/releases/download/v2.2.4/freerouting-2.2.4.jar"
+          fi
+          export FREEROUTING_JAR="$JAR"
+          python3 scripts/ci_validate_complex_boards.py --place --route \
+            --only esp32c3_usb,rs485_node \
+            --route-subset esp32c3_usb,rs485_node

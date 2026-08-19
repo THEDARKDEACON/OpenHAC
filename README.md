@@ -1,21 +1,23 @@
 # OpenHaC — Open Hardware-as-Code
 
-Python compiler that turns declarative hardware code into **netlists**, **BOMs**, **KiCad PCB** outputs, optional **FreeRouting**, and **SPICE** — no GUI required. Connectivity and ERC are first-class; pretty `.kicad_sch` drawings are optional handoff aids, not the fabrication source of truth.
+Python compiler that turns declarative hardware code into **netlists**, **BOMs**, **KiCad PCB** outputs, optional **FreeRouting**, and **SPICE** — no GUI required. The native circuit graph is the compile source of truth. With `--schematic-signoff`, the generated `.kicad_sch` is the EE-stamped review artifact (library symbols or pinout boxes, KiCad ERC clean). With `--spice-signoff`, simulate is a fail-closed analog gate (Kirchhoff-correct `.cir`, vendor or physics models, ngspice operating-point windows). Fabrication (`--production`) may still omit the drawing and does not imply SPICE sign-off.
 
 ## Outputs
 
 - `.net` / `.csv` — netlist and BOM (LCSC-oriented fields when available)
 - `.kicad_pcb` — placement, pad nets; optional autoroute (FreeRouting or minimal `pcbnew` fallback)
-- `.kicad_sch` / `.kicad_pro` — optional schematic + project (off by default under `--production`)
+- `.kicad_sch` / `.kicad_pro` — schematic + project (off by default under `--production`; required under `--schematic-signoff`)
 - Generated symbol stubs (`*.openhac-generated.kicad_sym`) and manifest / handoff JSON when configured
-- `.cir` — SPICE from `Board.simulate()`
+- `.cir` — SPICE from `Board.simulate()`. With `--spice-signoff`, fail-closed Kirchhoff + vendor/physics models + ngspice OP windows ([SPICE_SIGN_OFF_SPEC.md](docs/internal/SPICE_SIGN_OFF_SPEC.md)).
 - Fab bundle — Gerbers / drill / position via `openhac export fab` (after a successful PCB)
+- `.dsn` — Specctra for FreeRouting. Compile writes one; after KiCad placement edits use `openhac export dsn` so IPC widths are not flattened to 0.2 mm
 
 **Docs:** [USER_GUIDE.md](docs/USER_GUIDE.md), [API_REFERENCE.md](docs/API_REFERENCE.md), [3D_MODELS_AND_FOOTPRINTS.md](docs/3D_MODELS_AND_FOOTPRINTS.md).
-**Internal/Spec:** [SCOPE.md](docs/internal/SCOPE.md), [IMPLEMENTATION_STATUS.md](docs/internal/IMPLEMENTATION_STATUS.md), [FABRICATION_READINESS_SPEC.md](docs/internal/FABRICATION_READINESS_SPEC.md) (Phase-2 code→fab gates).
+**Internal/Spec:** [SCOPE.md](docs/internal/SCOPE.md), [IMPLEMENTATION_STATUS.md](docs/internal/IMPLEMENTATION_STATUS.md), [FABRICATION_READINESS_SPEC.md](docs/internal/FABRICATION_READINESS_SPEC.md) (Phase-2 code→fab gates), [SCHEMATIC_SIGN_OFF_SPEC.md](docs/internal/SCHEMATIC_SIGN_OFF_SPEC.md) (EE-stamped `.kicad_sch`), [SPICE_SIGN_OFF_SPEC.md](docs/internal/SPICE_SIGN_OFF_SPEC.md) (physics-correct analog simulate), [PRODUCTION_VALIDATION.md](docs/internal/PRODUCTION_VALIDATION.md) (ERC→DRC→Gerbers matrix).
 
-Autorouting is **assistive** (not a substitute for HS/EMC review). See SCOPE for **PCB-007** / differential-pair notes. Phase-2 defines fail-closed fabrication gates — track status in IMPLEMENTATION_STATUS; do not treat Alpha handoff builds as production-ready copper.
+Autorouting is **assistive** (not a substitute for HS/EMC review). See SCOPE for **PCB-007** / differential-pair notes. Phase-2 defines fail-closed fabrication gates — track status in IMPLEMENTATION_STATUS.
 
+**Software production claim:** For the supported golden board class, a green `scripts/ci_validate_production.py --require-all` run proves code → native ERC/DRC → place → FreeRouting → KiCad PCB DRC → Gerbers with audited pin/pad parity. That is **fabrication-ready software output**, not physical bring-up or RF/HS sign-off.
 The active circuit is the **native** OpenHaC circuit (`openhac.core.circuit`). Legacy SKiDL `builtins.default_circuit` is opt-in via `OPENHAC_LEGACY_SKIDL=1` for migration / schematic tooling only.
 
 ---
@@ -25,18 +27,31 @@ The active circuit is the **native** OpenHaC circuit (`openhac.core.circuit`). L
 - **Python** 3.11+
 - **KiCad** with **Python bindings** (`import pcbnew`) for layout/schematic — not only `kicad-cli` on `PATH`
 - **Footprint libraries:** set `KICAD8_FOOTPRINT_DIR`, `KICAD9_FOOTPRINT_DIR`, or `KICAD_FOOTPRINT_DIR` to the directory that contains `*.pretty` trees (e.g. `/usr/share/kicad/footprints` on Linux)
+- **ngspice (optional):** on `PATH` for `openhac simulate --run-ngspice` and required for `--spice-signoff`
 - **FreeRouting (optional):** JRE + `FREEROUTING_JAR`. KiCad **9** has no `kicad-cli pcb export-dsn`; OpenHaC falls back to `pcbnew.ExportSpecctraDSN` / `ImportSpecctraSES` for the DSN/SES round trip.
 
 ---
 
 ## Install
 
+From the repo root:
+
 ```bash
+pip install -r requirements.txt
 pip install -e .
 pip install -e ".[dev]"   # optional: tests, ruff, mypy
 ```
 
-Dependencies live in **`pyproject.toml`**. Copy **`.env.example`** → **`.env`** for vendor keys, DB path, and FreeRouting (loaded automatically by the CLI).
+`pip install -e .` installs the `openhac` console script (often into `~/.local/bin` on Linux). If the shell says `openhac: command not found`, add that directory to `PATH` **or** use the module form (works from the repo without the script):
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+python3 -m openhac --help
+```
+
+`python3 -m openhac …` is equivalent to `openhac …` everywhere below.
+
+Runtime deps: **`requirements.txt`**. Package metadata / extras: **`pyproject.toml`**. CI pins: **`requirements.lock`**. Copy **`.env.example`** → **`.env`** for vendor keys, DB path, and FreeRouting (loaded automatically by the CLI).
 
 ---
 
@@ -59,6 +74,10 @@ Dependencies live in **`pyproject.toml`**. Copy **`.env.example`** → **`.env`*
 | `OPENHAC_CATALOG_OVERLAY` | Pathsep-separated files/dirs of JSON catalog overrides (see `openhac/database/package_catalog_overlays/README.md`) |
 | `OPENHAC_NO_BUNDLED_CATALOG_OVERLAYS` | `1` = do not merge bundled `package_catalog_overlays/*.json` (use your own overlays only) |
 | `OPENHAC_PRODUCTION_SCHEMATIC` | `1` = keep schematic export when using `--production` (default off) |
+| `OPENHAC_SCHEMATIC_SIGNOFF` | `1` = same as CLI `--schematic-signoff` (export + KiCad ERC + SSO gates) |
+| `OPENHAC_SPICE_SIGNOFF` | `1` = same as CLI `--spice-signoff` (Kirchhoff deck + ngspice + probes/benches) |
+| `OPENHAC_SPICE_VENDOR_DIR` | Directory of vendor `.lib` / `.subckt` files (not shipped in git) |
+| `OPENHAC_ALLOW_BEHAVIORAL_SPICE_MODELS` | `1` = allow `kind=behavioral` models under spice sign-off (not physics-correct) |
 
 Vendor API variables (DigiKey, Mouser, TME, JLC) are documented in **`.env.example`**. Fabrication export also uses KiCad env vars as usual.
 
@@ -93,6 +112,9 @@ export FREEROUTING_JAR=/path/to/freerouting.jar
 
 ```bash
 openhac export fab my_board.kicad_pcb -o ./gerbers --zip
+
+# After moving footprints in KiCad: re-export DSN with IPC widths (does not re-place)
+openhac export dsn my_board.kicad_pcb
 ```
 
 **Phase-2 fab gate check** (unit gates + FAB-001/003 negatives + known-good place/Gerbers when KiCad is present):
@@ -103,7 +125,29 @@ OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_fab_gates.py
 OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_fab_gates.py --require-layout
 ```
 
+**Full software production validation** (native ERC/DRC → schematic ERC → place → FreeRouting → PCB DRC → Gerbers):
+
+```bash
+# Logic-only (no pcbnew)
+OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_production.py --logic-only
+
+# Full claim (needs KiCad + Java + FreeRouting JAR)
+export FREEROUTING_JAR=/path/to/freerouting-2.2.4.jar   # or:
+OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_production.py --require-all --fetch-freerouting
+```
+
+Matrix: [docs/internal/PRODUCTION_VALIDATION.md](docs/internal/PRODUCTION_VALIDATION.md).  
 Golden board: `tests/fixtures/fab_golden_board.py` (also mirrored at `examples/fab_golden_resistor_bridge.py`).
+
+**Complex multi-IC stress boards** (7 fab examples + optional LCSC live-API board):
+
+```bash
+OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_complex_boards.py --place
+python3 scripts/ci_validate_complex_boards.py --api --only lcsc_api_mixed   # live jlcsearch
+```
+
+Examples: `complex_esp32_devkit_node.py`, `complex_stm32_can_node.py`, `complex_rs485_node.py`, `complex_esp32c3_usb_node.py`, `complex_sensor_hub.py`, `complex_industrial_mesh_gateway.py`, `complex_amr_compute_brick.py`, `complex_lcsc_api_mixed_node.py`.  
+See the “Complex multi-IC boards” section in PRODUCTION_VALIDATION.md.
 
 ### JLC / LCSC boards — simple workflow
 
@@ -159,7 +203,9 @@ Run `openhac compile --help` for the full list. Common flags:
 | `script` | Path to the hardware `.py` file (required). |
 | `-o`, `--output-dir` | Directory for netlist, BOM, PCB, manifest, schematic, project. |
 | `--name` | Project basename (default: script stem). |
-| `--no-route`, `--no-autoroute`, `--skip-autoroute` | Same behavior: skip FreeRouting / autorouter (PCB placement still runs unless layout is skipped). |
+| `--no-route`, `--no-autoroute`, `--skip-autoroute` | Same behavior: skip FreeRouting / autorouter. PCB placement still runs (unless `--skip-layout`) and writes `{name}.dsn` with IPC-2152 widths for KiCad or an external router. |
+| `--freerouting-gui` | Show the FreeRouting Java GUI while routing (default is headless). Same as `OPENHAC_FREEROUTING_GUI=1`. |
+| `--no-freerouting-gui` | Force headless FreeRouting for this run (overrides `.env`). |
 | `--skip-layout` | Skip `pcbnew` PCB generation and autoroute (sets `OPENHAC_SKIP_LAYOUT=1` for the run). |
 | `--no-schematic` | Skip `.kicad_sch` / `.kicad_pro` export. |
 | `--schematic-strict` | Documentation-grade schematics: forbid implicit pins (sets `OPENHAC_SCHEMATIC_STRICT=1`). |
@@ -210,6 +256,9 @@ openhac compile my_design.py -o build --name my_board
 # Fast iteration: place PCB + schematic, skip autorouting
 openhac compile my_design.py -o build --no-autoroute
 
+# Autoroute with the FreeRouting Java window (default is headless)
+openhac compile my_design.py -o build --freerouting-gui
+
 # Same as above (aliases)
 openhac compile my_design.py -o build --skip-autoroute
 
@@ -234,6 +283,37 @@ openhac compile my_design.py -o dist --zip-release --release-tag v1.0.0
 # Deterministic artifacts + manifest sha256 sidecar
 openhac compile my_design.py -o out --deterministic --manifest-sha256-sidecar
 ```
+
+---
+
+## `openhac simulate` and ngspice
+
+`openhac simulate board.py` writes a SPICE deck (`{name}.cir`). That handoff deck may be unsolvable; generic IC value lines are not physics-correct. Add `--run-ngspice` to execute it, or `--spice-signoff` for the fail-closed analog gate (implies ngspice). See [SPICE_SIGN_OFF_SPEC.md](docs/internal/SPICE_SIGN_OFF_SPEC.md).
+
+```bash
+# Handoff deck + batch ngspice (log next to the .cir)
+python3 -m openhac simulate examples/sso041_signoff_node.py --run-ngspice -o build --name myboard
+
+# Fail-closed sign-off (ngspice required; writes audit JSON)
+python3 -m openhac simulate examples/sso041_signoff_node.py --spice-signoff -o build --name myboard
+```
+
+**Where the solver output is:**
+
+| Artifact | Default path |
+|----------|----------------|
+| Deck | `build/myboard.cir` |
+| ngspice batch log | `build/myboard.cir.ngspice.log` (`--ngspice-log PATH` to override) |
+| Sign-off audit | `build/myboard.openhac-spice-signoff-audit.json` (`op_voltages`, probes, `ngspice_log`) |
+
+Read the log with `less build/myboard.cir.ngspice.log`. Run the solver yourself:
+
+```bash
+ngspice -b -o out.log build/myboard.cir    # batch
+ngspice build/myboard.cir                  # interactive
+```
+
+Vendor macromodels stay on disk under `OPENHAC_SPICE_VENDOR_DIR` (or `--spice-vendor-dir`); git does not ship proprietary `.lib` files.
 
 ---
 
@@ -275,9 +355,10 @@ mypy openhac/core openhac/compiler/pcb_placement.py openhac/compiler/layout_gen.
   --ignore-missing-imports --follow-imports=silent
 OPENHAC_NO_NETWORK=1 pytest tests/ -q
 OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_fab_gates.py   # optional locally; required in kicad-fab-golden job
+OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_production.py --require-all --fetch-freerouting  # full ERC→DRC→Gerbers
 ```
 
-GitHub Actions runs the above plus KiCad schematic ERC and layout/fab golden jobs. See `.github/workflows/ci.yml`.
+GitHub Actions runs the above plus KiCad schematic ERC, layout smoke, fab golden, and **kicad-production-validation** jobs. See `.github/workflows/ci.yml`.
 
 ---
 

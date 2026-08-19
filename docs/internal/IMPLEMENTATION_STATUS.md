@@ -1,6 +1,67 @@
 # Implementation status (OpenHaC)
 
-Track record of fixes applied against [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md) (Phase-1) and [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md) (Phase-2). Update this file when you close spec items.
+Track record of fixes applied against [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md) (Phase-1), [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md) (Phase-2), [SCHEMATIC_SIGN_OFF_SPEC.md](./SCHEMATIC_SIGN_OFF_SPEC.md) (**SSO-***), and [SPICE_SIGN_OFF_SPEC.md](./SPICE_SIGN_OFF_SPEC.md) (**SPS-***). Update this file when you close spec items.
+
+### SPICE Sign-Off (SPS-* IDs)
+
+Normative spec: [SPICE_SIGN_OFF_SPEC.md](./SPICE_SIGN_OFF_SPEC.md). Additive fail-closed analog gate (`--spice-signoff`). Phase-1 **SIM-001…003** stay Done.
+
+| Spec ID | Status | Notes |
+|---------|--------|-------|
+| **SPS-001** | Done | Ground aliases (`GND`/`VSS`/`PGND`/`EARTH` + merge hints) map to node `0` (`spice_nodes.py`). |
+| **SPS-002** | Done | Sign-off refuses dropped `pin_map` terminals. |
+| **SPS-003** | Done | Instance node order follows registry / `Spice_Pin_Map`, not pin-number sort. |
+| **SPS-004** | Done | Leading-digit nets get `N_` prefix; sanitization collisions raise. |
+| **SPS-005** | Done | Non-primitives without vendor/physics model fail under sign-off. |
+| **SPS-006** | Done | Instance line vs expected sanitized nodes checked after emit. |
+| **SPS-010** | Done | Registry JSON schema in `openhac/compiler/spice_models.py`. |
+| **SPS-011** | Done | `${OPENHAC_SPICE_VENDOR_DIR}` + sha256 for `kind=vendor`. |
+| **SPS-012** | Done | Stamp `Spice_Include` / `Spice_Subckt` / `Spice_Pin_Map` / `Spice_Kind` / sha256. |
+| **SPS-013** | Done | Bundled `LDO_BEH` is `kind=behavioral` (generator/waiver only). |
+| **SPS-014** | Done | Missing include file fails under sign-off; no HTTP fetch. |
+| **SPS-015** | Done | R/C/L/V/I value lines; other prefixes need a model under sign-off. |
+| **SPS-016** | Done | `physics_checks[]` runner (`spice_physics.py`); bundled LEVEL-1 NMOS bench. |
+| **SPS-017** | Done | Behavioral refused unless `allow_behavioral_spice_models`. |
+| **SPS-018** | Done | Parsed `.subckt` arity must match `pin_map`. |
+| **SPS-020** | Done | `declare_spice_rail` / `declared_supply_voltages_v` emit `V… 0 DC`. |
+| **SPS-021** | Done | Analysis `V1` / `V(out)` fail if those names were not emitted. |
+| **SPS-022** | Done | `declare_spice_probe` vs parsed OP voltages. |
+| **SPS-023** | Done | `.options TEMP/TNOM=27`; benches record `temp_c`. |
+| **SPS-030** | Done | CLI `--spice-signoff` implies ngspice + models + benches/probes. |
+| **SPS-031** | Done | ngspice missing or non-zero exit raises (`ngspice_runner`). |
+| **SPS-032** | Done | `parse_ngspice_op_voltages` extracts floats. |
+| **SPS-033** | Done | Generated resistor-divider golden (`tests/test_sps_spice_signoff.py`). |
+| **SPS-034** | Done | `--require-vendor-models` fails without vendor dir; tmp hashed `.lib` bench; default CI uses in-repo `kind=physics`. |
+| **SPS-040** | Done | `{project}.openhac-spice-signoff-audit.json`. |
+| **SPS-041** | Done | SCOPE / README / RELEASE_CHECKLIST / ARCHITECTURE / this table. |
+| **SPS-042** | Done | Handoff hint markdown retained; sign-off enforces pin_map/benches. |
+
+**SPS open:** **0** v1 IDs (SPS-007…009 / 019 / 035…039 reserved stretch).
+
+### Schematic Sign-Off (SSO-* IDs)
+
+Normative spec: [SCHEMATIC_SIGN_OFF_SPEC.md](./SCHEMATIC_SIGN_OFF_SPEC.md). Additive to FAB-040 (fab may still omit the drawing).
+
+| Spec ID | Status | Notes |
+|---------|--------|-------|
+| **SSO-001** | Done | Graph↔sch parity includes power nets (`openhac/schematic/parity.py`). |
+| **SSO-002** | Done | Instance rotation composed into pin world coords. |
+| **SSO-003** | Done | Power port pin name equals net; never `power:VCC` for a different rail. |
+| **SSO-004** | Done | Single emitter `openhac.schematic.emit_kicad`; Circuit API + `phase_schematic` share it. |
+| **SSO-005** | Done | No part-type graphics / keyword pin-side tables (`tests/test_sso_no_hardcoded_graphics.py`). |
+| **SSO-010** | Done | SymbolResolver: `kicad_symbol` → JLC/EasyEDA → KiCad path → pinout box; sign-off fails Device passives without a lib. |
+| **SSO-011** | Done | Pin positions from resolved `.kicad_sym`; stub only with `OPENHAC_SCHEMATIC_STUB_ONLY`. |
+| **SSO-020** | Done | `no_connect` from pin type / unconnected / NC net on flat and hierarchical sheets. |
+| **SSO-021** | Done | `power:PWR_FLAG` instanced per power/GND net on the sheet. |
+| **SSO-022** | Done | Fanout ≥ 3 uses labels; fanout 2 uses a wire when axis-aligned. |
+| **SSO-030** | Done | Multi-sheet hierarchy; hier pin type from net pin types. |
+| **SSO-031** | Done | Schematic IR then emit; title block has no “Fabrication Ready” slogan. |
+| **SSO-040** | Done | `--schematic-signoff` forces schematic + `kicad-cli sch erc`. |
+| **SSO-041** | Done | `scripts/ci_kicad_sch_erc_golden.py` smoke + `examples/sso041_signoff_node.py` (multi-module, `--schematic-signoff`). |
+| **SSO-042** | Done | Grep gate for `_resistor_graphic` / `_detect_symbol_type`. |
+| **SSO-050** | Done | SCOPE / FAB-040 / README / this table. |
+
+**SSO open:** **0 / 16** (v1 IDs; SSO-012…019 / 023…029 / 032…039 reserved stretch).
 
 ### Phase-2 Fabrication Readiness (FAB-* IDs)
 
@@ -23,14 +84,52 @@ Normative spec: [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md)
 | **FAB-030** | Done | `--production` sets fab goal, pad strict, verified parts, `OPENHAC_NO_NETWORK`, schematic off by default. |
 | **FAB-031** | Done | `scripts/ci_fab_golden.py` + `kicad-fab-golden` CI job runs `export fab --zip` when `kicad-cli` present. |
 | **FAB-032** | Done | Manifest `fab_audit` / `openhac.fab_audit.v1`. |
-| **FAB-040** | Done | `--production` defaults schematic off; SCOPE demotes sch as SoT. |
+| **FAB-040** | Done | `--production` defaults schematic off; fab may omit drawing. EE stamp path is SSO (`--schematic-signoff`), not fabrication. |
 | **FAB-041** | Done | Webview/IR documented as primary review in SCOPE / USER_GUIDE / RELEASE_CHECKLIST; CLI `--webview`. |
 | **FAB-042** | Done | API stability section in `docs/API_REFERENCE.md`. |
 | **FAB-050** | Done | CI: `OPENHAC_NO_NETWORK=1`; mypy hard gate on `openhac/core` + placement/layout (`--follow-imports=silent`); layout/fab golden validators blocking. |
-| **FAB-051** | Done | Blocking `kicad-fab-golden` via `ci_validate_fab_gates.py --require-layout`; fixtures golden + FAB-001/FAB-003 negatives; hard `fab_audit` asserts. |
+| **FAB-051** | Done | Blocking `kicad-fab-golden` + `kicad-production-validation` (`ci_validate_production.py --require-all --fetch-freerouting`); matrix in PRODUCTION_VALIDATION.md (V0–V7 ERC→DRC→Gerbers). Complex multi-IC: 5 fab boards place+Gerbers via `ci_validate_complex_boards.py --place`; LCSC live API via `--api` (`complex_lcsc_api_mixed_node.py`). Autoroute/PCB DRC not a guarantee for RF-module footprints. |
 
 
 **Phase-2 open:** **0 / 20**.
+
+### Advanced Board Capabilities (ABC-* IDs)
+
+Normative spec: [ADVANCED_BOARD_CAPABILITIES_SPEC.md](./ADVANCED_BOARD_CAPABILITIES_SPEC.md).
+
+| Spec ID | Status | Notes |
+|---------|--------|-------|
+| **ABC-001** | Done | Fab design settings (min hole/clearance/width) injected into pcbnew before FreeRouting. |
+| **ABC-002** | Done | Copper pours filled via safe child-process `ZONE_FILLER`; deferred until after FreeRouting when autorouting (`OPENHAC_DEFER_COPPER_POURS`). |
+| **ABC-003** | Done | Thermal-relief pad↔zone defaults; `OPENHAC_POUR_PAD_CONNECTION=solid` for fab route metrics. |
+| **ABC-004** | Done | Routability env knobs (`OPENHAC_ROUTABILITY_*`) + denser pack defaults for complex CI. |
+| **ABC-005** | Done | Pre-route FP min-drill audit; duplicate pad-number net sync (RF thermals); relax board min-hole to stock FP drills. |
+| **ABC-006** | Done | `unrouted_net_count` hardens on connectivity API failure. |
+| **ABC-007** | Done | Repair retry expands board / placement gap on route/DRC failure. |
+| **ABC-008** | Done | Complex validator `--route-subset` for green multi-IC boards. |
+| **ABC-009** | Done | WROOM thermal-via ceiling documented; route subset prefers C3/RS-485. |
+| **ABC-016** | Done | `_live_lookup` gated by `network_allowed()`. |
+| **ABC-017** | Done | Stock KiCad FP map preferred over `Device:Q`; EasyEDA fallback. |
+| **ABC-018** | Done | `voltage_rating` / `power_watts` populated from live/enrich attributes. |
+| **ABC-019** | Done | `footprint_source` recorded on live/enrich rows. |
+| **ABC-020** | Done | API mixed example + `--api` validator. |
+| **ABC-026** | Done | BGA / ball-package detection heuristic. |
+| **ABC-027** | Done | Fab fails without `allow_manual_bga_fanout`. |
+| **ABC-028** | Done | `declare_fanout_intent` → manifest + autoroute exclusions. |
+| **ABC-029** | Done | Fanout constraints JSON artifact. |
+| **ABC-030** | Done | board_profiles note for dense packages. |
+| **ABC-036** | Done | `highspeed` requires stackup ref under fab. |
+| **ABC-037** | Done | Diff pairs require Z0 under fab+highspeed. |
+| **ABC-038** | Done | HS nets excluded from FreeRouting unless waived. |
+| **ABC-039** | Done | Netclass/rules handoff file beside PCB. |
+| **ABC-040** | Done | Length-match intent recording. |
+| **ABC-046** | Done | `rf` profile: RF_Module without keepout → fab error. |
+| **ABC-047** | Done | Ground-pour intent check under `rf`. |
+| **ABC-048** | Done | RF/EMC checklist in fab handoff. |
+| **ABC-049** | Done | RF courtyard keepout helper. |
+| **ABC-050** | Done | SCOPE honesty preserved (no EMC performance claim). |
+
+**ABC open (stretch placeholders ABC-010…015, 021…025, 031…035, 041…045):** tracked as Open in the normative spec; not blocking Phase-1–4 policy Done.
 
 ### Phase-1 completion (all 48 spec IDs)
 
@@ -72,7 +171,7 @@ Earlier revisions used **Partial** for useful slices that did not yet meet every
 | **SIG-006** | Done | **``net_roles``** / **``net_merge_hints``** in manifest + **``{project}.openhac-mixed-signal-hint.md``** + **``{project}.openhac-mixed-signal-constraints.json``** (schema **``openhac.mixed_signal_handoff.v1``**) when roles or hints exist; manifest **``sig006_mixed_signal_handoff_*``** when emitted; same data in **``.openhac-pcb-routing-handoff.json``**; bundled in **``--zip-release``** when present. DRC warns when **both** ``analog_ground`` and ``digital_ground`` roles are present but no ``declare_net_merge_hint`` bridges them (fails when ``Board(strict=True)``). **Stretch:** pcbnew keepouts (**``declare_keepout_rect``**) and net-ties (**``declare_net_tie``**, plus auto net-tie intent when ``declare_net_merge_hint(via='net_tie')``) are emitted into `.kicad_pcb` when pcbnew is available. |
 | **PWR-002** | Done | **``stdlib.power.buck_input_current_ma``** (ideal buck input mA from output mA, rail voltages, efficiency) + ERC tests; **``Board.declare_rail_conversion(input_rail, output_rail, efficiency=...)``** propagates upstream supply to derived rails for ERC checks when **``declared_supply_voltages_v``** provides both rail voltages; optional **``{project}.openhac-rail-conversions.json``** (schema **``openhac.rail_conversions_handoff.v1``**) records declared rail conversions + declared voltages for downstream power review; manifest **``pwr002_rail_conversions_handoff_*``** when emitted; manifest **``pwr002_stdlib_helpers_catalog``** lists discoverable helpers; manifest **``pwr002_stdlib_power_module``** (**``openhac.stdlib.power``**); **``extra_input_draw_by_rail_ma``** still merged as before. Regulator object graph / auto tree still future. |
 | **PCB-004** | Done | Example **``../fab_stackup_jlc_example.json``**; **``declare_stackup_reference``** → manifest **``stackup_references``** + fab handoff; **``stackup_json_summaries``** for referenced **``*.json``** stackup files; optional **``{project}.openhac-stackup-handoff.json``** (**``openhac.stackup_handoff.v1``**) + manifest **``pcb004_stackup_handoff_*``** when any stackup ref exists. Parser-driven stackup merge still future. |
-| **SCH-002** | Done | **[SCOPE.md](./SCOPE.md)** flat **``.kicad_sch``**; manifest **``logical_modules``**, **``logical_module_names``**, **``logical_module_reference_total``**, + **``schematic_hierarchy_handoff``**; **``examples/hierarchy_authoring.md``** (manual KiCad sheet split vs manifest). Multi-sheet **``.kicad_sch``** / sheet pins not generated yet. |
+| **SCH-002** | Done | Flat **``.kicad_sch``** by default; multi-sheet when ``OPENHAC_SCHEMATIC_MULTI_SHEET=1`` or part count ≥ ``OPENHAC_SCHEMATIC_MULTI_SHEET_MIN_PARTS`` (default 25). Hierarchical sheets + pins generated; optional ``OpenHaC_SchSheet`` decouples sheet grouping from placement ``OpenHaC_Module``. Manifest **``logical_modules``** / hierarchy handoff + **``examples/hierarchy_authoring.md``**. |
 | **Board DRC** | Done | ``Board.min_trace_width_mm`` overrides global IPC comparison threshold. |
 | **Interface validation** | Done | `_validate_interfaces()` raises `UnconnectedInterfaceError` again when a net has fewer than two pins. |
 | **ERC net-level** | Done | `_check_net_level` uses `get_default_circuit()` and raises `OpenHaCError` if the circuit cannot be read; silent `except: pass` on pin checks replaced with warnings. |

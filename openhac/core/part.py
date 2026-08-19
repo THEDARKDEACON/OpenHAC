@@ -27,6 +27,8 @@ class Pin:
         logic_level: Optional[float] = None,
         voltage_rating: Optional[float] = None,
         current_limit: Optional[float] = None,
+        *,
+        unit: int = 1,
     ):
         self.number = number
         self.name = name
@@ -34,6 +36,10 @@ class Pin:
         self.logic_level = logic_level        # Expected typical logic voltage (e.g., 3.3, 5.0)
         self.voltage_rating = voltage_rating  # Max absolute voltage for safety validation
         self.current_limit = current_limit    # Max continuous current draw/source for power budgets
+        try:
+            self.unit = max(1, int(unit or 1))
+        except (TypeError, ValueError):
+            self.unit = 1
         self.net: Optional[Net] = None
         self.part: Optional[Part] = None
 

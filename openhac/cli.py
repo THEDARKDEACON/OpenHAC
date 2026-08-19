@@ -3,7 +3,7 @@ OpenHaC CLI — compile declarative hardware Python into KiCad projects.
 
 Usage:
     openhac compile board.py                     # compile to KiCad project
-    openhac compile board.py --no-route        # skip FreeRouting / autorouter (same: --no-autoroute)
+    openhac compile board.py --freerouting-gui  # FreeRouting Java window (default is headless)
     openhac compile board.py --name my_board     # custom project name
     openhac compile board.py --allow-risky-parts # allow low-confidence JIT parts
     openhac compile board.py --kicad-erc        # run kicad-cli sch erc after .kicad_sch
@@ -17,7 +17,7 @@ Usage:
     openhac compile board.py --strict-jit   # block medium-confidence JIT (LIB-003)
     openhac compile board.py --production   # strict KiCad + strict JIT (same: --strict)
     openhac compile board.py -o out/ --zip-release --release-tag v1.0.0
-    openhac export assembly board.kicad_pcb -o pos/
+    openhac export dsn board.kicad_pcb          # re-export Specctra DSN with IPC widths (no re-place)
 
 When using ``openhac compile`` or ``openhac simulate``, define a top-level variable
 named ``board`` (an :class:`openhac.core.board.Board` instance). Do not call
@@ -69,6 +69,7 @@ def _load_user_script(script_path: str):
     except Exception as e:
         logger.error(f"Error executing {script_path}: {e}")
         raise
+    _quiet_skidl_logging(verbose=False)
     return module
 
 
@@ -132,6 +133,7 @@ def cmd_compile(args):
     _prev_req_verified = os.environ.get("OPENHAC_REQUIRE_VERIFIED_PARTS")
     _prev_skip_layout = os.environ.get("OPENHAC_SKIP_LAYOUT")
     _prev_compile_goal = os.environ.get("OPENHAC_COMPILE_GOAL")
+    _prev_fr_gui = os.environ.get("OPENHAC_FREEROUTING_GUI")
     _prev_db_path = os.environ.get("OPENHAC_DB_PATH")
     _prev_symbol_dirs = os.environ.get("OPENHAC_KICAD_SYMBOL_DIRS")
     _prev_schematic_strict = os.environ.get("OPENHAC_SCHEMATIC_STRICT")
@@ -168,6 +170,11 @@ def cmd_compile(args):
 
     if getattr(args, "skip_layout", False):
         os.environ["OPENHAC_SKIP_LAYOUT"] = "1"
+
+    if getattr(args, "freerouting_gui", False):
+        os.environ["OPENHAC_FREEROUTING_GUI"] = "1"
+    elif getattr(args, "no_freerouting_gui", False):
+        os.environ["OPENHAC_FREEROUTING_GUI"] = "0"
 
     if getattr(args, "compile_goal", None):
         os.environ["OPENHAC_COMPILE_GOAL"] = str(getattr(args, "compile_goal"))
@@ -279,9 +286,17 @@ def cmd_compile(args):
                                     comp.refresh_from_db()
 
         name = args.name or _default_project_name(args.script)
+        schematic_signoff = bool(getattr(args, "schematic_signoff", False)) or os.environ.get(
+            "OPENHAC_SCHEMATIC_SIGNOFF", ""
+        ).strip().lower() in ("1", "true", "yes", "on")
+        if schematic_signoff:
+            board.schematic_signoff = True
         # FAB-040: --production defaults schematic off unless user explicitly wants it
         # (omit --no-schematic and set OPENHAC_PRODUCTION_SCHEMATIC=1 to keep sch).
-        if getattr(args, "production", False) and not getattr(args, "no_schematic", False):
+        # SSO-040: --schematic-signoff forces export even under --production.
+        if schematic_signoff:
+            export_schematic = True
+        elif getattr(args, "production", False) and not getattr(args, "no_schematic", False):
             if os.environ.get("OPENHAC_PRODUCTION_SCHEMATIC", "").strip().lower() not in (
                 "1",
                 "true",
@@ -293,7 +308,7 @@ def cmd_compile(args):
                 export_schematic = not args.no_schematic
         else:
             export_schematic = not args.no_schematic
-        kicad_erc = bool(getattr(args, "kicad_erc", False))
+        kicad_erc = bool(getattr(args, "kicad_erc", False)) or schematic_signoff
         if kicad_erc and not export_schematic:
             logger.error("--kicad-erc requires a schematic export (omit --no-schematic).")
             sys.exit(2)
@@ -354,10 +369,16 @@ def cmd_compile(args):
             output_dir=getattr(args, "output_dir", None) or os.path.join(os.path.dirname(os.path.abspath(args.script)), name),
             release_zip_path=zip_path,
             bbox_padding_mm=float(getattr(args, "bbox_padding_mm", 0.5) or 0.5),
-            module_clearance_mm=float(getattr(args, "module_gap_mm", 0.0) or 0.0),
+            # None → layout reads OPENHAC_MODULE_CLEARANCE_MM (.env); explicit CLI wins.
+            module_clearance_mm=(
+                float(args.module_gap_mm)
+                if getattr(args, "module_gap_mm", None) is not None
+                else 0.0
+            ),
             deoverlap_max_iters=int(getattr(args, "deoverlap_iters", 200) or 200),
             deoverlap_step_mm=float(getattr(args, "deoverlap_step_mm", 0.75) or 0.75),
             catalog_overlay_paths=tuple(overlay_paths) if overlay_paths else (),
+            schematic_signoff=schematic_signoff,
         )
         logger.info("Compilation complete.")
 
@@ -379,6 +400,10 @@ def cmd_compile(args):
             os.environ.pop("OPENHAC_SKIP_LAYOUT", None)
         else:
             os.environ["OPENHAC_SKIP_LAYOUT"] = _prev_skip_layout
+        if _prev_fr_gui is None:
+            os.environ.pop("OPENHAC_FREEROUTING_GUI", None)
+        else:
+            os.environ["OPENHAC_FREEROUTING_GUI"] = _prev_fr_gui
         if _prev_compile_goal is None:
             os.environ.pop("OPENHAC_COMPILE_GOAL", None)
         else:
@@ -508,6 +533,12 @@ def cmd_simulate(args):
         from openhac.compiler.spice_presets import preset_analysis_lines
 
         analysis_lines = preset_analysis_lines(preset)
+    spice_signoff = bool(getattr(args, "spice_signoff", False))
+    if spice_signoff:
+        os.environ["OPENHAC_SPICE_SIGNOFF"] = "1"
+        board.spice_signoff = True
+    if getattr(args, "spice_vendor_dir", None):
+        os.environ["OPENHAC_SPICE_VENDOR_DIR"] = str(args.spice_vendor_dir)
     board.simulate(
         project_name=name,
         allow_risky_part_lookups=Component.allow_risky_part_lookups,
@@ -515,6 +546,9 @@ def cmd_simulate(args):
         output_dir=getattr(args, "output_dir", None),
         run_ngspice=bool(getattr(args, "run_ngspice", False)),
         ngspice_log_path=getattr(args, "ngspice_log", None),
+        spice_signoff=spice_signoff,
+        allow_behavioral_spice_models=bool(getattr(args, "allow_behavioral_spice_models", False)),
+        require_vendor_models=bool(getattr(args, "require_vendor_models", False)),
     )
     logger.info("Simulation complete.")
     if _prev_deterministic is None:
@@ -834,6 +868,21 @@ def cmd_database_enrich(args):
         os.environ["OPENHAC_DB_PATH"] = _prev_db_path
 
 
+def cmd_export_dsn(args):
+    """Export Specctra DSN from a saved PCB and patch IPC netclass widths."""
+    from openhac.compiler.autoroute_cli import export_dsn_with_ipc_widths
+
+    pcb = args.pcb
+    out = getattr(args, "output", None)
+    logger.info("Exporting Specctra DSN from %s (placement unchanged)", pcb)
+    path = export_dsn_with_ipc_widths(
+        pcb,
+        dsn_path=out,
+        require_dsn_widths=bool(getattr(args, "strict", False)),
+    )
+    logger.info("Wrote Specctra DSN with IPC netclass widths: %s", path)
+
+
 def cmd_export_assembly(args):
     """Pick-and-place CSV only (front + back) via ``kicad-cli`` (MFG-002)."""
     from openhac.compiler.export_fab import export_assembly_csv
@@ -870,8 +919,17 @@ def _setup_logging(verbose: bool = False):
     level = logging.DEBUG if verbose else logging.INFO
     fmt = "%(asctime)s [%(levelname)s] %(name)s: %(message)s"
     logging.basicConfig(level=level, format=fmt, datefmt="%H:%M:%S")
-    if not verbose:
-        logging.getLogger("skidl").setLevel(logging.WARNING)
+    # Do NOT call getLogger("skidl") before SKiDL imports — that creates a stdlib
+    # Logger and breaks SkidlLogger (AttributeError: bare_error) on later import.
+
+
+def _quiet_skidl_logging(verbose: bool = False) -> None:
+    """Lower SKiDL log noise after SKiDL has been imported (optional)."""
+    if verbose:
+        return
+    if "skidl" not in sys.modules:
+        return
+    logging.getLogger("skidl").setLevel(logging.WARNING)
 
 
 def main():
@@ -907,7 +965,20 @@ def main():
         "--skip-autoroute",
         action="store_true",
         dest="no_route",
-        help="Skip FreeRouting / auto-routing (faster CI and iterative schematic-only runs)",
+        help="Skip FreeRouting / auto-routing (PCB + Specctra DSN with IPC widths still written unless --skip-layout)",
+    )
+    p_fr_gui = p_compile.add_mutually_exclusive_group()
+    p_fr_gui.add_argument(
+        "--freerouting-gui",
+        action="store_true",
+        dest="freerouting_gui",
+        help="Show the FreeRouting Java window while autorouting (sets OPENHAC_FREEROUTING_GUI=1). Default is headless.",
+    )
+    p_fr_gui.add_argument(
+        "--no-freerouting-gui",
+        action="store_true",
+        dest="no_freerouting_gui",
+        help="Force headless FreeRouting (overrides OPENHAC_FREEROUTING_GUI in .env).",
     )
     p_compile.add_argument(
         "--compile-goal",
@@ -945,6 +1016,12 @@ def main():
         help="Skip schematic and .kicad_pro export",
     )
     p_compile.add_argument(
+        "--schematic-signoff",
+        action="store_true",
+        help="SSO: require EE-stamped .kicad_sch (library/pinout symbols, graph parity, kicad-cli sch erc). "
+        "Forces schematic export even under --production.",
+    )
+    p_compile.add_argument(
         "--schematic-strict",
         action="store_true",
         help="Documentation-grade schematics: forbid implicit pins (sets OPENHAC_SCHEMATIC_STRICT=1).",
@@ -952,7 +1029,7 @@ def main():
     p_compile.add_argument(
         "--bbox-padding-mm",
         type=float,
-        default=0.05,
+        default=0.5,
         help="Extra padding (mm) applied to footprint bounding boxes for PCB fit / keepout checks and "
         "post-process clamping/de-overlap. Default: 0.5",
     )
@@ -971,9 +1048,10 @@ def main():
     p_compile.add_argument(
         "--module-gap-mm",
         type=float,
-        default=5.0,
+        default=None,
         help="Minimum edge-to-edge gap (mm) between module bounding boxes in the Z3 placer "
-        "(reduces footprint spill-over between regions). Default: 0. Also: OPENHAC_MODULE_CLEARANCE_MM.",
+        "(reduces footprint spill-over between regions). "
+        "Omit to use OPENHAC_MODULE_CLEARANCE_MM from the environment / .env (typical 2–4 dense, 5+ roomy).",
     )
     p_compile.add_argument(
         "--strict-footprint-pads",
@@ -1199,6 +1277,27 @@ def main():
         metavar="PATH",
         help="Optional path for ngspice log output (default: <name>.cir.ngspice.log in output dir).",
     )
+    p_sim.add_argument(
+        "--spice-signoff",
+        action="store_true",
+        help="SPS: fail-closed Kirchhoff + vendor/physics models + ngspice + probe/bench windows.",
+    )
+    p_sim.add_argument(
+        "--allow-behavioral-spice-models",
+        action="store_true",
+        help="SPS-017: allow kind=behavioral models under --spice-signoff (not physics-correct).",
+    )
+    p_sim.add_argument(
+        "--require-vendor-models",
+        action="store_true",
+        help="SPS-034: fail if OPENHAC_SPICE_VENDOR_DIR is unset (do not skip vendor goldens).",
+    )
+    p_sim.add_argument(
+        "--spice-vendor-dir",
+        default=None,
+        metavar="DIR",
+        help="Directory of vendor .lib files (sets OPENHAC_SPICE_VENDOR_DIR for this run).",
+    )
     p_sim.set_defaults(func=cmd_simulate)
 
     p_sync = subparsers.add_parser("sync", help="Sync JLCPCB component catalog")
@@ -1236,6 +1335,23 @@ def main():
 
     p_export = subparsers.add_parser("export", help="Export fabrication outputs (requires kicad-cli)")
     export_sub = p_export.add_subparsers(dest="export_target", required=True)
+    p_dsn = export_sub.add_parser(
+        "dsn",
+        help="Specctra DSN from a saved .kicad_pcb with IPC netclass widths patched (no re-placement)",
+    )
+    p_dsn.add_argument("pcb", help="Path to .kicad_pcb (use the board you edited in KiCad)")
+    p_dsn.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Output .dsn path (default: same stem as the PCB)",
+    )
+    p_dsn.add_argument(
+        "--strict",
+        action="store_true",
+        help="Fail if IPC width rules cannot be patched into the DSN",
+    )
+    p_dsn.set_defaults(func=cmd_export_dsn)
     p_asm = export_sub.add_parser(
         "assembly",
         help="Pick-and-place CSV (front + back) only — same kicad-cli pos export as fab (MFG-002)",

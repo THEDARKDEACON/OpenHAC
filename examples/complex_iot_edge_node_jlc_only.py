@@ -107,12 +107,16 @@ class EdgeHostModule(Module):
 
         self.can_tx = Net("HOST_CAN_TX")
         self.can_rx = Net("HOST_CAN_RX")
+        self.nrst = Net("HOST_NRST")
 
         self.mcu["VDD"] += self.v3v3
         self.mcu["VSS"] += self.gnd
         self.mcu["CAN_TX"] += self.can_tx
         self.mcu["CAN_RX"] += self.can_rx
-        self.mcu["NRST"] += Net("HOST_NRST")
+        self.mcu["NRST"] += self.nrst
+        self.r_nrst = self.add(Component("R_1K_0603"))
+        self.r_nrst["1"] += self.nrst
+        self.r_nrst["2"] += self.v3v3
 
         self.c_dec1["1"] += self.v3v3
         self.c_dec1["2"] += self.gnd
@@ -156,6 +160,9 @@ class CANModule(Module):
         self.can["CANH"] += self.can_h
         self.can["CANL"] += self.can_l
         self.can["S"] += self.gnd
+        self.r_term = self.add(Component("R_120_0603"))
+        self.r_term["1"] += self.can_h
+        self.r_term["2"] += self.can_l
 
         self.max_current_draw_ma = {"3V3": 10}
         self.pwr = self.declare_interface("pwr", self.v3v3, self.gnd)

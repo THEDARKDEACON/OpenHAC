@@ -1,0 +1,50 @@
+{
+  "models": [
+    {
+      "generic_name": "NMOS_L1",
+      "mpn": "OPENHAC-NMOS-L1",
+      "kind": "physics",
+      "include": "nmos_l1.cir",
+      "subckt": "NMOS_L1",
+      "license": "Apache-2.0",
+      "simulator": "ngspice",
+      "notes": "Bundled LEVEL-1 MOSFET for Kirchhoff/physics benches. Not a vendor part.",
+      "subckt_pin_count": 3,
+      "pin_map": [
+        {"name": "D", "num": "1", "subckt_index": 1},
+        {"name": "G", "num": "2", "subckt_index": 2},
+        {"name": "S", "num": "3", "subckt_index": 3}
+      ],
+      "physics_checks": [
+        {
+          "name": "source_follower",
+          "analysis": ".op",
+          "rails": {"G": 3.0, "D": 5.0},
+          "load_ohm": 1000,
+          "load_from": "S",
+          "probe": "S",
+          "vmin": 0.4,
+          "vmax": 2.9,
+          "temp_c": 27
+        }
+      ]
+    },
+    {
+      "generic_name": "LDO_BEH",
+      "mpn": "OPENHAC-LDO-BEH",
+      "kind": "behavioral",
+      "include": "ldo_beh.cir",
+      "subckt": "LDO_BEH",
+      "license": "Apache-2.0",
+      "simulator": "ngspice",
+      "notes": "E-source stub for generator tests only. Not physics-correct.",
+      "subckt_pin_count": 4,
+      "pin_map": [
+        {"name": "VIN", "num": "1", "subckt_index": 1},
+        {"name": "GND", "num": "2", "subckt_index": 2},
+        {"name": "EN", "num": "3", "subckt_index": 3},
+        {"name": "VOUT", "num": "4", "subckt_index": 4}
+      ]
+    }
+  ]
+}

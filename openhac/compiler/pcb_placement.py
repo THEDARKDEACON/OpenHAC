@@ -9,6 +9,7 @@ or common install paths), positions them from OpenHaC module placement, then att
 from __future__ import annotations
 
 import logging
+import math
 import os
 import re
 import sys
@@ -297,6 +298,34 @@ def resolve_pretty_directory(library_name: str) -> str | None:
     return None
 
 
+def _footprint_pack_bbox(fp):
+    """Courtyard-scale bbox for packing — exclude Reference/Value silk text.
+
+    Default ``GetBoundingBox()`` includes library text, which turns a 0603 (~3 mm)
+    into ~15 mm and inflates Z3 rooms into hundreds of mm.
+    """
+    for args in ((False, False), (False,)):
+        try:
+            bb = fp.GetBoundingBox(*args)
+            if bb is not None:
+                return bb
+        except TypeError:
+            continue
+    return fp.GetBoundingBox()
+
+
+def _module_pack_cols(n_items: int) -> int:
+    """Column count for module AABB packing (sqrt grid, not global GRID_COLS)."""
+    n = max(1, int(n_items))
+    raw = (os.environ.get("OPENHAC_MODULE_PACK_COLS") or "").strip()
+    if raw:
+        try:
+            return max(1, min(int(raw), n))
+        except Exception:
+            pass
+    return max(1, int(math.ceil(math.sqrt(n))))
+
+
 def _fp_size_mm_for_part(
     part,
     plugin,
@@ -319,7 +348,7 @@ def _fp_size_mm_for_part(
         fp = plugin.FootprintLoad(pretty_dir, fpid[1])
         if fp is None:
             raise ValueError("FootprintLoad returned None")
-        bb = fp.GetBoundingBox()
+        bb = _footprint_pack_bbox(fp)
         if hasattr(bb, "GetWidth") and hasattr(bb, "GetHeight"):
             w_iu = abs(int(bb.GetWidth()))
             h_iu = abs(int(bb.GetHeight()))
@@ -368,6 +397,8 @@ def collect_skidl_part_positions(board) -> dict[Any, tuple[float, float]]:
     except Exception:
         gap_mm = 1.0
 
+    from openhac.compiler.placement_engine import shelf_pack
+
     for mod in all_mods:
         ax = float(mod.placed_x) if mod.placed_x is not None else 5.0
         ay = float(mod.placed_y) if mod.placed_y is not None else 5.0
@@ -375,11 +406,6 @@ def collect_skidl_part_positions(board) -> dict[Any, tuple[float, float]]:
             grid_mm = float(os.environ.get("OPENHAC_PLACEMENT_GRID_MM", "").strip() or 7.0)
         except Exception:
             grid_mm = 7.0
-        try:
-            cols = int(os.environ.get("OPENHAC_PLACEMENT_GRID_COLS", "").strip() or 6)
-        except Exception:
-            cols = 6
-        cols = max(1, cols)
 
         items: list[object] = []
         for child in mod.components:
@@ -389,28 +415,19 @@ def collect_skidl_part_positions(board) -> dict[Any, tuple[float, float]]:
             if part is None:
                 continue
             items.append(part)
+        if not items:
+            continue
 
+        sized: list[tuple[object, float, float]] = []
         if use_fp and plugin is not None and pcbnew_mod is not None:
-            x_cursor = ax
-            y_row = ay
-            row_max_h = 0.0
-            col = 0
             for part in items:
                 fw, fh = _fp_size_mm_for_part(part, plugin, pcbnew_mod, fp_cache, grid_mm=grid_mm)
-                positions[part] = (x_cursor, y_row)
-                row_max_h = max(row_max_h, fh + gap_mm)
-                col += 1
-                x_cursor += fw + gap_mm
-                if col >= cols:
-                    col = 0
-                    x_cursor = ax
-                    y_row += row_max_h
-                    row_max_h = 0.0
+                sized.append((part, fw, fh))
         else:
-            for idx, part in enumerate(items):
-                c = idx % cols
-                r = idx // cols
-                positions[part] = (ax + c * grid_mm, ay + r * grid_mm)
+            sized = [(part, grid_mm, grid_mm) for part in items]
+        local, _, _ = shelf_pack(sized, gap=gap_mm)
+        for part, (lx, ly) in local.items():
+            positions[part] = (ax + lx, ay + ly)
     return positions
 
 
@@ -418,7 +435,7 @@ def apply_pcbnew_pack_to_module_bboxes(board) -> int:
     """Shrink-wrap each module's ``width``/``height`` using the same row-pack as placement, with real pcbnew bboxes.
 
     Runs **after** :meth:`openhac.core.base.Module.recalculate_bbox_from_components` so the final
-    module rectangle is ``max(heuristic, pcbnew_pack * inflate)``. Skips when pcbnew is unavailable,
+    module rectangle is the pcbnew shelf-pack (inflate slack only). Skips when pcbnew is unavailable,
     ``OPENHAC_MODULE_BBOX_FROM_FP_PACK`` is disabled, or ``OPENHAC_PLACEMENT_USE_FP_BBOX`` is off.
 
     Returns:
@@ -450,14 +467,15 @@ def apply_pcbnew_pack_to_module_bboxes(board) -> int:
     except Exception:
         grid_mm = 7.0
     try:
-        cols = int(os.environ.get("OPENHAC_PLACEMENT_GRID_COLS", "").strip() or 6)
-    except Exception:
-        cols = 6
-    cols = max(1, cols)
-    try:
         inflate = float(os.environ.get("OPENHAC_MODULE_PACK_INFLATE", "").strip() or 1.15)
     except Exception:
         inflate = 1.15
+    if inflate > 1.5:
+        logger.warning(
+            "OPENHAC_MODULE_PACK_INFLATE=%.2f inflates module rooms (not routing channels); "
+            "1.15–1.35 is typical. Affinity floorplan cannot hide oversized AABBs.",
+            inflate,
+        )
 
     all_mods = getattr(board, "all_modules", None)
     if not all_mods and hasattr(board, "_get_all_modules"):
@@ -478,34 +496,23 @@ def apply_pcbnew_pack_to_module_bboxes(board) -> int:
         if not items:
             continue
 
-        ax, ay = 0.0, 0.0
-        x_cursor, y_row = ax, ay
-        row_max_h = 0.0
-        col = 0
-        max_r = ax
-        max_b = ay
+        sized: list[tuple[object, float, float]] = []
         for part in items:
             fw, fh = _fp_size_mm_for_part(part, plugin, pcbnew_mod, fp_cache, grid_mm=grid_mm)
-            left, top = x_cursor, y_row
-            max_r = max(max_r, left + fw)
-            max_b = max(max_b, top + fh)
-            row_max_h = max(row_max_h, fh + gap_mm)
-            col += 1
-            x_cursor += fw + gap_mm
-            if col >= cols:
-                col = 0
-                x_cursor = ax
-                y_row += row_max_h
-                row_max_h = 0.0
+            sized.append((part, fw, fh))
+        from openhac.compiler.placement_engine import shelf_pack
 
-        w_pack = max(0.0, max_r - ax) * inflate
-        h_pack = max(0.0, max_b - ay) * inflate
+        _pos, pack_w, pack_h = shelf_pack(sized, gap=gap_mm)
+        w_pack = pack_w * inflate
+        h_pack = pack_h * inflate
         if w_pack <= 0 or h_pack <= 0:
             continue
 
         old_w, old_h = float(mod.width), float(mod.height)
-        mod.width = max(old_w, w_pack)
-        mod.height = max(old_h, h_pack)
+        # True shrink-wrap to courtyard pack (do not keep a larger heuristic box).
+        mod.width = w_pack
+        mod.height = h_pack
+        mod._cluster_core_wh = (w_pack, h_pack)
         if mod.width > old_w + 1e-9 or mod.height > old_h + 1e-9:
             enlarged += 1
             logger.debug(
@@ -665,6 +672,7 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
     plugin = _get_kicad_sexp_plugin(pcbnew_mod)
     net_cache: dict[str, object] = {}
     fallback_i = 0
+    circuit_parts = list(circuit.parts)  # type: Any
     fabrication = False
     try:
         fabrication = str(getattr(board, "effective_compile_goal", lambda: "")()).strip().lower() == "fabrication"
@@ -752,6 +760,12 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
         
         pcb.Add(fp)
         fp.SetReference(part.ref)
+        try:
+            from openhac.schematic.kicad_links import bind_footprint_schematic_path
+
+            bind_footprint_schematic_path(fp, part, pcbnew_mod, parts=circuit_parts)
+        except Exception as e:
+            logger.debug("Schematic path bind skipped for %s: %s", getattr(part, "ref", "?"), e)
         val = getattr(part, "value", None) or part.name
         fp.SetValue(str(val))
         
@@ -798,6 +812,13 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
             fallback_i += 1
             logger.debug("Part %s: no module anchor; using fallback grid (%.1f, %.1f) mm", part.ref, x_mm, y_mm)
 
+        # Pack cells are courtyard AABB top-left; KiCad origins are often pad-center.
+        try:
+            bb = _footprint_pack_bbox(fp)
+            x_mm -= float(pcbnew_mod.ToMM(int(bb.GetLeft())))
+            y_mm -= float(pcbnew_mod.ToMM(int(bb.GetTop())))
+        except Exception:
+            pass
         fp.SetPosition(_to_board_vec(pcbnew_mod, x_mm, y_mm))
 
         # Optional rotation hint (degrees) carried on SKiDL part fields.

@@ -56,6 +56,8 @@ def test_live_lookup_db_write_failure_warns_non_strict(monkeypatch, tmp_path):
     Component.db = DatabaseManager(db_path=str(tmp_path / "t.db"))
     monkeypatch.delenv("OPENHAC_COMPILE_GOAL", raising=False)
     monkeypatch.delenv("OPENHAC_STRICT_DB_WRITES", raising=False)
+    # CI sets OPENHAC_NO_NETWORK=1; this test mocks HTTP and only asserts DB-write policy.
+    monkeypatch.setattr("openhac.database.enrich.network_allowed", lambda: True)
 
     # Fake HTTP response for urlopen
     class _Resp:
@@ -91,6 +93,7 @@ def test_live_lookup_db_write_failure_warns_non_strict(monkeypatch, tmp_path):
 def test_live_lookup_db_write_failure_raises_in_strict(monkeypatch, tmp_path):
     Component.db = DatabaseManager(db_path=str(tmp_path / "t.db"))
     monkeypatch.setenv("OPENHAC_COMPILE_GOAL", "fabrication")
+    monkeypatch.setattr("openhac.database.enrich.network_allowed", lambda: True)
 
     class _Resp:
         def __enter__(self):

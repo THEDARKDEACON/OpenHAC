@@ -11,13 +11,16 @@ import json
 from skidl import Net, Part
 
 from openhac.compiler.kicad_sym_pinpos import (
+    SymbolPinResolver,
     clear_symbol_pin_cache,
     find_symbol_library_file,
     load_symbol_pin_positions,
+    map_graph_pin_to_library_number,
     parse_pin_positions_from_symbol_tree,
     parse_pinout_from_symbol_tree,
     pinout_from_kicad_symbol_id,
     resolve_symbol_tree_for_pins,
+    rewrite_symbol_pin_electrical_types,
 )
 from openhac.compiler.schematic_gen import (
     EmptySymbolPinResolver,
@@ -29,6 +32,7 @@ from openhac.core.board import Board
 
 _FIXTURE_SYM = Path(__file__).resolve().parent / "fixtures" / "kicad_symbols" / "Device.kicad_sym"
 _FIXTURE_EXTENDS = Path(__file__).resolve().parent / "fixtures" / "kicad_symbols" / "ExtendsDemo.kicad_sym"
+_FIXTURE_SHIFT = Path(__file__).resolve().parent / "fixtures" / "kicad_symbols" / "NameShift.kicad_sym"
 
 
 def test_parse_pinout_from_fixture_resistor():
@@ -102,13 +106,14 @@ def test_schematic_wires_use_library_offsets_when_fixture_on_path(tmp_path, monk
     out = tmp_path / "sympos.kicad_sch"
     generate_schematic(str(out), Board(size_mm=(10, 10)))
     parsed = parse_kicad_sch_wire_segments(out.read_text(encoding="utf-8"))
-    assert len(parsed) == 1
-    assert len(geom["wires"]) == 1
-    assert parsed[0] == pytest.approx(geom["wires"][0], rel=1e-4, abs=1e-4)
-    # Verify real library offsets (±5.08mm) are used, not the 2.54mm stub default.
-    # With two parts at different Y positions, the wire y-span > stub span (2.54).
-    x1, y1, x2, y2 = geom["wires"][0]
-    assert abs(y1 - y2) > 2.54  # Proves library pin offsets (5.08mm) are active
+    ir = geom["ir"]
+    r1p = next(p for p in geom["part_placements"] if str(getattr(p, "ref", "")) == "R1")
+    px1, py1 = geom["part_placements"][r1p]
+    pin_xy = ir.pin_xy[("R1", "1")]
+    # Library pin 1 is 5.08 mm from origin (not the 2.54 mm stub-resolver fallback).
+    assert abs(pin_xy[1] - py1) == pytest.approx(5.08, abs=1e-3)
+    assert parsed
+    assert len(geom["wires"]) == len(parsed)
 
 
 def test_empty_resolver_matches_index_stub_geometry(tmp_path, monkeypatch):
@@ -124,7 +129,7 @@ def test_empty_resolver_matches_index_stub_geometry(tmp_path, monkeypatch):
     c = get_default_circuit()
     res = EmptySymbolPinResolver()
     geom = schematic_geometry(c, symbol_resolver=res)
-    r1, r2 = c.parts[0], c.parts[1]
+    r1 = next(p for p in geom["part_placements"] if str(getattr(p, "ref", "")) == "R1")
     px1, py1 = geom["part_placements"][r1]
     from openhac.compiler.schematic_gen import _pin_world_xy
 
@@ -148,7 +153,7 @@ def test_openhac_schematic_stub_only_env_forces_stub_geometry_and_report(tmp_pat
 
     c = get_default_circuit()
     geom = schematic_geometry(c)
-    r1 = c.parts[0]
+    r1 = next(p for p in geom["part_placements"] if str(getattr(p, "ref", "")) == "R1")
     px1, py1 = geom["part_placements"][r1]
     from openhac.compiler.schematic_gen import _pin_world_xy, EmptySymbolPinResolver
 
@@ -163,3 +168,67 @@ def test_openhac_schematic_stub_only_env_forces_stub_geometry_and_report(tmp_pat
     assert payload.get("schema") == "openhac.sch_pinpos_report.v1"
     assert int(payload.get("resolved_pin_count") or 0) == 0
     assert int(payload.get("stub_pin_count") or 0) >= 2
+
+
+class _GPin:
+    def __init__(self, num, name):
+        self.num = num
+        self.name = name
+
+
+def test_map_graph_pin_prefers_unique_name_when_numbers_disagree():
+    pmap = {"8": (0.0, 5.08, 90.0, 2.54), "9": (-5.08, 0.0, 180.0, 2.54), "10": (5.08, 0.0, 0.0, 2.54)}
+    by_num = {
+        "8": {"num": "8", "name": "VDD"},
+        "9": {"num": "9", "name": "SDA"},
+        "10": {"num": "10", "name": "SCL"},
+    }
+    assert map_graph_pin_to_library_number(_GPin("8", "SDA"), pmap, by_num) == "9"
+    assert map_graph_pin_to_library_number(_GPin("10", "VDD"), pmap, by_num) == "8"
+    assert map_graph_pin_to_library_number(_GPin("9", "SCL"), pmap, by_num) == "10"
+    # Device:R passive names are "~" — keep the graph number.
+    rmap = {"1": (0.0, 5.08, 0.0, 2.54), "2": (0.0, -5.08, 0.0, 2.54)}
+    rnames = {"1": {"num": "1", "name": "~"}, "2": {"num": "2", "name": "~"}}
+    assert map_graph_pin_to_library_number(_GPin("1", "~"), rmap, rnames) == "1"
+    assert map_graph_pin_to_library_number(_GPin("2", "~"), rmap, rnames) == "2"
+    ncmap = {"5": (0.0, 0.0, 0.0, 2.54), "3": (0.0, 5.08, 90.0, 2.54)}
+    ncnames = {
+        "5": {"num": "5", "name": "NC", "type": "no_connect"},
+        "3": {"num": "3", "name": "VCC", "type": "power_in"},
+    }
+    assert map_graph_pin_to_library_number(_GPin("5", "VIO"), ncmap, ncnames) is None
+    assert map_graph_pin_to_library_number(_GPin("3", "VCC"), ncmap, ncnames) == "3"
+
+
+def test_offset_for_pin_follows_name_remap(monkeypatch):
+    monkeypatch.setenv("OPENHAC_KICAD_SYMBOL_DIRS", str(_FIXTURE_SHIFT.parent))
+    clear_symbol_pin_cache()
+
+    class _Lib:
+        filename = "NameShift"
+
+    class _Part:
+        lib = _Lib()
+        name = "Chip"
+        ref = "U1"
+
+    res = SymbolPinResolver()
+    res.add_explicit_library("NameShift", _FIXTURE_SHIFT)
+    dx, dy, _rot = res.offset_for_pin(_Part(), _GPin("8", "SDA"), symbol_name="Chip")
+    assert dx == pytest.approx(-5.08)
+    assert dy == pytest.approx(0.0)
+    dx, dy, _rot = res.offset_for_pin(_Part(), _GPin("10", "VDD"), symbol_name="Chip")
+    assert dx == pytest.approx(0.0)
+    assert dy == pytest.approx(5.08)
+
+
+def test_rewrite_symbol_pin_electrical_types_keeps_geometry():
+    tree = (
+        '(symbol "X"\n'
+        '  (pin output line (at 1.27 0 0) (length 2.54) (name "MISO") (number "2"))\n'
+        ")"
+    )
+    out = rewrite_symbol_pin_electrical_types(tree, {"2": "tri_state"})
+    assert "(pin tri_state " in out
+    assert "(at 1.27 0 0)" in out
+    assert '(number "2")' in out

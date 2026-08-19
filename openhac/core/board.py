@@ -151,6 +151,13 @@ class Board:
         #: Env ``OPENHAC_COMPILE_GOAL`` overrides when set for the run.
         _cg_env = os.environ.get("OPENHAC_COMPILE_GOAL", "").strip()
         self.compile_goal: str = _normalize_compile_goal(_cg_env or compile_goal)
+        _sso_env = os.environ.get("OPENHAC_SCHEMATIC_SIGNOFF", "").strip().lower() in ("1", "true", "yes", "on")
+        self.schematic_signoff: bool = bool((quality_gates or {}).get("schematic_signoff")) or _sso_env
+        _sps_env = os.environ.get("OPENHAC_SPICE_SIGNOFF", "").strip().lower() in ("1", "true", "yes", "on")
+        self.spice_signoff: bool = bool((quality_gates or {}).get("spice_signoff")) or _sps_env
+        self._spice_rails: dict[str, float] = {}
+        self._spice_probes: list[dict] = []
+        self._spice_signoff_audit: dict | None = None
         #: Optional BOM labeling profile: ``prod`` / ``production`` / ``cm`` strips internal & alternate columns from CSV (LIB-004).
         _bp = bom_profile
         if isinstance(_bp, str):
@@ -199,6 +206,12 @@ class Board:
         self._keepout_rect_intents: list[dict] = []
         #: Net-tie intents (SIG-006 / PCB): ``{"net_a","net_b","x_mm","y_mm","footprint","note"}``.
         self._net_tie_intents: list[dict] = []
+        #: ABC-028 fanout intents: ``{"nets": [...], "note": ...}``.
+        self._fanout_intents: list[dict] = []
+        #: ABC-040 length-match intents (alias-friendly list).
+        self._length_match_intents: list[dict] = []
+        #: Diff-pair intents with Z0 for ABC-037.
+        self._diff_pair_intents: list[dict] = []
         #: Net object identities (`id(net)`) that require PWR_FLAG in ERC (SCH-004).
         self._explicit_power_net_ids: set[int] = set()
         #: Optional power rail documentation records for manifest / handoff (SCH-004): ``{"rail_name", "net"}``.
@@ -210,6 +223,8 @@ class Board:
         self._erc_hooks: list = []
         #: Net names that must not be autorouted (PCB-007); when non-empty, :meth:`compile` skips FreeRouting.
         self._no_autoroute_net_names: list[str] = []
+        #: High-current net annotations for IPC-2152 netclasses / pours: ``net_name → {current_a, …}``.
+        self._high_current_nets: dict[str, dict] = {}
         #: If set, DRC IPC check uses this as the design minimum trace width (mm) instead of the global default.
         self.min_trace_width_mm: float | None = None
         #: If set, :func:`run_drc` fails when the BOM/SKiDL graph has more than this many **Extended** JLC
@@ -270,6 +285,31 @@ class Board:
     def add_module(self, module):
         self._propagate_board_ref(module)
         self.modules.append(module)
+        return module
+
+    def set_schematic_sheet(self, sheet_name: str, *modules) -> "Board":
+        """Put one or more modules on the same schematic page (SCH-002).
+
+        PCB clustering is unchanged. Call after modules exist so child parts
+        pick up ``OpenHaC_SchSheet``.
+        """
+        for m in modules:
+            if hasattr(m, "set_schematic_sheet"):
+                m.set_schematic_sheet(sheet_name)
+        return self
+
+    def declare_spice_rail(self, net, voltage_v: float):
+        """Declare a SPICE independent voltage source from *net* to ground (SPS-020)."""
+        name = str(getattr(net, "name", net))
+        self._spice_rails[name] = float(voltage_v)
+        return net
+
+    def declare_spice_probe(self, net, vmin: float, vmax: float):
+        """Declare an operating-point voltage window for spice_signoff (SPS-022)."""
+        name = str(getattr(net, "name", net))
+        rec = {"net": name, "vmin": float(vmin), "vmax": float(vmax)}
+        self._spice_probes.append(rec)
+        return rec
 
     def declare_power_rail(self, rail_name: str, net):
         """Mark *net* as a power rail for ERC (SCH-004). *rail_name* is for documentation only.
@@ -365,6 +405,64 @@ class Board:
         """Mark *net* as off-limits to OpenHaC FreeRouting (PCB-007); compile skips autoroute if any are set."""
         self._no_autoroute_net_names.append(str(getattr(net, "name", net)))
         return net
+
+    def set_net_current(self, net, current_a: float, *, note: str | None = None):
+        """Annotate *net* with load current (A) for IPC-2152 netclasses → FreeRouting DSN widths."""
+        name = str(getattr(net, "name", net))
+        amps = float(current_a)
+        rec: dict = {"current_a": amps}
+        if note:
+            rec["note"] = str(note)
+        self._high_current_nets[name] = rec
+        try:
+            if hasattr(net, "set_current"):
+                net.set_current(amps)
+        except Exception:
+            pass
+        return net
+
+    def declare_fanout_intent(self, *nets, note: str | None = None, package: str | None = None):
+        """ABC-028: declare BGA/dense fanout nets for handoff + autoroute exclusion."""
+        names = [str(getattr(n, "name", n)) for n in nets]
+        rec: dict = {"nets": names}
+        if note:
+            rec["note"] = str(note)
+        if package:
+            rec["package"] = str(package)
+        self._fanout_intents.append(rec)
+        for n in names:
+            if n not in self._no_autoroute_net_names:
+                self._no_autoroute_net_names.append(n)
+        return rec
+
+    def declare_length_match_intent(self, name: str, *nets, tolerance_mm: float | None = None):
+        """ABC-040: record length-match intent (no automatic tuning)."""
+        rec: dict = {
+            "name": str(name),
+            "nets": [str(getattr(n, "name", n)) for n in nets],
+        }
+        if tolerance_mm is not None:
+            rec["tolerance_mm"] = float(tolerance_mm)
+        self._length_match_intents.append(rec)
+        try:
+            self._length_match_groups.append({"name": str(name), "nets": rec["nets"]})
+        except Exception:
+            pass
+        return rec
+
+    def declare_rf_module_keepout(
+        self,
+        x_mm: float,
+        y_mm: float,
+        w_mm: float,
+        h_mm: float,
+        *,
+        note: str | None = "ABC-049 RF module courtyard",
+    ) -> dict:
+        """ABC-049: convenience wrapper for RF keepout rectangles."""
+        return self.declare_keepout_rect(
+            x_mm, y_mm, w_mm, h_mm, layers=("F.Cu", "B.Cu"), purpose="rf_module_courtyard", note=note
+        )
 
     def declare_copper_pour_intent(self, net, *, layer: str = "F.Cu", purpose: str = "ground"):
         """Record GND/pour intent for KiCad zone authoring (PCB-009); documentation handoff only."""
@@ -470,9 +568,43 @@ class Board:
             'type': 'diff_pair', 
             'args': (p_net, n_net, target_impedance_ohms)
         })
+        # ABC-037: structured intent with Z0
+        self._diff_pair_intents.append(
+            {
+                "net_p": str(getattr(p_net, "name", p_net)),
+                "net_n": str(getattr(n_net, "name", n_net)),
+                "z0_ohm": float(target_impedance_ohms),
+            }
+        )
+        # ABC-038: exclude HS pairs from FreeRouting unless waived
+        gates = dict(getattr(self, "quality_gates", None) or {})
+        if str(getattr(self, "board_class", "") or "").lower() == "highspeed" and not gates.get(
+            "allow_hs_autoroute"
+        ):
+            self.declare_no_autoroute_net(p_net)
+            self.declare_no_autoroute_net(n_net)
 
     def constrain_distance_max(self, mod_a, mod_b, max_mm):
         self.constraints.append({'type': 'distance_max', 'args': (mod_a, mod_b, max_mm)})
+
+    def cluster_modules(self, parent, satellite, *, max_center_mm: float | None = None, merge: bool | None = None):
+        """Declare *satellite* as placement-clustered with *parent* (IC + LocalCaps).
+
+        By default satellites are merged into the parent Z3 AABB at layout time
+        (``OPENHAC_PLACEMENT_MERGE_CLUSTERS``). Pass ``merge=False`` to only add
+        ``constrain_distance_max``.
+        """
+        try:
+            satellite.cluster_with(parent, max_center_mm=max_center_mm)
+        except Exception:
+            satellite._cluster_parent = parent
+            satellite._cluster_max_mm = max_center_mm
+        if merge is False:
+            # Force distance_max path for this pair even when merge-default is on.
+            satellite._force_distance_max_only = True
+            if max_center_mm is not None:
+                self.constrain_distance_max(parent, satellite, float(max_center_mm))
+        return satellite
 
     def constrain_edge(self, mod, edge):
         self.constraints.append({'type': 'edge', 'args': (mod, edge)})
@@ -596,7 +728,12 @@ class Board:
         output_dir: str | os.PathLike[str] | None = None,
         release_zip_path: str | os.PathLike[str] | None = None,
         catalog_overlay_paths: list[str | os.PathLike[str]] | tuple[str | os.PathLike[str], ...] | None = None,
+        schematic_signoff: bool = False,
     ):
+        if schematic_signoff:
+            self.schematic_signoff = True
+            export_schematic = True
+            kicad_sch_erc = True
         if kicad_sch_erc and not export_schematic:
             raise ValueError("kicad_sch_erc=True requires export_schematic=True")
         self.all_modules = self._get_all_modules()
@@ -665,6 +802,10 @@ class Board:
                     mod.resolve()
                     
             max_attempts = int(getattr(self, "quality_gates", {}).get("max_attempts", 1) or 1)
+            # ABC-007: one repair retry under fabrication when not explicitly set
+            if max_attempts < 2 and str(getattr(self, "compile_goal", "") or "") == "fabrication":
+                if "max_attempts" not in (getattr(self, "quality_gates", None) or {}):
+                    max_attempts = 2
             run_compile_loop(state, generate_phases=DEFAULT_COMPILE_PHASES, max_attempts=max_attempts)
         except Exception as e:
             logger.error("COMPILER ABORTED DUE TO PHYSICS RULES OR PIPELINE ERROR: %s", e)
@@ -683,14 +824,56 @@ class Board:
         run_ngspice: bool = False,
         ngspice_log_path: str | os.PathLike[str] | None = None,
         require_spice_models: bool = False,
+        spice_signoff: bool = False,
+        allow_behavioral_spice_models: bool = False,
+        require_vendor_models: bool = False,
+        run_model_benches: bool | None = None,
     ):
         logger.info(f"Preparing to simulate analog hardware graph: {project_name}")
 
         from openhac.core.compile_context import OpenHaCCompileContext, compile_context_reset, compile_context_set
+        from openhac.core.base import OpenHaCError
+
+        qg = dict(getattr(self, "quality_gates", None) or {})
+        signoff = bool(spice_signoff) or bool(getattr(self, "spice_signoff", False)) or bool(
+            qg.get("spice_signoff")
+        )
+        if os.environ.get("OPENHAC_SPICE_SIGNOFF", "").strip().lower() in ("1", "true", "yes", "on"):
+            signoff = True
+        allow_beh = bool(allow_behavioral_spice_models) or bool(
+            qg.get("allow_behavioral_spice_models")
+        )
+        if os.environ.get("OPENHAC_ALLOW_BEHAVIORAL_SPICE_MODELS", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            allow_beh = True
+        req_vendor = bool(require_vendor_models) or bool(qg.get("require_vendor_models"))
+        if os.environ.get("OPENHAC_REQUIRE_VENDOR_MODELS", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            req_vendor = True
+        if signoff:
+            self.spice_signoff = True
+            run_ngspice = True
+            require_spice_models = True
+        if run_model_benches is None:
+            run_model_benches = signoff
 
         ctx = OpenHaCCompileContext(self, allow_risky_part_lookups=allow_risky_part_lookups)
         tok = compile_context_set(ctx)
         try:
+            from openhac.compiler.spice_models import vendor_dir
+
+            if req_vendor and vendor_dir() is None:
+                raise OpenHaCError(
+                    "SPS-034: --require-vendor-models set but OPENHAC_SPICE_VENDOR_DIR is unset."
+                )
             from openhac.compiler.rule_check import run_erc
 
             run_erc(self)
@@ -714,29 +897,98 @@ class Board:
                     assert preset_name is not None
                     analysis_lines = preset_analysis_lines(preset_name)
 
-            cir_path = _artifact_path(project_name, ".cir", output_dir)
-            if require_spice_models:
-                try:
-                    from openhac.compiler.spice_gen import spice_model_coverage_summary
+            rails = dict(getattr(self, "_spice_rails", None) or {})
+            supplies = getattr(self, "declared_supply_voltages_v", None) or {}
+            for k, v in supplies.items():
+                rails.setdefault(str(k), float(v))
+            probes = list(getattr(self, "_spice_probes", None) or [])
 
-                    s = spice_model_coverage_summary(get_default_circuit())
-                    need = int(s.get("parts_requiring_models", 0) or 0)
-                    have = int(s.get("parts_with_models", 0) or 0)
-                    if need > have:
-                        raise ValueError(
-                            f"SPICE model coverage gate failed: {have}/{need} model-required parts "
-                            f"have Spice_Subckt annotations."
-                        )
-                except Exception as e:
-                    raise
-            generate_spice(cir_path, analysis_lines=analysis_lines)
+            cir_path = _artifact_path(project_name, ".cir", output_dir)
+            if require_spice_models and not signoff:
+                from openhac.compiler.spice_gen import spice_model_coverage_summary
+
+                s = spice_model_coverage_summary(get_default_circuit())
+                need = int(s.get("parts_requiring_models", 0) or 0)
+                have = int(s.get("parts_with_models", 0) or 0)
+                if need > have:
+                    raise ValueError(
+                        f"SPICE model coverage gate failed: {have}/{need} model-required parts "
+                        f"have Spice_Subckt annotations."
+                    )
+            generate_spice(
+                cir_path,
+                analysis_lines=analysis_lines,
+                signoff=signoff,
+                merge_hints=list(getattr(self, "_net_merge_hints", None) or []),
+                rails=rails,
+                probes=probes,
+                allow_behavioral=allow_beh,
+                require_rail_sources=signoff,
+            )
+            audit: dict = {
+                "schema": "openhac.spice_signoff_audit.v1",
+                "project_name": project_name,
+                "spice_signoff": signoff,
+                "cir": cir_path,
+                "allow_behavioral_spice_models": allow_beh,
+                "probes": [],
+                "benches": [],
+                "models": [],
+            }
             if run_ngspice:
-                from openhac.compiler.ngspice_runner import run_ngspice_headless
+                from openhac.compiler.ngspice_runner import parse_ngspice_op_voltages, run_ngspice_headless
+                from openhac.compiler.spice_physics import assert_probe_window
 
                 lp = ngspice_log_path
                 if lp is None and output_dir is not None:
                     lp = _artifact_path(project_name, ".cir.ngspice.log", output_dir)
-                run_ngspice_headless(cir_path, log_path=Path(lp) if lp is not None else None)
+                log_path = run_ngspice_headless(cir_path, log_path=Path(lp) if lp is not None else None)
+                audit["ngspice_log"] = log_path
+                text = Path(log_path).read_text(encoding="utf-8", errors="replace")
+                volts = parse_ngspice_op_voltages(text)
+                audit["op_voltages"] = volts
+                for pr in probes:
+                    val = assert_probe_window(volts, str(pr["net"]), float(pr["vmin"]), float(pr["vmax"]))
+                    audit["probes"].append({**pr, "value": val, "passed": True})
+            if run_model_benches and signoff:
+                from openhac.compiler.spice_models import lookup_registry, record_from_part_fields
+                from openhac.compiler.spice_physics import run_record_physics_checks
+
+                work = Path(output_dir) if output_dir is not None else Path(cir_path).parent
+                seen_keys: set[str] = set()
+                for part in getattr(get_default_circuit(), "parts", []) or []:
+                    fields = getattr(part, "fields", None) or {}
+                    rec = record_from_part_fields(part)
+                    if rec is None or rec.kind not in ("vendor", "physics"):
+                        gn = str(fields.get("Value") or getattr(part, "name", "") or "")
+                        mpn = str(fields.get("MPN") or "")
+                        rec = lookup_registry(generic_name=gn, mpn=mpn)
+                    if rec is None or rec.kind not in ("vendor", "physics"):
+                        continue
+                    key = rec.mpn or rec.generic_name or rec.subckt
+                    if key in seen_keys:
+                        continue
+                    seen_keys.add(key)
+                    audit["models"].append(
+                        {
+                            "generic_name": rec.generic_name,
+                            "mpn": rec.mpn,
+                            "kind": rec.kind,
+                            "include": rec.include,
+                            "sha256": rec.sha256,
+                            "pin_map_hash": rec.pin_map_hash(),
+                        }
+                    )
+                    if rec.kind == "vendor" and vendor_dir() is None:
+                        continue
+                    audit["benches"].extend(run_record_physics_checks(rec, work_dir=work))
+            self._spice_signoff_audit = audit
+            if signoff:
+                audit_path = Path(_artifact_path(project_name, ".openhac-spice-signoff-audit.json", output_dir))
+                import json
+
+                audit_path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                audit["audit_path"] = str(audit_path)
         except Exception as e:
             logger.error("SIMULATION ABORTED DUE TO PHYSICS RULES!")
             raise e

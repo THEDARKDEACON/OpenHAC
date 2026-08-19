@@ -28,7 +28,7 @@ def test_fabrication_mode_raises_if_freerouting_missing(monkeypatch, tmp_path: P
 
     import openhac.compiler.autoroute_cli as ar
 
-    def _no_freerouting(_pcb_path: str) -> None:
+    def _no_freerouting(_pcb_path: str, **_kw) -> None:
         raise FreeRoutingNotFoundError("no jar")
 
     monkeypatch.setattr(ar, "run_freerouting", _no_freerouting)
@@ -57,7 +57,7 @@ def test_handoff_mode_falls_back_if_freerouting_missing(monkeypatch, tmp_path: P
 
     import openhac.compiler.autoroute_cli as ar
 
-    def _no_freerouting(_pcb_path: str) -> None:
+    def _no_freerouting(_pcb_path: str, **_kw) -> None:
         raise FreeRoutingNotFoundError("no jar")
 
     called = {"fallback": 0}
@@ -70,4 +70,40 @@ def test_handoff_mode_falls_back_if_freerouting_missing(monkeypatch, tmp_path: P
 
     phase_autoroute(state)
     assert called["fallback"] == 1
+
+
+def test_no_route_still_exports_specctra_dsn(monkeypatch, tmp_path: Path) -> None:
+    b = Board((10, 10), compile_goal="handoff")
+    state = CompileState(
+        board=b,
+        project_name="t",
+        generate_bom=False,
+        auto_route=False,
+        export_schematic=False,
+        allow_risky_part_lookups=False,
+        kicad_sch_erc=False,
+        kicad_sch_erc_format="report",
+        source_script_path=None,
+        output_dir=str(tmp_path),
+        release_zip_path=None,
+    )
+    Path(state.pcb_path).write_text("dummy")
+
+    import openhac.compiler.autoroute_cli as ar
+
+    called = {"dsn": 0, "fr": 0}
+
+    def _export(pcb_path: str, **_kw):
+        called["dsn"] += 1
+        return Path(pcb_path).with_suffix(".dsn")
+
+    def _fr(*_a, **_k) -> None:
+        called["fr"] += 1
+
+    monkeypatch.setattr(ar, "export_dsn_with_ipc_widths", _export)
+    monkeypatch.setattr(ar, "run_freerouting", _fr)
+
+    phase_autoroute(state)
+    assert called["dsn"] == 1
+    assert called["fr"] == 0
 

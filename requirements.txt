@@ -1,0 +1,8 @@
+# Runtime dependencies (mirrors pyproject.toml [project.dependencies]).
+# CLI install:  pip install -e .
+# Dev extras:   pip install -e ".[dev]"
+# CI pins:      requirements.lock
+setuptools>=68.0
+wheel
+z3-solver>=4.13.0
+pyyaml>=6.0

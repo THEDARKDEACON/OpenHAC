@@ -28,13 +28,26 @@ PROFILES: dict[str, BoardProfile] = {
     ),
     "highspeed": BoardProfile(
         name="highspeed",
-        notes="High-speed digital (diff pairs, length matching).",
-        default_quality_gates={"min_track_count": 5},
+        notes="High-speed digital (diff pairs, length matching). ABC-036…040: requires stackup + Z0; HS nets excluded from FreeRouting unless allow_hs_autoroute.",
+        default_quality_gates={
+            "min_track_count": 5,
+            "require_stackup_ref": True,
+            "require_diff_pair_z0": True,
+        },
     ),
     "rf": BoardProfile(
         name="rf",
-        notes="RF boards (keepouts, controlled impedance handoff).",
-        default_quality_gates={"min_track_count": 3},
+        notes="RF boards (keepouts, controlled impedance handoff). ABC-046…050: RF_Module needs keepout + ground pour; no EMC performance claim.",
+        default_quality_gates={
+            "min_track_count": 3,
+            "require_rf_keepout": True,
+            "require_ground_pour": True,
+        },
+    ),
+    "dense_bga": BoardProfile(
+        name="dense_bga",
+        notes="ABC-030: dense / BGA packages — fabrication requires allow_manual_bga_fanout + declare_fanout_intent (no automated escape).",
+        default_quality_gates={"min_track_count": 1},
     ),
     "mixedsignal": BoardProfile(
         name="mixedsignal",

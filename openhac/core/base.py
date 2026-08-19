@@ -253,6 +253,18 @@ class Component:
         # Add part to the default circuit
         openhac.core.circuit.default_circuit.add_part(self.part)
 
+        # Stamp constructor catalog fields onto the part before DB refresh
+        # (refresh no-ops when the generic_name is not in the database).
+        ks = str(comp_data.get("kicad_symbol") or "").strip()
+        if ks:
+            self.part.fields["kicad_symbol"] = ks
+            self.part.fields["kiCad_symbol"] = ks
+        if not getattr(self.part, "kicad_symbol", None):
+            try:
+                self.part.kicad_symbol = ks
+            except Exception:
+                pass
+
         self.refresh_from_db()
 
         self.layout_zone = None
@@ -322,6 +334,15 @@ class Component:
 
         from openhac.version_info import user_agent
 
+        # ABC-016: respect network policy (FAB-010)
+        try:
+            from openhac.database.enrich import network_allowed
+
+            if not network_allowed():
+                return None
+        except Exception:
+            pass
+
         API_BASE = "https://jlcsearch.tscircuit.com"
         HEADERS = {"User-Agent": user_agent(), "Accept": "application/json"}
 
@@ -343,6 +364,7 @@ class Component:
 
         from openhac.database.api_fallback import _query_matches_item
         from openhac.database.lookup_meta import CONFIDENCE_LOW, LOOKUP_CONFIDENCE_KEY
+        from openhac.database.passive_ratings import enrich_comp_data_from_jlc_item
 
         best = None
         for item in items:
@@ -357,8 +379,7 @@ class Component:
         package = best.get("package") or ""
         description = best.get("description") or ""
 
-        # Build a minimal component record — use generic KiCad symbol/footprint
-        # since we don't know the exact category
+        # Prefer stock KiCad FP + ratings (ABC-017/018/019)
         comp_data = {
             "generic_name":    generic_name,
             "kicad_symbol":    "Device:Q",   # generic fallback
@@ -371,6 +392,7 @@ class Component:
             "attributes_json": json.dumps({k: v for k, v in best.items() if k not in ("lcsc", "mfr", "description", "package")}),
             LOOKUP_CONFIDENCE_KEY: CONFIDENCE_LOW,
         }
+        enrich_comp_data_from_jlc_item(comp_data, best)
 
         # Cache it so subsequent lookups are instant
         warnings.warn(
@@ -765,23 +787,14 @@ class Component:
 
     def nc_unused_pins(self) -> None:
         """Connect all currently unconnected pins of this component to the NC (No Connect) net."""
-        import openhac.core.circuit
-        from openhac.core.net import Net
-        
-        nc_net = None
-        for n in getattr(openhac.core.circuit.default_circuit, "nets", []):
-            if str(getattr(n, "name", "")).upper() == "NC":
-                nc_net = n
-                break
-        if not nc_net:
-            nc_net = Net("NC")
-            
+        from openhac.core.net import NC
+
         pins = self.part.get_pins() if hasattr(self.part, "get_pins") else []
         for pin in pins:
             if hasattr(pin, "is_connected") and not pin.is_connected():
-                pin += nc_net
+                pin += NC
             elif getattr(pin, "net", None) is None:
-                pin += nc_net
+                pin += NC
 
 # Interface and Module classes are now in their own submodules.
 # They are re-exported at the top of this file for backward compatibility.

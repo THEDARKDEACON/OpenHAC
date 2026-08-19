@@ -1,9 +1,7 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from pathlib import Path
-
-import pytest
-from skidl import Part, Net
 
 from openhac.compiler.kicad_sym_pinpos import EmptySymbolPinResolver
 from openhac.compiler.schematic_gen import (
@@ -14,6 +12,10 @@ from openhac.compiler.schematic_gen import (
     schematic_wire_endpoint_pairs,
 )
 from openhac.core.board import Board
+from openhac.core.circuit import default_circuit, reset_default_circuit
+from openhac.core.net import Net
+from openhac.core.part import Part, Pin
+from openhac.schematic.util import iter_pins
 
 
 def _pt_key(x: float, y: float) -> tuple[int, int]:
@@ -21,57 +23,64 @@ def _pt_key(x: float, y: float) -> tuple[int, int]:
     return (int(round(x * 1_000_000.0)), int(round(y * 1_000_000.0)))
 
 
+def _resistor(ref: str, value: str) -> Part:
+    return Part(
+        ref,
+        "Resistor_SMD:R_0603_1608Metric",
+        {"kicad_symbol": "Device:R"},
+        [Pin("1", "1", "passive"), Pin("2", "2", "passive")],
+        value=value,
+    )
+
+
 def test_exported_schematic_wires_match_expected_pin_edges(tmp_path: Path, monkeypatch) -> None:
     # Force stub-only geometry so pin coordinates are deterministic without KiCad libs.
     monkeypatch.setenv("OPENHAC_SCHEMATIC_STUB_ONLY", "1")
+    reset_default_circuit()
 
-    # Tiny circuit with multiple nets and refs to build a non-trivial edge set.
     n1 = Net("N1")
     n2 = Net("N2")
-    r1 = Part("Device", "R", value="10k", footprint="Resistor_SMD:R_0603_1608Metric")
-    r2 = Part("Device", "R", value="10k", footprint="Resistor_SMD:R_0603_1608Metric")
-    r3 = Part("Device", "R", value="1k", footprint="Resistor_SMD:R_0603_1608Metric")
-    n1 += r1[1]
-    n1 += r2[1]
-    n2 += r1[2]
-    n2 += r3[1]
+    r1 = _resistor("R1", "10k")
+    r2 = _resistor("R2", "10k")
+    r3 = _resistor("R3", "1k")
+    default_circuit.add_part(r1)
+    default_circuit.add_part(r2)
+    default_circuit.add_part(r3)
+    r1["1"] += n1
+    r2["1"] += n1
+    r1["2"] += n2
+    r3["1"] += n2
 
     b = Board((10, 10))
     out = tmp_path / "g.kicad_sch"
-    generate_schematic(str(out), b)
+    generate_schematic(str(out), b, circuit=default_circuit)
     text = out.read_text(encoding="utf-8")
 
-    # Expected edges are expressed in terms of (ref, pin-num).
-    from openhac.circuit import get_default_circuit
-
-    circuit = get_default_circuit()
+    circuit = default_circuit
     expected = set(schematic_wire_endpoint_pairs(circuit))
 
-    # Build a coordinate -> (ref,pin) lookup from the generator’s own placements and stub pin model.
     resolver = EmptySymbolPinResolver()
     geom = schematic_geometry(circuit, symbol_resolver=resolver)
     placements = geom["part_placements"]
     pt_to_pin: dict[tuple[int, int], tuple[str, str]] = {}
     for part, (px, py) in placements.items():
         ref = str(getattr(part, "ref", "") or "?")
-        for pin in getattr(part, "pins", []) or []:
+        for pin in iter_pins(part):
             x, y, _rot = _pin_world_xy(pin, part, (px, py), resolver)
             pt_to_pin[_pt_key(x, y)] = (ref, str(getattr(pin, "num", "?")))
 
-    # Build a graph of wire segments to find connected components.
-    from collections import defaultdict
-    adj = defaultdict(set)
+    adj: dict[tuple[int, int], set[tuple[int, int]]] = defaultdict(set)
     for x1, y1, x2, y2 in parse_kicad_sch_wire_segments(text):
         p1, p2 = _pt_key(x1, y1), _pt_key(x2, y2)
         adj[p1].add(p2)
         adj[p2].add(p1)
 
-    seen = set()
+    seen: set[tuple[int, int]] = set()
     got_components = set()
     for node in adj:
         if node in seen:
             continue
-        comp = set()
+        comp: set[tuple[int, int]] = set()
         q = [node]
         while q:
             curr = q.pop()
@@ -80,37 +89,33 @@ def test_exported_schematic_wires_match_expected_pin_edges(tmp_path: Path, monke
             comp.add(curr)
             seen.add(curr)
             q.extend(adj[curr])
-        # Find all logical pins attached to this physical wire cluster.
         comp_pins = frozenset(pt_to_pin[pt] for pt in comp if pt in pt_to_pin)
         if len(comp_pins) > 1:
             got_components.add(comp_pins)
 
-    # Convert the expected (pairwise) edges into connected components for comparison.
-    exp_adj = defaultdict(set)
+    exp_adj: dict[tuple[str, str], set[tuple[str, str]]] = defaultdict(set)
     for edge in expected:
-        # edge is a frozenset of two (ref, pin) tuples
         edge_list = list(edge)
         if len(edge_list) == 2:
             u, v = edge_list
             exp_adj[u].add(v)
             exp_adj[v].add(u)
-    
-    exp_seen = set()
+
+    exp_seen: set[tuple[str, str]] = set()
     expected_components = set()
     for node in exp_adj:
         if node in exp_seen:
             continue
-        comp = set()
-        q = [node]
-        while q:
-            curr = q.pop()
-            if curr in comp:
+        comp_n: set[tuple[str, str]] = set()
+        qn = [node]
+        while qn:
+            curr = qn.pop()
+            if curr in comp_n:
                 continue
-            comp.add(curr)
+            comp_n.add(curr)
             exp_seen.add(curr)
-            q.extend(exp_adj[curr])
-        if len(comp) > 1:
-            expected_components.add(frozenset(comp))
+            qn.extend(exp_adj[curr])
+        if len(comp_n) > 1:
+            expected_components.add(frozenset(comp_n))
 
     assert got_components == expected_components
-

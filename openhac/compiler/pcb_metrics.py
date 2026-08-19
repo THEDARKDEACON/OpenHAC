@@ -54,23 +54,37 @@ def compute_pcb_metrics(pcb_path: str | Path, *, pcbnew_mod=None) -> dict:
         except Exception:
             net_count = 0
 
-    # FAB-021: best-effort unrouted connectivity via pcbnew connectivity API.
+    # FAB-021 / ABC-006: unrouted connectivity — never silent-zero on API failure under fab.
     unrouted = 0
+    unrouted_error: str | None = None
     try:
         conn = pcb.GetConnectivity()
-        # KiCad: GetUnconnectedCount() when available
         if hasattr(conn, "GetUnconnectedCount"):
-            unrouted = int(conn.GetUnconnectedCount() or 0)
+            try:
+                # KiCad 9+: GetUnconnectedCount(aVisibileOnly: bool)
+                unrouted = int(conn.GetUnconnectedCount(False) or 0)
+            except TypeError:
+                unrouted = int(conn.GetUnconnectedCount() or 0)
         elif hasattr(pcb, "GetUnconnectedCount"):
-            unrouted = int(pcb.GetUnconnectedCount() or 0)
-    except Exception:
-        unrouted = 0
+            try:
+                unrouted = int(pcb.GetUnconnectedCount(False) or 0)
+            except TypeError:
+                unrouted = int(pcb.GetUnconnectedCount() or 0)
+        else:
+            unrouted_error = "no GetUnconnectedCount API"
+    except Exception as e:
+        unrouted_error = str(e)
+        unrouted = -1  # sentinel: unknown
 
-    return {
+    out = {
         "track_count": int(track_count),
         "via_count": int(via_count),
         "footprint_count": int(fp_count),
         "net_count": int(net_count),
-        "unrouted_net_count": int(unrouted),
+        "unrouted_net_count": int(unrouted) if unrouted >= 0 else 0,
     }
+    if unrouted_error:
+        out["unrouted_net_count_error"] = unrouted_error
+        out["unrouted_net_count_unknown"] = True
+    return out
 

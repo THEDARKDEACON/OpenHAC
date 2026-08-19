@@ -1,8 +1,11 @@
 """Load repo-root environment files for OpenHaC CLI and tools.
 
 Reads ``.env`` then ``.env.local`` from the repository root (next to ``openhac/``).
-Uses ``os.environ.setdefault`` for ``.env`` and overwrites from ``.env.local`` so local
-overrides work without committing machine-specific paths.
+
+- ``.env``: ``setdefault`` for most keys (shell exports win), **except** placement /
+  density tuning keys which always override so trial-and-error in ``.env`` is not
+  blocked by a stale ``export`` from an earlier session.
+- ``.env.local``: always overrides (machine-specific).
 """
 
 from __future__ import annotations
@@ -13,9 +16,23 @@ from pathlib import Path
 
 logger = logging.getLogger("openhac.dotenv")
 
+# Knobs users tune in .env for packing density — must win over leftover shell exports.
+_DOTENV_FORCE_OVERRIDE_PREFIXES = (
+    "OPENHAC_MODULE_",
+    "OPENHAC_PLACEMENT_",
+    "OPENHAC_AUTO_BOARD_",
+    "OPENHAC_DEOVERLAP_",
+    "OPENHAC_FREEROUTING_",
+    "OPENHAC_PRODUCTION_SCHEMATIC",
+)
+
 
 def _repo_root() -> Path:
     return Path(__file__).resolve().parent.parent.parent
+
+
+def _force_override_key(key: str) -> bool:
+    return any(key.startswith(p) or key == p for p in _DOTENV_FORCE_OVERRIDE_PREFIXES)
 
 
 def _apply_env_file(path: Path, *, override: bool) -> int:
@@ -36,7 +53,7 @@ def _apply_env_file(path: Path, *, override: bool) -> int:
         val = val.strip().strip('"').strip("'")
         if not key:
             continue
-        if override:
+        if override or _force_override_key(key):
             os.environ[key] = val
         else:
             os.environ.setdefault(key, val)

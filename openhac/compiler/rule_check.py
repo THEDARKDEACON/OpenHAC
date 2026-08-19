@@ -508,6 +508,18 @@ def _run_power_budget(board) -> None:
             logger.info("ERC Status: No power sources defined. Skipping budget checks.")
 
 
+def _net_is_anonymous(name: str) -> bool:
+    """True for auto-named nets (``_1``, ``N$…``, ``Net-…``) that the unconnected-pin check covers."""
+    nn = str(name or "").strip()
+    if not nn:
+        return True
+    if nn.startswith("_") and nn[1:].isdigit():
+        return True
+    if nn.startswith("N$") or nn.startswith("Net-") or nn.startswith("Net$"):
+        return True
+    return False
+
+
 def _net_is_no_connect_rail(net, circuit) -> bool:
     """True for SKiDL's reserved ``circuit.NC`` (``__NOCONNECT``) or any ``NCNet``."""
     try:
@@ -602,6 +614,14 @@ def _check_net_level(board):
             pins = []
 
         if len(pins) < 2:
+            if not pins:
+                continue
+            nn = str(getattr(net, "name", "") or "")
+            if _net_is_anonymous(nn):
+                continue
+            floating_violations.append(
+                f"Floating net {nn!r}: {len(pins)} pin(s) (need ≥2)"
+            )
             continue
 
     # 2. Unconnected-pin check
@@ -889,6 +909,82 @@ _DRC_DEFAULTS = {
     "min_via_drill_mm": 0.3,          # typical min drill
     "min_edge_clearance_mm": 0.25,    # copper-to-edge minimum
 }
+
+
+def _check_power_net_current_annotations(board) -> list[str]:
+    """PCB-006 / IPC standards: power-like nets should carry current_a for width calc."""
+    gates = dict(getattr(board, "quality_gates", None) or {})
+    env_req = (os.environ.get("OPENHAC_REQUIRE_POWER_CURRENTS") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+        "force",
+    )
+    require = bool(gates.get("require_power_net_currents", False)) or env_req
+    warn_only = not require
+    # Always evaluate under fabrication; warn by default, fail when required.
+    try:
+        goal = str(getattr(board, "compile_goal", "") or getattr(board, "effective_compile_goal", lambda: "")() or "")
+    except Exception:
+        goal = str(getattr(board, "compile_goal", "") or "")
+    if goal != "fabrication" and not require:
+        return []
+
+    from openhac.compiler.pcb_physics import collect_net_currents_a
+
+    currents = collect_net_currents_a(board)
+    prefixes = tuple(getattr(board, "power_net_prefixes", None) or ()) or (
+        "vcc",
+        "vdd",
+        "3v3",
+        "3.3v",
+        "5v",
+        "12v",
+        "vbus",
+        "vbatt",
+        "vin",
+        "gnd",
+        "pgnd",
+        "agnd",
+    )
+    # Collect power-like net names from modules
+    power_nets: set[str] = set()
+    try:
+        mods = board._get_all_modules()
+    except Exception:
+        mods = getattr(board, "modules", []) or []
+    for mod in mods:
+        for comp in getattr(mod, "components", []) or []:
+            for pin in getattr(getattr(comp, "part", None), "get_pins", lambda: [])():
+                net = getattr(pin, "net", None)
+                if net is None:
+                    continue
+                name = str(getattr(net, "name", "") or "").strip()
+                if not name:
+                    continue
+                low = name.lower()
+                ptype = str(getattr(pin, "pin_type", "") or "").lower()
+                if ptype in ("power_in", "power_out", "power") or any(low.startswith(p) or p in low for p in prefixes):
+                    if low not in ("nc",):
+                        power_nets.add(name)
+
+    missing = sorted(n for n in power_nets if float(currents.get(n, 0.0) or 0.0) <= 0.0)
+    # GND often uses pours — still want a rating for pour/track planning, but allow skip via gate
+    if gates.get("allow_gnd_without_current", True):
+        missing = [n for n in missing if not str(n).upper().startswith("GND") and str(n).upper() != "AGND"]
+
+    if not missing:
+        return []
+    msg = (
+        "IPC-2152 standards: power net(s) lack current annotations "
+        f"(use Board.set_net_current / Net.set_current): {', '.join(missing[:12])}"
+        + ("…" if len(missing) > 12 else "")
+    )
+    if warn_only:
+        logger.warning("%s", msg)
+        return []
+    return [msg]
 
 
 def _check_mcu_decoupling(board) -> list[str]:
@@ -1312,6 +1408,27 @@ def run_drc(board):
     violations.extend(_check_crystal_loading(board))
     violations.extend(_check_power_sequencing(board))
     violations.extend(_check_highspeed_signals(board))
+    violations.extend(_check_power_net_current_annotations(board))
+
+    # ABC-026…050 advanced board policy (fabrication)
+    try:
+        goal = ""
+        try:
+            goal = str(board.effective_compile_goal()).strip().lower()
+        except Exception:
+            goal = str(getattr(board, "compile_goal", "") or "").strip().lower()
+        if goal == "fabrication":
+            from openhac.compiler.advanced_board_policy import (
+                check_bga_fab_gate,
+                check_highspeed_fab_gate,
+                check_rf_fab_gate,
+            )
+
+            violations.extend(check_bga_fab_gate(board))
+            violations.extend(check_highspeed_fab_gate(board))
+            violations.extend(check_rf_fab_gate(board))
+    except Exception as e:
+        logger.debug("ABC policy checks skipped: %s", e)
 
     ms_issue = _mixed_signal_ground_merge_issue(board)
     if ms_issue:
@@ -1362,8 +1479,9 @@ def run_drc(board):
         if offenders:
             offenders = sorted(offenders)
             violations.append(
-                "FAB-011/LIB-003: verified-parts gate failed; circuit contains unverified/JIT/synthetic parts "
-                f"({offenders}). Pre-populate the database or use handoff mode."
+                "FAB-011/LIB-003: verified-parts gate failed (OPENHAC_REQUIRE_VERIFIED_PARTS); "
+                f"circuit contains unverified/JIT/synthetic parts ({offenders}). "
+                "Pre-populate the database or use handoff mode."
             )
 
     if violations:

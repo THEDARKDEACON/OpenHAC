@@ -26,6 +26,13 @@ def _count_json_items(data: object) -> tuple[int, int, int]:
         v = data.get("violations")
         if isinstance(v, list):
             items = [x for x in v if isinstance(x, dict)]
+        elif isinstance(data.get("sheets"), list):
+            for sheet in data["sheets"]:
+                if not isinstance(sheet, dict):
+                    continue
+                sv = sheet.get("violations")
+                if isinstance(sv, list):
+                    items.extend(x for x in sv if isinstance(x, dict))
         else:
             it = data.get("items")
             if isinstance(it, list):

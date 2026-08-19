@@ -69,7 +69,8 @@ def test_compile_writes_generated_kicad_sym_and_sym_lib_table(tmp_path, monkeypa
         )
 
     sch = (tmp_path / "gen.kicad_sch").read_text(encoding="utf-8")
-    sub = (tmp_path / "gen.M.kicad_sch").read_text(encoding="utf-8")
+    sub_path = tmp_path / "gen.M.kicad_sch"
+    sub = sub_path.read_text(encoding="utf-8") if sub_path.is_file() else ""
     assert 'lib_id "OpenHaC:MY_NATIVE_IC"' in sch or 'lib_id "OpenHaC:MY_NATIVE_IC"' in sub
 
     sym = tmp_path / "gen.openhac-generated.kicad_sym"

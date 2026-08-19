@@ -1,0 +1,5 @@
+* OpenHaC behavioral LDO stub (kind=behavioral). Waiver-only under spice_signoff (SPS-013/017).
+.subckt LDO_BEH VIN GND EN VOUT
+E1 VOUT GND VALUE={3.3}
+R_EN EN GND 1G
+.ends LDO_BEH

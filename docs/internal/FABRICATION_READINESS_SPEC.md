@@ -4,11 +4,11 @@
 
 **Audience:** Core maintainers and contributors implementing Phase-2 gates.
 
-**Status:** Normative contract for Phase-2. Progress tracked in [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md) (Phase-2 table — **20/20 Done** as of implementation landing).
+**Status:** Normative contract for Phase-2. Progress tracked in [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md) (Phase-2 table — **20/20 Done** as of implementation landing). Software proof matrix: [PRODUCTION_VALIDATION.md](./PRODUCTION_VALIDATION.md).
 
 **Relationship to Phase-1:** Phase-1 IDs in [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md) remain **closed**. This document does **not** reopen them. Phase-2 IDs use the `FAB-*` prefix.
 
-**Product scope:** Capability tiers and non-goals: [SCOPE.md](./SCOPE.md).
+**Product scope:** Capability tiers and non-goals: [SCOPE.md](./SCOPE.md). Advanced board capabilities (route reliability, API libs, BGA/HS/RF policy): [ADVANCED_BOARD_CAPABILITIES_SPEC.md](./ADVANCED_BOARD_CAPABILITIES_SPEC.md) (**ABC-***).
 
 ---
 
@@ -28,7 +28,7 @@ OpenHaC does **not** claim that autorouting alone yields production-ready high-s
 |------|--------|
 | **handoff** | Reviewable KiCad artifacts; may warn and continue on some gaps. |
 | **fabrication** | Fail-closed gates for pins, pads, footprints, routing completeness, PCB DRC, offline catalog, verified parts. |
-| **`--production`** (CLI) | Must imply the full fab gate set (see **FAB-030**); today it only tightens KiCad + JIT — **gap**. |
+| **`--production`** (CLI) | Must imply the full fab gate set (see **FAB-030**). |
 
 | Severity | Meaning |
 |----------|---------|
@@ -56,7 +56,7 @@ Target behavior after Phase-2 (implement against this table).
 | Minimal / silent autoroute fallback | Allowed with disclaimer | **Forbidden** as success | Forbidden |
 | Unrouted nets | Warn | **Hard fail** unless policy documents intentional NC | Hard fail |
 | KiCad PCB DRC | Optional | **Required**, zero errors | Required |
-| `.kicad_sch` export | Optional (CLI may still default on until **FAB-040**) | Optional; prefer `--no-schematic` | Prefer off |
+| `.kicad_sch` export | Optional (CLI may still default on until **FAB-040**) | Optional; prefer `--no-schematic`. EE stamp path is **`--schematic-signoff`** ([SCHEMATIC_SIGN_OFF_SPEC.md](./SCHEMATIC_SIGN_OFF_SPEC.md)), not fabrication. | Prefer off unless `--schematic-signoff` |
 | `--zip-release` with omitted parts | Warn | **Refuse** | Refuse |
 
 ---
@@ -321,16 +321,16 @@ flowchart LR
 
 ## E. Review architecture
 
-### FAB-040 — Schematic export optional / non-critical path
+### FAB-040 — Schematic export optional on the fabrication path
 
 | Field | Content |
 |-------|---------|
 | **Severity** | P1 |
-| **Problem** | Algorithmic `.kicad_sch` drawing is a regression magnet and is not the electrical SoT. |
-| **Current state** | API `Board.compile(export_schematic=False)`; CLI still exports unless `--no-schematic`. Large [`schematic_gen.py`](../../openhac/compiler/schematic_gen.py). |
-| **Target state** | Default CLI to **no** schematic (or document handoff-only opt-in). Freeze feature growth (no new “pretty” layout work). Keep optional export for users who need a KiCad sheet; connectivity validation stays on native graph / ERC / webview. |
-| **Acceptance criteria** | SCOPE + CLI help state schematic is optional legacy; CI fab path uses `--no-schematic`; no new SCH feature IDs without Phase-2 amendment. |
-| **Approach** | Flip CLI default (breaking: document in CHANGELOG); stop expanding `schematic_gen` beyond bugfixes. |
+| **Problem** | Algorithmic `.kicad_sch` drawing is a regression magnet and is not the **compile** electrical SoT. |
+| **Current state** | `--production` defaults schematic off; API `Board.compile(export_schematic=False)`. |
+| **Target state** | Fabrication / `--production` may omit the drawing. EE-stamped schematic review is a **separate** gate set: [SCHEMATIC_SIGN_OFF_SPEC.md](./SCHEMATIC_SIGN_OFF_SPEC.md) (`--schematic-signoff`, **SSO-***). FAB-040 does **not** forbid that path. |
+| **Acceptance criteria** | CI fab path may use `--no-schematic`; `--schematic-signoff` still forces export + KiCad ERC. SCOPE states graph = compile SoT and `.kicad_sch` = stamp artifact under SSO. |
+| **Approach** | Keep fab default off; SSO implementation lives in `openhac/schematic/`. |
 
 ### FAB-041 — Webview + IR as primary human review
 

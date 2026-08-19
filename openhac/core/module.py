@@ -23,7 +23,7 @@ logger = logging.getLogger("openhac.core")
 class Module:
     """A logical block (power, compute, sensors, …) that owns components."""
 
-    def __init__(self, name=None):
+    def __init__(self, name=None, *, schematic_sheet: str | None = None):
         self.name = name or self.__class__.__name__
         self.components: list = []
         self.components_by_name: dict[str, any] = {}
@@ -34,6 +34,11 @@ class Module:
         self.placed_x = None
         self.placed_y = None
         self.schematic_layer = None
+        #: Optional schematic sheet name (SCH-002). When set, overrides ``OpenHaC_Module``
+        #: for hierarchical sheet grouping without changing PCB placement modules.
+        self.schematic_sheet: str | None = (
+            str(schematic_sheet).strip() if schematic_sheet else None
+        )
 
         # Physics / ERC / DRC properties
         self.max_current_draw_ma = 0.0
@@ -42,10 +47,45 @@ class Module:
         self.extra_input_draw_by_rail_ma: dict[str, float] = {}
         self.layout_zone = None
 
+        # Placement clustering (see ``openhac.compiler.cluster_affinity``)
+        self._cluster_parent = None
+        self._cluster_max_mm = None
+        self._z3_skip = False
+        self._placement_anchor = None
+        self._placement_offset_mm = (0.0, 0.0)
+
     def assign_to(self, zone) -> Module:
         """Assign this module to a specific LayoutZone."""
         self.layout_zone = zone
         zone.add_member(self)
+        return self
+
+    def cluster_with(self, parent: Module, *, max_center_mm: float | None = None) -> Module:
+        """Declare this module as a placement satellite of *parent* (IC + LocalCaps).
+
+        Before Z3, ``apply_cluster_affinity`` merges this module into the parent's
+        AABB (default) or adds ``constrain_distance_max``. Does not change schematic
+        sheet tags unless ``schematic_sheet`` is set separately.
+        """
+        self._cluster_parent = parent
+        self._cluster_max_mm = max_center_mm
+        return self
+
+    def set_schematic_sheet(self, sheet_name: str | None) -> Module:
+        """Set schematic hierarchy sheet name (``OpenHaC_SchSheet`` on child parts)."""
+        self.schematic_sheet = str(sheet_name).strip() if sheet_name else None
+        for item in self.components:
+            try:
+                p = getattr(item, "part", None) or (
+                    item if hasattr(item, "fields") else None
+                )
+                if p is not None and hasattr(p, "fields") and isinstance(p.fields, dict):
+                    if self.schematic_sheet:
+                        p.fields["OpenHaC_SchSheet"] = self.schematic_sheet
+                    else:
+                        p.fields.pop("OpenHaC_SchSheet", None)
+            except Exception:
+                pass
         return self
 
     def nc_unused_pins(self) -> None:
@@ -108,6 +148,9 @@ class Module:
                     layer = getattr(self, "schematic_layer", None)
                     if layer is not None:
                         p.fields["OpenHaC_Module_Layer"] = str(layer)
+                    sheet = getattr(self, "schematic_sheet", None)
+                    if sheet:
+                        p.fields.setdefault("OpenHaC_SchSheet", str(sheet))
             except Exception:
                 pass
         elif isinstance(component, Module):
@@ -119,6 +162,9 @@ class Module:
             try:
                 if hasattr(component, "fields") and isinstance(component.fields, dict):
                     component.fields.setdefault("OpenHaC_Module", str(self.name))
+                    sheet = getattr(self, "schematic_sheet", None)
+                    if sheet:
+                        component.fields.setdefault("OpenHaC_SchSheet", str(sheet))
             except Exception:
                 pass
         return component
@@ -137,6 +183,9 @@ class Module:
                 layer = getattr(self, "schematic_layer", None)
                 if layer is not None:
                     p.fields["OpenHaC_Module_Layer"] = str(layer)
+                sheet = getattr(self, "schematic_sheet", None)
+                if sheet:
+                    p.fields.setdefault("OpenHaC_SchSheet", str(sheet))
         except Exception:
             pass
         return c
@@ -254,14 +303,26 @@ class Module:
 
         if cell_dims:
             n = len(cell_dims)
-            max_w = max(w for w, _ in cell_dims)
-            max_h = max(h for _, h in cell_dims)
             cols = max(1, int(math.ceil(math.sqrt(n))))
-            rows = int(math.ceil(n / cols))
-            pack_w = cols * max_w + max(0, cols - 1) * gap
-            pack_h = rows * max_h + max(0, rows - 1) * gap
-            w_pack = pack_w * pack_inflate
-            h_pack = pack_h * pack_inflate
+            # Shelf-pack real cell sizes (not cols*max_w, which inflates mixed IC+passive rooms).
+            cells = sorted(cell_dims, key=lambda t: (-(t[0] * t[1]), t[0]))
+            x = y = 0.0
+            col = 0
+            row_h = 0.0
+            max_r = max_b = 0.0
+            for cw, ch in cells:
+                max_r = max(max_r, x + cw)
+                max_b = max(max_b, y + ch)
+                row_h = max(row_h, ch)
+                col += 1
+                x += cw + gap
+                if col >= cols:
+                    col = 0
+                    x = 0.0
+                    y += row_h + gap
+                    row_h = 0.0
+            w_pack = max_r * pack_inflate
+            h_pack = max_b * pack_inflate
         else:
             w_pack = h_pack = 0.0
 
@@ -273,8 +334,10 @@ class Module:
         w_fin = max(w_pack, w_legacy)
         h_fin = max(h_pack, h_legacy)
 
-        self.width = max(self.width, w_fin)
-        self.height = max(self.height, h_fin)
+        # Shrink-wrap: never keep a larger leftover default (Module starts at 10×10).
+        self.width = w_fin
+        self.height = h_fin
+        self._cluster_core_wh = (self.width, self.height)
 
         logger.debug(
             "Module %r bbox: %.1fx%.1f mm (%s components; grid %s, legacy %.1fx%.1f)",

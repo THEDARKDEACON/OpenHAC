@@ -82,6 +82,68 @@ def _netinfo_for_name(pcb, net_name: str):
             return ni
 
 
+def sync_duplicate_pad_nets(pcb, pcbnew_mod) -> int:
+    """Assign every pad that shares a pad number the same net (ABC-005 RF thermals).
+
+    Stock RF module footprints often have many PTH pads with the same number
+    (thermal vias). Netlist import only nets one of them, leaving siblings as
+    ``<no net>`` which then short against the netted pad / copper pour.
+    """
+    fixed = 0
+    try:
+        fps = list(pcb.GetFootprints())
+    except Exception:
+        return 0
+    for fp in fps:
+        by_num: dict[str, list] = {}
+        try:
+            pads = list(fp.Pads())
+        except Exception:
+            continue
+        for pad in pads:
+            try:
+                num = str(pad.GetNumber())
+            except Exception:
+                continue
+            by_num.setdefault(num, []).append(pad)
+        for num, group in by_num.items():
+            if len(group) < 2:
+                continue
+            net_code = 0
+            net_obj = None
+            for pad in group:
+                try:
+                    nc = int(pad.GetNetCode())
+                except Exception:
+                    nc = 0
+                if nc:
+                    net_code = nc
+                    try:
+                        net_obj = pad.GetNet()
+                    except Exception:
+                        net_obj = None
+                    break
+            if not net_code:
+                continue
+            for pad in group:
+                try:
+                    if int(pad.GetNetCode()) == net_code:
+                        continue
+                except Exception:
+                    pass
+                try:
+                    if net_obj is not None and hasattr(pad, "SetNet"):
+                        pad.SetNet(net_obj)
+                    else:
+                        pad.SetNetCode(net_code)
+                    fixed += 1
+                except Exception:
+                    continue
+    if fixed:
+        logger.info("ABC-005: synced net on %s duplicate-number pad(s) (thermal via handoff).", fixed)
+    return fixed
+
+
 def apply_copper_pour_intents(pcb, board, pcbnew_mod) -> int:
     """Emit pcbnew copper zones for any declared copper pour intents (PCB-009 stretch).
 
@@ -148,6 +210,30 @@ def apply_copper_pour_intents(pcb, board, pcbnew_mod) -> int:
             continue
 
         try:
+            # ABC-003: thermal relief spokes for pad-to-zone connections (default).
+            # Solid pour when OPENHAC_POUR_PAD_CONNECTION=solid — helps FAB-021
+            # GetUnconnectedCount see plane nets as connected after fill.
+            pad_mode = (os.environ.get("OPENHAC_POUR_PAD_CONNECTION") or "thermal").strip().lower()
+            if hasattr(z, "SetPadConnection"):
+                if pad_mode in ("solid", "full", "none"):
+                    pad_conn = getattr(pcbnew_mod, "ZONE_CONNECTION_FULL", None)
+                    if pad_conn is None:
+                        pad_conn = getattr(pcbnew_mod, "PAD_ZONE_CONN_FULL", None)
+                else:
+                    pad_conn = getattr(pcbnew_mod, "ZONE_CONNECTION_THERMAL", None)
+                    if pad_conn is None:
+                        pad_conn = getattr(pcbnew_mod, "PAD_ZONE_CONN_THERMAL", None)
+                if pad_conn is not None:
+                    z.SetPadConnection(pad_conn)
+            if pad_mode not in ("solid", "full", "none"):
+                if hasattr(z, "SetThermalReliefGap"):
+                    z.SetThermalReliefGap(int(pcbnew_mod.FromMM(0.2)))
+                if hasattr(z, "SetThermalReliefSpokeWidth"):
+                    z.SetThermalReliefSpokeWidth(int(pcbnew_mod.FromMM(0.2)))
+        except Exception as e:
+            logger.debug("ABC-003 thermal relief defaults skipped: %s", e)
+
+        try:
             pcb.Add(z)
         except Exception:
             try:
@@ -160,17 +246,35 @@ def apply_copper_pour_intents(pcb, board, pcbnew_mod) -> int:
 
     if added:
         logger.info("Added %s copper zone(s) from pour intents.", added)
+        try:
+            from openhac.compiler.fab_design_settings import fill_copper_zones
+
+            fill_copper_zones(pcb, pcbnew_mod)
+        except Exception as e:
+            logger.debug("ABC-002 zone fill after pours: %s", e)
     return added
 
 
 def apply_high_current_polygons(pcb, board, pcbnew_mod) -> int:
     """Enterprise Phase D: Post-Route Copper Reinforcement.
 
-    For any net tagged as high-current (>10A), we create a copper zone (polygon)
-    that covers the bounding box of all pads on that net. This ensures 60A+ 
-    capacity without relying on thin tracks.
+    For nets tagged with current above ``OPENHAC_HIGH_CURRENT_ZONE_MIN_A`` (default
+    10 A), create a copper zone covering the pad bbox on F.Cu/B.Cu. IPC-2152
+    ``set_net_current`` values below that threshold stay as tracks (pouring 1–2 A
+    rails as board-wide zones before FreeRouting leaves those nets unrouted).
     """
     nets = getattr(board, "_high_current_nets", {})
+    if not nets:
+        return 0
+    try:
+        min_a = float(os.environ.get("OPENHAC_HIGH_CURRENT_ZONE_MIN_A", "10") or 10)
+    except Exception:
+        min_a = 10.0
+    nets = {
+        name: info
+        for name, info in nets.items()
+        if float((info or {}).get("current_a") or 0.0) > min_a
+    }
     if not nets:
         return 0
 
@@ -518,9 +622,14 @@ def spread_footprints_no_overlap(
             return False
 
     def _bb(fp):
-        b = fp.GetBoundingBox()
-        # Inflate bbox by margin to enforce a minimum separation.
-        # This is deliberately approximate (bbox, not courtyard) but is stable and fast.
+        # Courtyard-scale box: default GetBoundingBox() includes Value/Ref silk
+        # (~15 mm for a 0603) and de-overlap then shoves parts across the board.
+        try:
+            from openhac.compiler.pcb_placement import _footprint_pack_bbox
+
+            b = _footprint_pack_bbox(fp)
+        except Exception:
+            b = fp.GetBoundingBox()
         return (
             int(b.GetLeft()) - margin_iu,
             int(b.GetTop()) - margin_iu,
@@ -641,6 +750,154 @@ def spread_footprints_no_overlap(
     if moved_fps:
         logger.info("De-overlap moved %s footprint(s) (iters=%s).", len(moved_fps), it)
     return len(moved_fps)
+
+
+def replace_rectangular_edge_cuts(pcb, pcbnew_mod, w_mm: float, h_mm: float) -> bool:
+    """Replace Edge.Cuts with a rectangle (0,0)–(w_mm, h_mm)."""
+    try:
+        edge = pcb.GetLayerID("Edge.Cuts")
+    except Exception:
+        return False
+    drawings = []
+    for getter in ("GetDrawings", "Drawings"):
+        try:
+            drawings = list(getattr(pcb, getter)())
+            break
+        except Exception:
+            continue
+    for d in drawings:
+        try:
+            if int(d.GetLayer()) != int(edge):
+                continue
+        except Exception:
+            continue
+        for rm in ("Remove", "Delete"):
+            try:
+                getattr(pcb, rm)(d)
+                break
+            except Exception:
+                continue
+    w_mm = max(1.0, float(w_mm))
+    h_mm = max(1.0, float(h_mm))
+    pts = [
+        _to_vec(pcbnew_mod, 0.0, 0.0),
+        _to_vec(pcbnew_mod, w_mm, 0.0),
+        _to_vec(pcbnew_mod, w_mm, h_mm),
+        _to_vec(pcbnew_mod, 0.0, h_mm),
+    ]
+    shape_cls = getattr(pcbnew_mod, "PCB_SHAPE", None)
+    if shape_cls is None:
+        return False
+    for i in range(4):
+        try:
+            seg = shape_cls(pcb)
+            if hasattr(pcbnew_mod, "SHAPE_T_SEGMENT"):
+                seg.SetShape(pcbnew_mod.SHAPE_T_SEGMENT)
+            seg.SetStart(pts[i])
+            seg.SetEnd(pts[(i + 1) % 4])
+            seg.SetLayer(edge)
+            seg.SetWidth(int(pcbnew_mod.FromMM(0.1)))
+            pcb.Add(seg)
+        except Exception:
+            return False
+    return True
+
+
+def legalize_placed_footprints(
+    pcb,
+    pcbnew_mod,
+    board=None,
+    *,
+    gap_mm: float = 0.5,
+    margin_mm: float = 1.0,
+    rounds: int = 400,
+) -> dict:
+    """Separate overlapping footprints with min-displacement, then shrink-wrap.
+
+    Does not clamp to the current Edge.Cuts while overlapping, and does not
+    grow a sparse outline to chase leftover nets. Returns a small stats dict.
+    """
+    from openhac.compiler.legalize import legalize_aabbs, overlap_pairs
+    from openhac.compiler.pcb_placement import _footprint_pack_bbox
+
+    try:
+        fps = list(pcb.GetFootprints())
+    except Exception:
+        try:
+            fps = list(pcb.Footprints())
+        except Exception:
+            return {"moved": 0, "width_mm": 0.0, "height_mm": 0.0, "overlaps": -1}
+
+    items: list[tuple[object, float, float, float, float]] = []
+    for fp in fps:
+        try:
+            bb = _footprint_pack_bbox(fp)
+            left = float(pcbnew_mod.ToMM(int(bb.GetLeft())))
+            top = float(pcbnew_mod.ToMM(int(bb.GetTop())))
+            if hasattr(bb, "GetWidth") and hasattr(bb, "GetHeight"):
+                w = abs(float(pcbnew_mod.ToMM(int(bb.GetWidth()))))
+                h = abs(float(pcbnew_mod.ToMM(int(bb.GetHeight()))))
+            else:
+                w = abs(float(pcbnew_mod.ToMM(int(bb.GetRight()) - int(bb.GetLeft()))))
+                h = abs(float(pcbnew_mod.ToMM(int(bb.GetBottom()) - int(bb.GetTop()))))
+        except Exception:
+            continue
+        if w < 0.05 or h < 0.05:
+            continue
+        items.append((fp, left, top, max(w, 0.4), max(h, 0.4)))
+
+    if len(items) < 2:
+        return {"moved": 0, "width_mm": 0.0, "height_mm": 0.0, "overlaps": 0}
+
+    pos, bw, bh = legalize_aabbs(
+        [(id(fp), x, y, w, h) for fp, x, y, w, h in items],
+        gap=float(gap_mm),
+        margin=float(margin_mm),
+        rounds=int(rounds),
+    )
+    moved = 0
+    for fp, x0, y0, _w, _h in items:
+        xy = pos.get(id(fp))
+        if xy is None:
+            continue
+        nx, ny = xy
+        dx = float(nx) - float(x0)
+        dy = float(ny) - float(y0)
+        if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+            continue
+        try:
+            p = fp.GetPosition()
+            newx = int(p.x + pcbnew_mod.FromMM(dx))
+            newy = int(p.y + pcbnew_mod.FromMM(dy))
+            fp.SetPosition(type(p)(newx, newy) if not isinstance(p, tuple) else (newx, newy))
+        except Exception:
+            try:
+                fp.Move(_to_vec(pcbnew_mod, dx, dy))
+            except Exception:
+                continue
+        moved += 1
+
+    after: dict[int, tuple[float, float, float, float]] = {}
+    for fp, x0, y0, w, h in items:
+        xy = pos.get(id(fp), (x0, y0))
+        after[id(fp)] = (xy[0], xy[1], w, h)
+    n_ovl = overlap_pairs(after, float(gap_mm))
+
+    if board is not None:
+        try:
+            board.size_mm = (float(bw), float(bh))
+        except Exception as e:
+            logger.debug("legalize: could not write board.size_mm: %s", e)
+    outline_ok = replace_rectangular_edge_cuts(pcb, pcbnew_mod, bw, bh)
+    logger.info(
+        "Footprint legalizer: moved %s, outline %.0fx%.0f mm (edge_cuts=%s), overlaps remaining=%s.",
+        moved,
+        bw,
+        bh,
+        "ok" if outline_ok else "skip",
+        n_ovl,
+    )
+    return {"moved": moved, "width_mm": bw, "height_mm": bh, "overlaps": n_ovl}
 
 
 def apply_keepout_rect_intents(pcb, board, pcbnew_mod) -> int:
@@ -815,6 +1072,29 @@ def apply_net_tie_intents(pcb, board, pcbnew_mod) -> int:
     if added:
         logger.info("Added %s net-tie footprint(s) from intents.", added)
     return added
+
+
+def enable_copper_layers(pcb, pcbnew_mod, n_layers: int) -> int:
+    """Honor ``Board.layers`` by enabling that many copper layers on the PCB.
+
+    KiCad ``BOARD()`` defaults to 2 layers (F.Cu / B.Cu). A stackup comment
+    without ``SetCopperLayerCount`` still exports a 2-layer Specctra DSN, so
+    FreeRouting never sees In1/In2.
+    """
+    try:
+        n = int(n_layers)
+    except Exception:
+        return 0
+    n = max(2, min(n, 16))
+    if n <= 2:
+        return 2
+    try:
+        pcb.SetCopperLayerCount(n)
+    except Exception as e:
+        logger.warning("PCB-003: SetCopperLayerCount(%s) failed: %s", n, e)
+        return 0
+    logger.info("PCB-003: enabled %s copper layers (F.Cu + inner + B.Cu).", n)
+    return n
 
 
 def inject_kicad_stackup(pcb_path: str, layers: int) -> None:

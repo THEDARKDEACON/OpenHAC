@@ -298,27 +298,38 @@ def missing_footprint_erc_hook(board):
     Skips typical schematic-only power symbols (``power`` lib / ``PWR_FLAG``).
     """
     _ = board
+    circuits: list = []
     try:
         from openhac.circuit import get_default_circuit
-    except Exception:
-        return []
 
-    try:
-        circuit = get_default_circuit()
+        circuits.append(get_default_circuit())
     except Exception:
-        return []
+        pass
+    try:
+        import builtins
+
+        sk = getattr(builtins, "default_circuit", None)
+        if sk is not None and sk not in circuits:
+            circuits.append(sk)
+    except Exception:
+        pass
 
     msgs: list[str] = []
-    for part in circuit.parts:
-        fp = str(getattr(part, "footprint", "") or "").strip()
-        if fp:
-            continue
-        lib = str(getattr(part, "lib", "") or getattr(part, "lib_id", "") or "")
-        name = str(getattr(part, "name", "") or "").strip().upper()
-        if lib == "power" or name == "PWR_FLAG":
-            continue
-        ref = getattr(part, "ref", "?")
-        msgs.append(
-            f"Part {ref!r} has no footprint (SCH-005 example rule; see openhac.stdlib.erc_rules)."
-        )
+    seen: set[int] = set()
+    for circuit in circuits:
+        for part in list(getattr(circuit, "parts", []) or []):
+            if id(part) in seen:
+                continue
+            seen.add(id(part))
+            fp = str(getattr(part, "footprint", "") or "").strip()
+            if fp:
+                continue
+            lib = str(getattr(part, "lib", "") or getattr(part, "lib_id", "") or "")
+            name = str(getattr(part, "name", "") or "").strip().upper()
+            if lib == "power" or name == "PWR_FLAG":
+                continue
+            ref = getattr(part, "ref", "?")
+            msgs.append(
+                f"Part {ref!r} has no footprint (SCH-005 example rule; see openhac.stdlib.erc_rules)."
+            )
     return msgs

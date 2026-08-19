@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import re
+import warnings
 from typing import TYPE_CHECKING
 
 from openhac.core.exceptions import OpenHaCError
@@ -25,6 +26,16 @@ def _fabrication_mode() -> bool:
     """True when OPENHAC_COMPILE_GOAL is fabrication (FAB-001 fail-closed)."""
     g = (os.environ.get("OPENHAC_COMPILE_GOAL") or "").strip().lower()
     return g in ("fabrication", "fab", "push_button_fab", "push-button-fab", "pushbuttonfab")
+
+
+def _strict_pinout() -> bool:
+    """Refuse invented Pin_N even in handoff when OPENHAC_STRICT_PINOUT is set."""
+    return (os.environ.get("OPENHAC_STRICT_PINOUT") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -80,7 +91,16 @@ def get_pins_from_data(
             pinout = json.loads(pinout_json)
             if not isinstance(pinout, list) or not pinout:
                 raise KeyError("empty pinout")
-            return [Pin(p["num"], p["name"], p.get("type", "bidirectional")) for p in pinout]
+            out = []
+            for p in pinout:
+                try:
+                    unit = max(1, int(p.get("unit") or 1))
+                except (TypeError, ValueError):
+                    unit = 1
+                out.append(
+                    Pin(p["num"], p["name"], p.get("type", "bidirectional"), unit=unit)
+                )
+            return out
         except (json.JSONDecodeError, KeyError, TypeError) as e:
             if refuse_invented:
                 raise OpenHaCError(
@@ -96,14 +116,38 @@ def get_pins_from_data(
         if template_pins:
             return template_pins
 
-    # Priority 4 — invent pins (handoff only)
+    # Priority 4 — invent pins (handoff only; loud; optional strict refuse)
     pins = generate_generic_pins(comp_data)
     invented = any(str(getattr(p, "name", "")).startswith("Pin_") for p in pins)
-    if refuse_invented and invented:
-        raise OpenHaCError(
-            f"FAB-001: no explicit pinout for {gn!r}; refusing invented Pin_N pins in fabrication mode. "
-            "Enrich pinout_json or provide explicit pins."
+    if invented:
+        msg = (
+            f"FAB-001: invented Pin_N pins for {gn!r} "
+            f"(package={comp_data.get('package')!r}). "
+            "Enrich pinout_json or provide explicit pins. "
+            "Set OPENHAC_STRICT_PINOUT=1 to refuse outside fabrication."
         )
+        if refuse_invented:
+            raise OpenHaCError(
+                f"FAB-001: no explicit pinout for {gn!r}; refusing invented Pin_N pins in fabrication mode. "
+                "Enrich pinout_json or provide explicit pins."
+            )
+        if _strict_pinout():
+            raise OpenHaCError(f"FAB-001 (OPENHAC_STRICT_PINOUT): {msg}")
+        logger.warning("%s", msg)
+        warnings.warn(msg, UserWarning, stacklevel=2)
+        try:
+            from openhac.core import base as core_base
+
+            core_base._IMPLICIT_PIN_EVENTS.append(
+                {
+                    "generic_name": gn,
+                    "refdes": "",
+                    "pin_name": "Pin_N",
+                    "invented": True,
+                }
+            )
+        except Exception:
+            pass
     return pins
 
 

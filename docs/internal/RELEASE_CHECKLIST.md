@@ -4,6 +4,8 @@ Use this before tagging a hardware release or sending artifacts to a CM.
 
 - Phase-1 context: [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md)
 - Phase-2 fabrication gates: [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md) (track [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md))
+- Schematic sign-off (optional EE stamp): [SCHEMATIC_SIGN_OFF_SPEC.md](./SCHEMATIC_SIGN_OFF_SPEC.md) (`--schematic-signoff`)
+- SPICE sign-off (optional analog physics gate): [SPICE_SIGN_OFF_SPEC.md](./SPICE_SIGN_OFF_SPEC.md) (`--spice-signoff`)
 - Scope / non-goals: [SCOPE.md](./SCOPE.md)
 
 1. **Toolchain** — Record KiCad version, `kicad-cli --version`, Python version, and OpenHaC version (`openhac --version`).
@@ -29,11 +31,15 @@ OPENHAC_NO_NETWORK=1 openhac compile board.py \
 OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_fab_gates.py
 # With KiCad/pcbnew (CI layout job):
 OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_fab_gates.py --require-layout
+# Full ERC → PCB DRC → Gerbers (needs FreeRouting + Java):
+OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_production.py --require-all --fetch-freerouting
 ```
 
 Fixture: [`tests/fixtures/fab_golden_board.py`](../../tests/fixtures/fab_golden_board.py) (also [`examples/fab_golden_resistor_bridge.py`](../../examples/fab_golden_resistor_bridge.py)).
 
-Until **FAB-030** lands, pass `--compile-goal fabrication`, `--strict-footprint-pads`, and `--require-verified-parts` explicitly even with `--production`. Prefer `--no-schematic` and review connectivity via webview/IR (**FAB-040**, **FAB-041**).
+Until Phase-2 FAB gates landed, prefer explicit `--compile-goal fabrication`, `--strict-footprint-pads`, and `--require-verified-parts` with `--production`. Prefer `--no-schematic` for fab packages; review connectivity via webview/IR (**FAB-040**, **FAB-041**). Full software claim: `python3 scripts/ci_validate_production.py --require-all --fetch-freerouting` (see [PRODUCTION_VALIDATION.md](./PRODUCTION_VALIDATION.md)).
+
+Advanced board capabilities (**ABC-***): see [ADVANCED_BOARD_CAPABILITIES_SPEC.md](./ADVANCED_BOARD_CAPABILITIES_SPEC.md). Complex multi-IC route subset: `ci_validate_complex_boards.py --place --route --route-subset esp32c3_usb,rs485_node`.
 
 ### Headless CI recipe (no pcbnew required)
 
@@ -46,3 +52,14 @@ Until **FAB-030** lands, pass `--compile-goal fabrication`, `--strict-footprint-
 6. **PCB DRC** — For fabrication: ensure KiCad PCB DRC ran clean (**FAB-022**). Do not ship with unrouted nets unless explicitly waived and recorded.
 7. **Fab** — `openhac export fab dist/proj/proj.kicad_pcb -o dist/proj/fab --zip` (optional `--ipc2581`). Attach stackup notes from [examples/fab_stackup_table.md](../../examples/fab_stackup_table.md) / [fab_stackup_jlc_example.json](./fab_stackup_jlc_example.json). Refuse export if omitted footprints remain (**FAB-003**).
 8. **Review** — SI/PI/EMC remain manual per [SCOPE.md](./SCOPE.md). Autoroute is assistive only (**PCB-007**).
+9. **SPICE (optional)** — Analog physics stamp is **not** implied by `--production`. When required:
+
+```bash
+OPENHAC_NO_NETWORK=1 openhac simulate board.py \
+  --spice-signoff \
+  --spice-vendor-dir /path/to/vendor-libs \
+  --require-vendor-models \
+  -o dist/proj
+```
+
+Vendor `.lib` files are **not** in git (`OPENHAC_SPICE_VENDOR_DIR`). Kirchhoff-only boards (R/C/L + declared rails) do not need vendor models. See [SPICE_SIGN_OFF_SPEC.md](./SPICE_SIGN_OFF_SPEC.md).

@@ -47,7 +47,8 @@ class Circuit:
     
     def add_bus(self, bus: Bus) -> Bus:
         """Add a bus to the circuit."""
-        self.buses.append(bus)
+        if bus not in self.buses:
+            self.buses.append(bus)
         # Also add all nets in the bus
         for net in bus:
             self.add_net(net)

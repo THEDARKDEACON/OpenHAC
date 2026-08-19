@@ -389,6 +389,8 @@ Each requirement includes: **problem**, **current state** (as of this spec), **t
 
 ### SIM-001 — SPICE with real models
 
+Phase-1 **Done** (DB fields + `.include` handoff). **Physics-correct vendor models, pin maps, and fail-closed simulate** continue as additive **SPS-*** in [SPICE_SIGN_OFF_SPEC.md](./SPICE_SIGN_OFF_SPEC.md). This ID is **not** reopened.
+
 | Field | Content |
 |-------|---------|
 | **Severity** | P1 |
@@ -399,6 +401,8 @@ Each requirement includes: **problem**, **current state** (as of this spec), **t
 | **Approach** | Extend DB: `spice_model_path`; generator emits includes. |
 
 ### SIM-002 — Analysis types beyond `.tran`
+
+Phase-1 **Done** (CLI presets / JSON/YAML analysis lines). Sign-off default analysis, probe windows, and rejection of presets that name missing `V1`/`out` are **SPS-021 / SPS-030**. This ID is **not** reopened.
 
 | Field | Content |
 |-------|---------|

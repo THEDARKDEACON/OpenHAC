@@ -51,6 +51,7 @@ class CompileState:
     pad_pin_warnings: list[str] = field(default_factory=list, init=False)
     network_allowed_at_compile: bool | None = field(default=None, init=False)
     kicad_pcb_drc_report: str | None = field(default=None, init=False)
+    schematic_signoff: bool = field(default=False, init=False)
 
     def __post_init__(self) -> None:
         self.skip_layout = os.environ.get("OPENHAC_SKIP_LAYOUT", "").lower() in ("1", "true", "yes")
@@ -58,6 +59,13 @@ class CompileState:
         self.compile_goal = self.board.effective_compile_goal()
         self.board_class = str(getattr(self.board, "board_class", "generic") or "generic")
         self.quality_gates = dict(getattr(self.board, "quality_gates", None) or {})
+        env_sso = os.environ.get("OPENHAC_SCHEMATIC_SIGNOFF", "").strip().lower() in ("1", "true", "yes", "on")
+        self.schematic_signoff = bool(getattr(self.board, "schematic_signoff", False)) or env_sso or bool(
+            self.quality_gates.get("schematic_signoff")
+        )
+        if self.schematic_signoff:
+            self.export_schematic = True
+            self.kicad_sch_erc = True
         try:
             self.bbox_padding_mm = float(self.bbox_padding_mm or 0.0)  # STYLE-001: direct field access
         except Exception:
@@ -68,6 +76,8 @@ class CompileState:
             _artifact_path(self.project_name, ".csv", self.output_dir) if self.generate_bom else None
         )
         self.pcb_path = _artifact_path(self.project_name, ".kicad_pcb", self.output_dir)
+        # Autosize boards lock size_mm during layout; restore on fabrication retry.
+        self.started_with_autosize = bool(getattr(self.board, "_size_mm_unspecified", False))
 
 
 def phase_enrich_parts(state: CompileState) -> None:
@@ -431,9 +441,10 @@ def phase_fixup_power_flags(state: CompileState) -> None:
 def phase_warn_multilayer_stackup(state: CompileState) -> None:
     b = state.board
     if int(b.layers) > 2:
-        logger.warning(
-            "Board.layers=%s: stackup and inner planes are not generated from layer count (PCB-003). "
-            "Finish stackup in KiCad; see docs/stackup_template.yaml (SIG-001).",
+        logger.info(
+            "Board.layers=%s: KiCad copper layers are enabled from this count (PCB-003). "
+            "Declare inner-plane pours with declare_copper_pour_intent (In1.Cu / In2.Cu); "
+            "see docs/stackup_template.yaml (SIG-001).",
             b.layers,
         )
 
@@ -572,6 +583,9 @@ def phase_layout(state: CompileState) -> None:
             "(headless CI / logic-only builds; SW-006)."
         )
         return
+    # ABC-002: when we will autoroute, defer pours so FreeRouting routes plane nets.
+    if state.auto_route and not (os.environ.get("OPENHAC_DEFER_COPPER_POURS") or "").strip():
+        os.environ["OPENHAC_DEFER_COPPER_POURS"] = "1"
     if not bool(getattr(state.board, "_size_mm_unspecified", False)):
         logger.info(
             "Applying geometric layout constraints. Target: %sx%smm, %s layers",
@@ -609,6 +623,14 @@ def phase_layout(state: CompileState) -> None:
         logger.warning("Early fp-lib-table write failed (continuing): %s", e)
 
     try:
+        from openhac.compiler.fab_design_settings import apply_routability_env_defaults
+
+        # Apply densify defaults *before* layout so packing/clearance affect Z3/autosize.
+        apply_routability_env_defaults()
+    except Exception as e:
+        logger.debug("routability env defaults (pre-layout) skipped: %s", e)
+
+    try:
         from openhac.compiler.pcb_placement import apply_pcbnew_pack_to_module_bboxes
 
         n_pack = apply_pcbnew_pack_to_module_bboxes(state.board)
@@ -616,6 +638,14 @@ def phase_layout(state: CompileState) -> None:
             logger.info("Module bbox refinement (pcbnew footprint pack): %s module(s) enlarged.", n_pack)
     except Exception as e:
         logger.debug("pcbnew module bbox pack skipped: %s", e)
+
+    # After pack sizes are known: merge IC↔LocalCaps into hierarchical Z3 rooms.
+    try:
+        from openhac.compiler.cluster_affinity import apply_cluster_affinity
+
+        apply_cluster_affinity(state.board)
+    except Exception as e:
+        logger.warning("Cluster affinity skipped: %s", e)
 
     # If the user left board size unspecified, auto-size now that module bboxes are refined.
     try:
@@ -628,6 +658,26 @@ def phase_layout(state: CompileState) -> None:
     from openhac.compiler.layout_gen import generate_layout
 
     generate_layout(state.net_path, state.pcb_path, state.board)
+
+    # Persist IPC netclasses into .kicad_pro even when schematic export is skipped.
+    try:
+        from openhac.compiler.project_gen import (
+            footprint_library_names_from_board,
+            generate_project_file,
+        )
+        from openhac.core.board import _artifact_path
+
+        pro_path = _artifact_path(state.project_name, ".kicad_pro", state.output_dir)
+        state.pro_path = pro_path
+        generate_project_file(
+            pro_path,
+            footprint_libs=footprint_library_names_from_board(state.board),
+            board=state.board,
+        )
+        logger.info("Wrote .kicad_pro with IPC netclasses (layout phase): %s", pro_path)
+    except Exception as e:
+        logger.debug("Early .kicad_pro write skipped: %s", e)
+
     try:
         from openhac.compiler.pcb_placement import drain_omitted_footprint_refs
 
@@ -651,8 +701,23 @@ def phase_layout(state: CompileState) -> None:
         )
 
 
+def _dsn_ipc_width_args(state: CompileState) -> tuple[dict | None, bool | None]:
+    """IPC-2152 class/net widths to patch into Specctra DSN (autoroute or --no-route)."""
+    req_w: dict = dict(getattr(state.board, "_last_ipc_netclass_widths_mm", None) or {})
+    net_currents = dict(getattr(state.board, "_last_ipc_net_currents_a", None) or {})
+    if net_currents:
+        from openhac.compiler.pcb_physics import _ipc2152_width_mm
+
+        req_w["__net_widths_mm__"] = {n: _ipc2152_width_mm(a) for n, a in net_currents.items()}
+    gates = dict(getattr(state.board, "quality_gates", None) or {})
+    require_dsn = gates.get("require_dsn_ipc_widths")
+    if require_dsn is None and state.compile_goal == "fabrication" and net_currents:
+        require_dsn = True
+    return (req_w or None, bool(require_dsn) if require_dsn is not None else None)
+
+
 def phase_autoroute(state: CompileState) -> None:
-    if state.skip_layout or not state.auto_route:
+    if state.skip_layout:
         return
     if Path(state.pcb_path).is_file():
         try:
@@ -666,13 +731,82 @@ def phase_autoroute(state: CompileState) -> None:
                 
             apply_physics_net_classes(board_obj, state.board, pcbnew)
 
-            # [Foolproof] Inject polygons early so they exist even if routing is skipped/cancelled
-            n_zones = apply_high_current_polygons(board_obj, state.board, pcbnew)
-            if n_zones:
-                logger.info("Physics-Based Layout: Injected %d high-current copper zone(s).", n_zones)
+            from openhac.compiler.fab_design_settings import (
+                apply_fab_design_settings,
+                apply_routability_env_defaults,
+                audit_footprint_min_drills,
+                fill_copper_zones,
+            )
 
-            pcbnew.SaveBoard(str(state.pcb_path), board_obj)
-            logger.info("Physics-Based Layout: Persisted NetClasses and Polygons to %s.", Path(state.pcb_path).name)
+            apply_routability_env_defaults()
+            apply_fab_design_settings(board_obj, state.board, pcbnew)
+            try:
+                from openhac.compiler.pcb_postprocess import sync_duplicate_pad_nets
+
+                sync_duplicate_pad_nets(board_obj, pcbnew)
+            except Exception as e:
+                logger.debug("ABC-005 duplicate pad sync skipped: %s", e)
+            drill_viols = audit_footprint_min_drills(board_obj, state.board, pcbnew)
+            if drill_viols:
+                for msg in drill_viols[:12]:
+                    logger.warning("%s", msg)
+                if state.compile_goal == "fabrication" and os.environ.get(
+                    "OPENHAC_FAB_STRICT_FP_DRILL", "1"
+                ).strip().lower() not in ("0", "false", "no", "off"):
+                    # Soft by default for stock RF modules; hard-fail when OPENHAC_FAB_STRICT_FP_DRILL=force
+                    if os.environ.get("OPENHAC_FAB_STRICT_FP_DRILL", "").strip().lower() in (
+                        "force",
+                        "2",
+                        "error",
+                    ):
+                        from openhac.compiler.rule_check import DRCViolationError
+
+                        raise DRCViolationError(
+                            "ABC-005 footprint min-drill audit failed:\n"
+                            + "\n".join(f"  • {v}" for v in drill_viols[:24])
+                        )
+
+            defer_pours = (os.environ.get("OPENHAC_DEFER_COPPER_POURS") or "").strip().lower() in (
+                "1",
+                "true",
+                "yes",
+                "on",
+            )
+            if defer_pours:
+                # Board-wide pours before FreeRouting leave plane nets unrouted and
+                # thrash (ABC-002). Inject after tracks exist.
+                logger.info("ABC-002: deferring high-current copper zones until after autoroute.")
+                pcbnew.SaveBoard(str(state.pcb_path), board_obj)
+                logger.info(
+                    "Physics-Based Layout: Persisted NetClasses to %s (zones deferred).",
+                    Path(state.pcb_path).name,
+                )
+            else:
+                n_zones = apply_high_current_polygons(board_obj, state.board, pcbnew)
+                if n_zones:
+                    logger.info("Physics-Based Layout: Injected %d high-current copper zone(s).", n_zones)
+                fill_copper_zones(board_obj, pcbnew)
+                pcbnew.SaveBoard(str(state.pcb_path), board_obj)
+                from openhac.compiler.fab_design_settings import fill_copper_zones_file
+
+                fill_copper_zones_file(str(state.pcb_path))
+                logger.info(
+                    "Physics-Based Layout: Persisted NetClasses and Polygons to %s.",
+                    Path(state.pcb_path).name,
+                )
+            try:
+                from openhac.compiler.project_gen import (
+                    footprint_library_names_from_board,
+                    generate_project_file,
+                )
+
+                generate_project_file(
+                    str(Path(state.pcb_path).with_suffix(".kicad_pro")),
+                    footprint_libs=footprint_library_names_from_board(state.board),
+                    board=state.board,
+                )
+            except Exception as pro_e:
+                logger.debug("KiCad 9 net_settings rewrite after physics skipped: %s", pro_e)
         except Exception as e:
             logger.warning("Failed to apply physics constraints: %s", e)
 
@@ -682,8 +816,32 @@ def phase_autoroute(state: CompileState) -> None:
             state.pcb_path,
         )
         return
-    from openhac.compiler.autoroute_cli import run_freerouting, fallback_route_with_pcbnew
+    from openhac.compiler.autoroute_cli import (
+        export_dsn_with_ipc_widths,
+        fallback_route_with_pcbnew,
+        run_freerouting,
+    )
     from openhac.core.base import FreeRoutingNotFoundError, AutorouterFailedError
+
+    req_w, require_dsn = _dsn_ipc_width_args(state)
+
+    if not state.auto_route:
+        # Placement-only: still write Specctra DSN with IPC widths for KiCad / FreeRouting later.
+        try:
+            dsn_path = export_dsn_with_ipc_widths(
+                state.pcb_path,
+                required_netclass_widths_mm=req_w,
+                require_dsn_widths=require_dsn,
+            )
+            logger.info(
+                "Skipping FreeRouting (--no-route); Specctra DSN written at %s",
+                dsn_path,
+            )
+        except AutorouterFailedError as e:
+            if state.compile_goal == "fabrication":
+                raise
+            logger.warning("Specctra DSN export failed (--no-route): %s", e)
+        return
 
     logger.info("Running auto-router...")
     try:
@@ -699,7 +857,11 @@ def phase_autoroute(state: CompileState) -> None:
             raise FreeRoutingNotFoundError(
                 f"PCB-007: declare_no_autoroute_net() set for {state.board._no_autoroute_net_names}."
             )
-        run_freerouting(state.pcb_path)
+        run_freerouting(
+            state.pcb_path,
+            required_netclass_widths_mm=req_w,
+            require_dsn_widths=require_dsn,
+        )
     except FreeRoutingNotFoundError as e:
         if state.compile_goal == "fabrication":
             raise AutorouterFailedError(
@@ -713,6 +875,50 @@ def phase_autoroute(state: CompileState) -> None:
         fallback_route_with_pcbnew(
             state.pcb_path, no_autoroute_nets=list(getattr(state.board, "_no_autoroute_net_names", None) or [])
         )
+
+    # A* leftover is opt-in only. It is a grid maze, not a PCB router; FreeRouting
+    # owns copper. Set OPENHAC_ASTAR_LEFTOVER=1 to re-enable.
+    try:
+        if (os.environ.get("OPENHAC_ASTAR_LEFTOVER") or "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ) and Path(state.pcb_path).is_file():
+            from openhac.compiler.astar_router import route_leftover_nets
+
+            n_left = route_leftover_nets(state.pcb_path)
+            if n_left:
+                logger.info("A* leftover router added %s copper item(s).", n_left)
+    except Exception as e:
+        logger.warning("A* leftover router failed: %s", e)
+
+    # ABC-002: apply deferred copper pours after tracks exist, then safe-fill.
+    if (os.environ.get("OPENHAC_DEFER_COPPER_POURS") or "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ) and Path(state.pcb_path).is_file():
+        try:
+            import pcbnew
+            from openhac.compiler.pcb_postprocess import apply_copper_pour_intents
+            from openhac.compiler.fab_design_settings import fill_copper_zones_file
+
+            board_obj = pcbnew.LoadBoard(str(state.pcb_path))
+            n = apply_copper_pour_intents(board_obj, state.board, pcbnew)
+            from openhac.compiler.pcb_postprocess import apply_high_current_polygons
+
+            n_hi = apply_high_current_polygons(board_obj, state.board, pcbnew)
+            pcbnew.SaveBoard(str(state.pcb_path), board_obj)
+            fill_copper_zones_file(str(state.pcb_path))
+            logger.info(
+                "ABC-002: applied %s deferred copper pour(s) and %s high-current zone(s) after autoroute.",
+                n,
+                n_hi,
+            )
+        except Exception as e:
+            logger.warning("ABC-002 deferred copper pours failed: %s", e)
 
 
 def phase_routing_metrics(state: CompileState) -> None:
@@ -740,6 +946,11 @@ def phase_routing_metrics(state: CompileState) -> None:
     thr = effective_routing_quality_thresholds(state.board)
     tc = int(state.pcb_metrics.get("track_count", 0) or 0)
     vc = int(state.pcb_metrics.get("via_count", 0) or 0)
+    if state.pcb_metrics.get("unrouted_net_count_unknown"):
+        raise AutorouterFailedError(
+            "ABC-006/FAB-021: unrouted_net_count unavailable "
+            f"({state.pcb_metrics.get('unrouted_net_count_error')}); refusing silent pass."
+        )
     if tc < int(thr["min_track_count"]):
         raise AutorouterFailedError(
             f"Fabrication mode routing gate: track_count={tc} below min_track_count={thr['min_track_count']}."
@@ -798,7 +1009,10 @@ def phase_schematic(state: CompileState) -> None:
                     continue
                 seen.add(pid)
                 parts.append(p)
-        sym_path, embed_syms = write_generated_symbol_library(gen_sym_path, parts, nickname="OpenHaC")
+        sym_path, embed_syms = write_generated_symbol_library(
+            gen_sym_path, parts, nickname="OpenHaC",
+            signoff=bool(state.schematic_signoff),
+        )
     except Exception:
         logger.exception("OpenHaC generated symbol library failed; schematic may show missing symbols (?)")
         sym_path, embed_syms = None, None
@@ -809,29 +1023,46 @@ def phase_schematic(state: CompileState) -> None:
             "Check component pin data and prior errors."
         )
 
-    generate_schematic(
+    sch_ir = generate_schematic(
         state.sch_path,
         state.board,
         pinpos_report_path=pinpos_report,
         generated_symbol_lib_path=sym_path,
         embedded_lib_symbols=embed_syms,
+        signoff=bool(state.schematic_signoff),
     )
+
+    if state.schematic_signoff:
+        from openhac.schematic.collect import collect_parts_and_nets
+        from openhac.schematic.parity import assert_graph_schematic_parity
+
+        _parts, nets = collect_parts_and_nets(state.board)
+        assert_graph_schematic_parity(nets, sch_ir, include_power=True)
 
     from openhac.compiler.project_gen import footprint_library_names_from_board
 
     generate_project_file(
         state.pro_path,
-        sym_lib_path=sym_path,
+        # Only the generated OpenHaC nick — system symbols are cached in lib_symbols.
+        # Listing Device/MCU/… here makes KiCad prefer the stock copy over a flattened
+        # embed and yields lib_symbol_mismatch + pin/NC misses.
+        sym_lib_path=sym_path or getattr(sch_ir, "generated_sym_path", None),
         sym_lib_nick="OpenHaC",
         footprint_libs=footprint_library_names_from_board(state.board),
         board=state.board,
+        schematic_ir=sch_ir,
     )
 
     if not state.kicad_sch_erc:
         return
+    from openhac.compiler.kicad_erc_report import summarize_kicad_erc_report
     from openhac.compiler.kicad_sch_erc import run_kicad_schematic_erc
+    from openhac.core.exceptions import KiCadSchErcError
 
     fmt = (state.kicad_sch_erc_format or "report").strip().lower()
+    signoff = bool(state.schematic_signoff)
+    if signoff:
+        fmt = "json"
     if fmt == "json":
         state.erc_report_name = f"{state.project_name}.kicad_sch.erc.json"
         erc_suffix = ".kicad_sch.erc.json"
@@ -843,13 +1074,35 @@ def phase_schematic(state: CompileState) -> None:
         state.sch_path,
         output_report=erc_report_path,
         report_format="json" if fmt == "json" else "report",
+        strict=not signoff,
     )
+    if signoff:
+        summary = summarize_kicad_erc_report(erc_report_path)
+        err_n = int(summary.get("error_count") or 0)
+        if err_n:
+            raise KiCadSchErcError(
+                f"KiCad schematic ERC reported {err_n} error(s). See {erc_report_path}"
+            )
 
 
 def phase_manifest(state: CompileState) -> None:
     from openhac.compiler.compile_manifest import write_compile_manifest
     from openhac.core.board import _artifact_path
     from openhac.compiler.post_report import write_compile_post_report
+
+    try:
+        from openhac.compiler.advanced_board_policy import (
+            write_fanout_constraints_json,
+            write_hs_netclass_handoff,
+            write_rf_emc_checklist,
+        )
+
+        out_dir = state.output_dir or "."
+        write_fanout_constraints_json(state.board, out_dir, state.project_name)
+        write_hs_netclass_handoff(state.board, out_dir, state.project_name)
+        write_rf_emc_checklist(state.board, out_dir, state.project_name)
+    except Exception as e:
+        logger.debug("ABC handoff artifacts skipped: %s", e)
 
     sidecar = bool(getattr(state.board, "write_manifest_sha256_sidecar", False))
     if os.environ.get("OPENHAC_MANIFEST_SHA256_SIDECAR", "").lower() in ("1", "true", "yes"):
@@ -977,10 +1230,44 @@ def run_compile_loop(
                 _repair_after_failure(state, e)
             except Exception as repair_e:
                 logger.warning("Repair hook failed (continuing): %s", repair_e)
+            try:
+                _reset_layout_transients_for_retry(state)
+            except Exception as reset_e:
+                logger.warning("Layout-state reset before retry failed: %s", reset_e)
             logger.warning("Compile attempt %s/%s failed; retrying after repair hook: %s", attempt, max_attempts, e)
             continue
     if last_err is not None:
         raise last_err
+
+
+def _reset_layout_transients_for_retry(state: CompileState) -> None:
+    """Drop compiler placement so pre-layout DRC cannot see leftover coords.
+
+    Fabrication runs ``max_attempts=2``. Attempt 1 layout (and the repair hook)
+    assign ``placed_x`` / lock ``size_mm``. Attempt 2 starts at ERC/DRC, which
+    then aborts on those transients before FreeRouting can export a Specctra DSN
+    with IPC netclass widths.
+    """
+    board = state.board
+    try:
+        mods = board._get_all_modules() if hasattr(board, "_get_all_modules") else list(getattr(board, "modules", []) or [])
+    except Exception:
+        mods = list(getattr(board, "modules", []) or [])
+    n = 0
+    for mod in mods:
+        if getattr(mod, "placed_x", None) is not None or getattr(mod, "placed_y", None) is not None:
+            n += 1
+        mod.placed_x = None
+        mod.placed_y = None
+        if hasattr(mod, "_z3_skip"):
+            mod._z3_skip = False
+        if hasattr(mod, "_placement_anchor"):
+            mod._placement_anchor = None
+    if getattr(state, "started_with_autosize", False):
+        board._size_mm_unspecified = True
+        board.size_mm = (1.0, 1.0)
+    if n:
+        logger.info("Retry: cleared placement on %s module(s); autosize=%s", n, bool(getattr(state, "started_with_autosize", False)))
 
 
 def _repair_after_failure(state: CompileState, err: Exception) -> None:
@@ -997,12 +1284,78 @@ def _repair_after_failure(state: CompileState, err: Exception) -> None:
     try:
         from openhac.compiler.rule_check import DRCViolationError
 
-        if isinstance(err, DRCViolationError):
-            gates = dict(getattr(state.board, "quality_gates", None) or {})
-            expand = float(gates.get("auto_expand_board_mm", 0.0) or 0.0)
-            if expand > 0 and "outside Edge.Cuts" in str(err):
-                w, h = getattr(state.board, "size_mm", (0.0, 0.0))
-                state.board.size_mm = (float(w) + expand, float(h) + expand)
-                logger.warning("Repair: expanded board size to %sx%smm (auto_expand_board_mm=%s).", *state.board.size_mm, expand)
+        msg = str(err)
+        gates = dict(getattr(state.board, "quality_gates", None) or {})
+        expand = float(gates.get("auto_expand_board_mm", 0.0) or 0.0)
+        if expand <= 0:
+            # Leftover nets / unconnected DRC are not a too-small-outline bug.
+            # Footprint legalize grows Edge.Cuts when courtyards need room.
+            pass
+        if isinstance(err, DRCViolationError) and "outside Edge.Cuts" in msg:
+            expand = max(expand, float(gates.get("auto_expand_board_mm", 5.0) or 5.0))
+        if isinstance(err, DRCViolationError) and (
+            "footprint bboxes overlap" in msg or "overlaps keepout" in msg.lower()
+        ):
+            # ABC-007: nudge FP gap; prefer re-autosize over locking a too-small outline
+            # (locking size_mm + raising pack inflate caused Z3 UNSAT on WROOM boards).
+            # Also handles keepout_rect collisions (fixed-coordinate RF keepouts).
+            try:
+                gap = float(os.environ.get("OPENHAC_PLACEMENT_FP_GAP_MM", "4") or 4)
+                os.environ["OPENHAC_PLACEMENT_FP_GAP_MM"] = str(gap + 1.0)
+                clr = float(os.environ.get("OPENHAC_MODULE_CLEARANCE_MM", "5") or 5)
+                os.environ["OPENHAC_MODULE_CLEARANCE_MM"] = str(clr + 1.0)
+                # Keep pack inflate stable — growing it while freezing size_mm is counterproductive.
+                # Do NOT setdefault PACK_INFLATE=2.2 (that permanently sparsifies subsequent boards).
+            except Exception:
+                pass
+            try:
+                # Re-enable autosize so the next attempt can grow the outline.
+                state.board._size_mm_unspecified = True
+                state.board.size_mm = (1.0, 1.0)
+                expand = 0.0
+            except Exception:
+                expand = max(expand, float(os.environ.get("OPENHAC_REPAIR_EXPAND_BOARD_MM", "15") or 15))
+
+        # Cap cumulative repair expansion so boards don't ratchet forever.
+        try:
+            max_expand_total = float(os.environ.get("OPENHAC_REPAIR_EXPAND_BOARD_MAX_MM", "40") or 40)
+        except Exception:
+            max_expand_total = 40.0
+        already = float(getattr(state.board, "_repair_expand_mm_total", 0.0) or 0.0)
+        if expand > 0 and already + expand > max_expand_total:
+            expand = max(0.0, max_expand_total - already)
+            if expand <= 0:
+                logger.warning(
+                    "ABC-007 repair: expand capped (already +%.1f mm of max %.1f); skipping further growth.",
+                    already,
+                    max_expand_total,
+                )
+
+        if expand > 0 and (
+            "outside Edge.Cuts" in msg
+            or "footprint bboxes overlap" in msg
+            or "overlaps keepout" in msg.lower()
+        ):
+            w, h = getattr(state.board, "size_mm", (0.0, 0.0))
+            state.board.size_mm = (float(w) + expand, float(h) + expand)
+            try:
+                state.board._size_mm_unspecified = False
+                state.board._repair_expand_mm_total = already + expand
+            except Exception:
+                pass
+            # Nudge placement gaps for retry
+            import os as _os
+
+            try:
+                gap = float(_os.environ.get("OPENHAC_PLACEMENT_FP_GAP_MM", "2") or 2)
+                _os.environ["OPENHAC_PLACEMENT_FP_GAP_MM"] = str(gap + 0.5)
+            except Exception:
+                pass
+            logger.warning(
+                "ABC-007 repair: expanded board size to %sx%smm (expand=%s, cumulative=%.1f).",
+                *state.board.size_mm,
+                expand,
+                getattr(state.board, "_repair_expand_mm_total", expand),
+            )
     except Exception:
         pass

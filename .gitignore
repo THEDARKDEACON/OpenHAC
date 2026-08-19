@@ -77,10 +77,16 @@ openhac_local.db
 *.zip
 
 # =============================================================================
-# SPICE outputs
+# SPICE outputs (generated decks / solver logs — keep bundled models tracked)
 # =============================================================================
 *.cir
 *.cir.ngspice.log
+*.ngspice.log
+*.raw
+!openhac/database/spice_models/*.cir
+# Local vendor macromodels (OPENHAC_SPICE_VENDOR_DIR); never commit proprietary .lib
+spice_vendor/
+**/spice_vendor/
 
 # =============================================================================
 # Log files
