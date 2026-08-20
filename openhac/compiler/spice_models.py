@@ -17,6 +17,45 @@ _PACKAGE_MODELS_DIR = Path(__file__).resolve().parent.parent / "database" / "spi
 
 KINDS = frozenset({"primitive", "vendor", "physics", "behavioral"})
 PRIMITIVE_PREFIXES = frozenset({"R", "C", "L", "V", "I"})
+# Interconnect / mechanical: not SPICE devices. ngspice letter J is a JFET.
+_OMITTED_PREFIXES = frozenset({"J", "TP", "MH", "FID"})
+_OMITTED_CATEGORY_SUBSTR = (
+    "connector",
+    "header",
+    "testpoint",
+    "test_point",
+    "testability",
+    "mounting",
+    "fiducial",
+    "mechanical",
+    "nettie",
+    "net-tie",
+    "net_tie",
+)
+_DIGITAL_CORE_CATEGORY_SUBSTR = (
+    "microcontroller",
+    "fpga",
+    "cpld",
+)
+_DIGITAL_CORE_NAME_MARKERS = (
+    "ESP32",
+    "ESP8266",
+    "STM32",
+    "RP2040",
+    "NRF52",
+    "NRF91",
+    "CH340",
+    "CP210",
+    "FT232",
+    "FT2232",
+    "ATMEGA",
+    "ATSAMD",
+)
+_OMIT_REASON_LABEL = {
+    "connector_mechanical": "connector/mechanical (not a SPICE device; nets stay as nodes)",
+    "digital_core": "digital core (SIM-003; not analog SPICE)",
+    "out_of_island": "outside spice island",
+}
 
 _registry_cache: list["SpiceModelRecord"] | None = None
 
@@ -71,6 +110,158 @@ def ref_prefix(ref: str) -> str:
 
 def is_primitive_ref(ref: str) -> bool:
     return ref_prefix(ref) in PRIMITIVE_PREFIXES
+
+
+def is_omitted_spice_part(part, spice_id: str | None = None) -> bool:
+    """True for connectors, test points, and mounting hardware (SPS-005).
+
+    These are PCB interfaces, not semiconductors. A header must not emit as a
+    JFET (``J``) or demand a vendor ``.subckt``. An explicit ``Spice_Subckt``
+    still instantiates in ``generate_spice``.
+    """
+    ref = spice_id or str(getattr(part, "refdes", None) or getattr(part, "ref", "") or "")
+    if ref_prefix(ref) in _OMITTED_PREFIXES:
+        return True
+    fields = getattr(part, "fields", None) or {}
+    blobs = (
+        str(fields.get("category") or fields.get("Category") or ""),
+        str(fields.get("kicad_symbol") or ""),
+        str(fields.get("generic_name") or ""),
+        str(getattr(part, "footprint", "") or fields.get("Footprint") or ""),
+        str(getattr(part, "value", "") or ""),
+        str(getattr(part, "name", "") or ""),
+    )
+    joined = " ".join(blobs).lower()
+    if any(tok in joined for tok in _OMITTED_CATEGORY_SUBSTR):
+        return True
+    gn = str(fields.get("generic_name") or getattr(part, "value", "") or "").upper()
+    if gn.startswith("CONN_") or gn.startswith("TP_"):
+        return True
+    return False
+
+
+def part_module_name(part) -> str:
+    fields = getattr(part, "fields", None) or {}
+    return str(fields.get("OpenHaC_Module") or "").strip()
+
+
+def _part_identity_blob(part) -> str:
+    fields = getattr(part, "fields", None) or {}
+    return " ".join(
+        (
+            str(fields.get("category") or fields.get("Category") or ""),
+            str(fields.get("generic_name") or ""),
+            str(fields.get("Value") or ""),
+            str(getattr(part, "value", "") or ""),
+            str(getattr(part, "name", "") or ""),
+            str(fields.get("MPN") or fields.get("mpn") or ""),
+        )
+    )
+
+
+def is_digital_core_part(part, spice_id: str | None = None) -> bool:
+    """MCUs / FPGAs / USB-UART bridges: out of analog SPICE scope (SIM-003 / SPS-043).
+
+    An explicit vendor ``Spice_Subckt`` still instantiates in ``generate_spice``.
+    Analog ICs (LDO, ADC, MOSFET) must not match this heuristic.
+    """
+    del spice_id
+    fields = getattr(part, "fields", None) or {}
+    cat = str(fields.get("category") or fields.get("Category") or "").lower()
+    cat_norm = cat.replace("_", " ")
+    if cat in ("mcu", "soc", "cpu") or any(
+        tok in cat_norm for tok in _DIGITAL_CORE_CATEGORY_SUBSTR
+    ):
+        return True
+    blob = _part_identity_blob(part).upper()
+    if any(m in blob for m in _DIGITAL_CORE_NAME_MARKERS):
+        return True
+    gn = str(fields.get("generic_name") or getattr(part, "value", "") or "").upper()
+    if gn.startswith("MCU_"):
+        return True
+    return False
+
+
+def spice_omit_reason(
+    part,
+    spice_id: str | None = None,
+    *,
+    island_names: frozenset[str] | None = None,
+) -> str | None:
+    """Return an omit token, or None if the part stays in the analog deck."""
+    ref = spice_id or str(getattr(part, "refdes", None) or getattr(part, "ref", "") or "")
+    if is_omitted_spice_part(part, ref):
+        return "connector_mechanical"
+    if is_digital_core_part(part, ref):
+        return "digital_core"
+    if island_names is not None and part_module_name(part) not in island_names:
+        return "out_of_island"
+    return None
+
+
+def omit_reason_label(reason: str, *, island_names: frozenset[str] | None = None) -> str:
+    if reason == "out_of_island":
+        names = ",".join(sorted(island_names or ())) or "?"
+        return f"outside spice island ({names})"
+    return _OMIT_REASON_LABEL.get(reason, reason)
+
+
+def part_has_registered_spice_model(part) -> bool:
+    rec = record_from_part_fields(part)
+    if rec is not None and (rec.subckt or rec.include):
+        return True
+    fields = getattr(part, "fields", None) or {}
+    gn = str(
+        fields.get("Value") or fields.get("generic_name") or getattr(part, "name", "") or ""
+    ).strip()
+    mpn = str(fields.get("MPN") or fields.get("mpn") or "").strip()
+    rec = lookup_registry(generic_name=gn, mpn=mpn)
+    return rec is not None and rec.kind != "primitive"
+
+
+def collect_spice_coverage(
+    parts,
+    *,
+    island_names: frozenset[str] | None = None,
+) -> list[dict[str, str]]:
+    """Per-part analog coverage rows for the sign-off audit (SPS-044)."""
+    rows: list[dict[str, str]] = []
+    for part in parts:
+        ref = str(getattr(part, "refdes", None) or getattr(part, "ref", "") or "")
+        value = str(getattr(part, "value", None) or getattr(part, "name", "") or "")
+        module = part_module_name(part)
+        if is_primitive_ref(ref):
+            rows.append(
+                {"ref": ref, "value": value, "module": module, "status": "primitive", "reason": ""}
+            )
+            continue
+        reason = spice_omit_reason(part, ref, island_names=island_names)
+        if reason:
+            rows.append(
+                {
+                    "ref": ref,
+                    "value": value,
+                    "module": module,
+                    "status": "omitted",
+                    "reason": reason,
+                }
+            )
+            continue
+        if part_has_registered_spice_model(part):
+            rows.append(
+                {"ref": ref, "value": value, "module": module, "status": "modeled", "reason": ""}
+            )
+        else:
+            rows.append(
+                {
+                    "ref": ref,
+                    "value": value,
+                    "module": module,
+                    "status": "unmodeled",
+                    "reason": "sps005",
+                }
+            )
+    return rows
 
 
 def vendor_dir() -> Path | None:

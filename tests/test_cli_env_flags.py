@@ -129,3 +129,84 @@ def test_cmd_simulate_sets_db_path(tmp_path, monkeypatch):
     assert os.environ.get("KICAD8_FOOTPRINT_DIR") == prev_fp
     assert os.environ.get("OPENHAC_DB_PATH") == prev_db
 
+
+def test_cmd_compile_spice_signoff_calls_simulate(tmp_path, monkeypatch):
+    from argparse import Namespace
+    import os
+
+    from openhac import cli
+    from openhac.core.board import Board
+
+    design_py = tmp_path / "design.py"
+    design_py.write_text(
+        "from openhac.core.board import Board\n"
+        "board = Board(size_mm=(10.0, 10.0))\n",
+        encoding="utf-8",
+    )
+    monkeypatch.delenv("OPENHAC_SPICE_SIGNOFF", raising=False)
+
+    compiled = {"ok": False}
+    simulated = {}
+
+    def _fake_compile(self, **kwargs):
+        compiled["ok"] = True
+
+    def _fake_sim(self, **kwargs):
+        simulated.update(kwargs)
+
+    monkeypatch.setattr(Board, "compile", _fake_compile, raising=True)
+    monkeypatch.setattr(Board, "simulate", _fake_sim, raising=True)
+
+    args = Namespace(
+        script=str(design_py),
+        name="t",
+        no_route=True,
+        skip_layout=True,
+        no_schematic=True,
+        allow_risky_parts=False,
+        kicad_erc=False,
+        strict_kicad=False,
+        strict_jit=False,
+        production=False,
+        require_verified_parts=False,
+        strict=False,
+        release_tag=None,
+        build_profile=None,
+        bom_profile=None,
+        kicad_erc_json=False,
+        zip_release=False,
+        zip_release_path=None,
+        output_dir=str(tmp_path / "out"),
+        manifest_sha256_sidecar=False,
+        deterministic=False,
+        db_path=None,
+        spice_signoff=True,
+        run_ngspice=False,
+        spice_vendor_dir=None,
+        allow_behavioral_spice_models=False,
+        require_vendor_models=False,
+        ngspice_log=None,
+    )
+    cli.cmd_compile(args)
+    assert compiled["ok"] is True
+    assert simulated.get("spice_signoff") is True
+    assert simulated.get("project_name") == "t"
+    assert simulated.get("output_dir") == str(tmp_path / "out")
+    assert os.environ.get("OPENHAC_SPICE_SIGNOFF") is None
+
+
+def test_compile_help_lists_spice_signoff():
+    import subprocess
+    import sys
+
+    r = subprocess.run(
+        [sys.executable, "-m", "openhac", "compile", "--help"],
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    assert r.returncode == 0, r.stderr
+    assert "--spice-signoff" in r.stdout
+    assert "--run-ngspice" in r.stdout
+    assert "--spice-island" in r.stdout
+

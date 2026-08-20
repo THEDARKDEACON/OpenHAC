@@ -9,7 +9,9 @@ Usage:
     openhac compile board.py --kicad-erc        # run kicad-cli sch erc after .kicad_sch
     openhac compile board.py --strict-kicad     # no synthetic parts if libs missing
     openhac compile board.py -o dist/build      # artifacts + manifest under dist/build (MFG-005)
+    openhac compile board.py --schematic-signoff --spice-signoff  # SSO + SPS after compile
     openhac simulate board.py                    # generate SPICE netlist
+    openhac simulate board.py --spice-signoff    # fail-closed analog gate (also on compile)
     openhac simulate board.py --spice-analysis-json analysis.json  # SIM-002 JSON analysis bundle
     openhac sync                                 # sync JLCPCB catalog
     openhac seed                                 # seed database with samples
@@ -139,6 +141,8 @@ def cmd_compile(args):
     _prev_schematic_strict = os.environ.get("OPENHAC_SCHEMATIC_STRICT")
     _prev_no_network = os.environ.get("OPENHAC_NO_NETWORK")
     _prev_strict_fp_pad = os.environ.get("OPENHAC_STRICT_FOOTPRINT_PIN_PAD")
+    _prev_spice_signoff = os.environ.get("OPENHAC_SPICE_SIGNOFF")
+    _prev_spice_vendor = os.environ.get("OPENHAC_SPICE_VENDOR_DIR")
     _kicad_sym_keys = ("KICAD9_SYMBOL_DIR", "KICAD8_SYMBOL_DIR", "KICAD7_SYMBOL_DIR", "KICAD6_SYMBOL_DIR")
     _kicad_fp_keys = ("KICAD9_FOOTPRINT_DIR", "KICAD8_FOOTPRINT_DIR", "KICAD_FOOTPRINT_DIR")
     _prev_kicad_sym = {k: os.environ.get(k) for k in _kicad_sym_keys}
@@ -382,6 +386,34 @@ def cmd_compile(args):
         )
         logger.info("Compilation complete.")
 
+        spice_signoff = bool(getattr(args, "spice_signoff", False))
+        if os.environ.get("OPENHAC_SPICE_SIGNOFF", "").strip().lower() in ("1", "true", "yes", "on"):
+            spice_signoff = True
+        run_ngspice = bool(getattr(args, "run_ngspice", False))
+        if spice_signoff or run_ngspice:
+            if spice_signoff:
+                os.environ["OPENHAC_SPICE_SIGNOFF"] = "1"
+                board.spice_signoff = True
+            if getattr(args, "spice_vendor_dir", None):
+                os.environ["OPENHAC_SPICE_VENDOR_DIR"] = str(args.spice_vendor_dir)
+            sim_out = getattr(args, "output_dir", None) or os.path.join(
+                os.path.dirname(os.path.abspath(args.script)), name
+            )
+            board.simulate(
+                project_name=name,
+                allow_risky_part_lookups=Component.allow_risky_part_lookups,
+                output_dir=sim_out,
+                run_ngspice=run_ngspice,
+                ngspice_log_path=getattr(args, "ngspice_log", None),
+                spice_signoff=spice_signoff,
+                allow_behavioral_spice_models=bool(
+                    getattr(args, "allow_behavioral_spice_models", False)
+                ),
+                require_vendor_models=bool(getattr(args, "require_vendor_models", False)),
+                spice_islands=getattr(args, "spice_islands", None),
+            )
+            logger.info("SPICE %s complete.", "sign-off" if spice_signoff else "export")
+
         # --- Optional interactive webview ---
         if getattr(args, "webview", False):
             try:
@@ -436,6 +468,14 @@ def cmd_compile(args):
             os.environ.pop("OPENHAC_SCHEMATIC_STRICT", None)
         else:
             os.environ["OPENHAC_SCHEMATIC_STRICT"] = _prev_schematic_strict
+        if _prev_spice_signoff is None:
+            os.environ.pop("OPENHAC_SPICE_SIGNOFF", None)
+        else:
+            os.environ["OPENHAC_SPICE_SIGNOFF"] = _prev_spice_signoff
+        if _prev_spice_vendor is None:
+            os.environ.pop("OPENHAC_SPICE_VENDOR_DIR", None)
+        else:
+            os.environ["OPENHAC_SPICE_VENDOR_DIR"] = _prev_spice_vendor
         if _prev_compile_goal is None:
             os.environ.pop("OPENHAC_COMPILE_GOAL", None)
         else:
@@ -549,6 +589,7 @@ def cmd_simulate(args):
         spice_signoff=spice_signoff,
         allow_behavioral_spice_models=bool(getattr(args, "allow_behavioral_spice_models", False)),
         require_vendor_models=bool(getattr(args, "require_vendor_models", False)),
+        spice_islands=getattr(args, "spice_islands", None),
     )
     logger.info("Simulation complete.")
     if _prev_deterministic is None:
@@ -1022,6 +1063,48 @@ def main():
         "Forces schematic export even under --production.",
     )
     p_compile.add_argument(
+        "--spice-signoff",
+        action="store_true",
+        help="SPS: after compile, write a Kirchhoff .cir and fail-closed ngspice sign-off "
+        "(same as `openhac simulate --spice-signoff`). Implies --run-ngspice.",
+    )
+    p_compile.add_argument(
+        "--run-ngspice",
+        action="store_true",
+        help="After compile, write {name}.cir and run ngspice (handoff). "
+        "Implied by --spice-signoff.",
+    )
+    p_compile.add_argument(
+        "--allow-behavioral-spice-models",
+        action="store_true",
+        help="SPS-017: allow kind=behavioral models under --spice-signoff (not physics-correct).",
+    )
+    p_compile.add_argument(
+        "--require-vendor-models",
+        action="store_true",
+        help="SPS-034: fail if OPENHAC_SPICE_VENDOR_DIR is unset.",
+    )
+    p_compile.add_argument(
+        "--spice-vendor-dir",
+        default=None,
+        metavar="DIR",
+        help="Vendor .lib directory (sets OPENHAC_SPICE_VENDOR_DIR for this run).",
+    )
+    p_compile.add_argument(
+        "--spice-island",
+        action="append",
+        dest="spice_islands",
+        metavar="MODULE",
+        help="SPS-043: restrict spice_signoff to this module name (repeatable). "
+        "Digital cores and connectors stay omitted. Analog ICs in the island still need models.",
+    )
+    p_compile.add_argument(
+        "--ngspice-log",
+        default=None,
+        metavar="PATH",
+        help="Optional ngspice log path when --run-ngspice or --spice-signoff is set.",
+    )
+    p_compile.add_argument(
         "--schematic-strict",
         action="store_true",
         help="Documentation-grade schematics: forbid implicit pins (sets OPENHAC_SCHEMATIC_STRICT=1).",
@@ -1297,6 +1380,13 @@ def main():
         default=None,
         metavar="DIR",
         help="Directory of vendor .lib files (sets OPENHAC_SPICE_VENDOR_DIR for this run).",
+    )
+    p_sim.add_argument(
+        "--spice-island",
+        action="append",
+        dest="spice_islands",
+        metavar="MODULE",
+        help="SPS-043: restrict spice_signoff to this module name (repeatable).",
     )
     p_sim.set_defaults(func=cmd_simulate)
 

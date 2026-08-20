@@ -12,7 +12,7 @@ Normative spec: [SPICE_SIGN_OFF_SPEC.md](./SPICE_SIGN_OFF_SPEC.md). Additive fai
 | **SPS-002** | Done | Sign-off refuses dropped `pin_map` terminals. |
 | **SPS-003** | Done | Instance node order follows registry / `Spice_Pin_Map`, not pin-number sort. |
 | **SPS-004** | Done | Leading-digit nets get `N_` prefix; sanitization collisions raise. |
-| **SPS-005** | Done | Non-primitives without vendor/physics model fail under sign-off. |
+| **SPS-005** | Done | In-scope analog non-primitives without vendor/physics model fail. Connectors / test points / mounting hardware / net-ties omitted. Digital cores omitted (SPS-043). |
 | **SPS-006** | Done | Instance line vs expected sanitized nodes checked after emit. |
 | **SPS-010** | Done | Registry JSON schema in `openhac/compiler/spice_models.py`. |
 | **SPS-011** | Done | `${OPENHAC_SPICE_VENDOR_DIR}` + sha256 for `kind=vendor`. |
@@ -32,11 +32,13 @@ Normative spec: [SPICE_SIGN_OFF_SPEC.md](./SPICE_SIGN_OFF_SPEC.md). Additive fai
 | **SPS-032** | Done | `parse_ngspice_op_voltages` extracts floats. |
 | **SPS-033** | Done | Generated resistor-divider golden (`tests/test_sps_spice_signoff.py`). |
 | **SPS-034** | Done | `--require-vendor-models` fails without vendor dir; tmp hashed `.lib` bench; default CI uses in-repo `kind=physics`. |
-| **SPS-040** | Done | `{project}.openhac-spice-signoff-audit.json`. |
+| **SPS-040** | Done | `{project}.openhac-spice-signoff-audit.json` including `coverage[]`. |
 | **SPS-041** | Done | SCOPE / README / RELEASE_CHECKLIST / ARCHITECTURE / this table. |
 | **SPS-042** | Done | Handoff hint markdown retained; sign-off enforces pin_map/benches. |
+| **SPS-043** | Done | `declare_spice_island` / `--spice-island` subgraph sign-off; MCU omit. |
+| **SPS-044** | Done | Audit `coverage[]`; failed sign-off still writes JSON with `passed: false`. |
 
-**SPS open:** **0** v1 IDs (SPS-007…009 / 019 / 035…039 reserved stretch).
+**SPS open:** **0** v1 IDs (SPS-007…009 / 019 / 035…039 reserved stretch). SPS-043/044 closed analog-island coverage.
 
 ### Schematic Sign-Off (SSO-* IDs)
 

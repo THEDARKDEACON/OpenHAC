@@ -36,8 +36,8 @@ This document (**STR-001**) states what the toolchain aims to do today versus wh
 
 ## SPICE (parallel path)
 
-- **Handoff:** `.cir` generation from the same circuit graph (`openhac simulate`). May be unsolvable; generic IC value lines are not physics-correct.
-- **`--spice-signoff` (SPS-*):** fail-closed Kirchhoff deck (ground is node `0`, pin maps, legal node names), **vendor or in-repo physics models** for non-primitives, declared rails as sources, ngspice operating-point numbers, datasheet benches. See [SPICE_SIGN_OFF_SPEC.md](./SPICE_SIGN_OFF_SPEC.md). Git does **not** ship proprietary vendor `.lib` files; they live in `OPENHAC_SPICE_VENDOR_DIR`. Behavioral E-source stubs are **not** physics-correct unless explicitly waived.
+- **Handoff:** `.cir` generation from the same circuit graph (`openhac simulate`, or `openhac compile --run-ngspice`). May be unsolvable; generic IC value lines are not physics-correct.
+- **`--spice-signoff` (SPS-*):** on `compile` or `simulate`; fail-closed Kirchhoff deck for the **analog island** (default: whole board minus connectors and digital cores). `declare_spice_island` / `--spice-island` stamps named modules only. In-island analog ICs still need **vendor or in-repo physics models**. See [SPICE_SIGN_OFF_SPEC.md](./SPICE_SIGN_OFF_SPEC.md). Git does **not** ship proprietary vendor `.lib` files; they live in `OPENHAC_SPICE_VENDOR_DIR`. Behavioral E-source stubs are **not** physics-correct unless explicitly waived. `--production` does **not** imply SPICE sign-off.
 
 ## Non-goals (today)
 

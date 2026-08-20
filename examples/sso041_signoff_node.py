@@ -66,6 +66,25 @@ def _led(name: str) -> Component:
     return c
 
 
+def _pwr_flag(net: Net) -> Component:
+    """Graph PWR_FLAG anchor (native ERC / simulate). Schematic emitter also places power:PWR_FLAG."""
+    c = Component(
+        "PWR_FLAG",
+        {
+            "generic_name": "PWR_FLAG",
+            "category": "power",
+            "kicad_symbol": "power:PWR_FLAG",
+            "kicad_footprint": "",
+            "pinout_json": '[{"num":"1","name":"pwr","type":"power_out"}]',
+        },
+        pins={"1": ("pwr", "power_out")},
+    )
+    c.part.fields["kicad_symbol"] = "power:PWR_FLAG"
+    c.part.value = "PWR_FLAG"
+    c["1"] += net
+    return c
+
+
 class Rails(Module):
     def __init__(self) -> None:
         super().__init__("Rails")
@@ -73,6 +92,8 @@ class Rails(Module):
         self.cdec = self.add(_c("C_DEC_100N", "100nF"))
         self.cdec[1] += self.v3v3
         self.cdec[2] += self.gnd
+        self.add(_pwr_flag(self.v3v3))
+        self.add(_pwr_flag(self.gnd))
         self.pwr = self.declare_interface("pwr_3v3", self.v3v3, self.gnd)
 
 
@@ -111,7 +132,7 @@ class StatusLed(Module):
 
 def build_board() -> Board:
     rails, a, b, led = Rails(), PullupA(), PullupB(), StatusLed()
-    board = Board(size_mm=(80.0, 50.0))
+    board = Board(size_mm=(80.0, 50.0), declared_supply_voltages_v={"3V3": 3.3})
     board.add_module(rails)
     board.add_module(a)
     board.add_module(b)

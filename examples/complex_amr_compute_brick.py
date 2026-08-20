@@ -38,6 +38,12 @@ Compile (logic + schematic sign-off)::
       --production --compile-goal fabrication --skip-layout --schematic-signoff \\
       -o /tmp/openhac_amr
 
+Analog island (when vendor LDO models exist; does not require ESP32/STM32 SPICE)::
+
+    openhac simulate examples/complex_amr_compute_brick.py --spice-signoff \\
+      --spice-island Ldo5VFrom24 --spice-island Ldo3V3 --spice-island Ldo1V8 --spice-island LdoCaps \\
+      --spice-vendor-dir spice_vendor -o /tmp/openhac_amr --name amr_compute_brick
+
 Place uses the complex-board packing knobs (see ``scripts/ci_validate_complex_boards.py``)::
 
     OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_complex_boards.py --place --only amr_compute_brick

@@ -273,6 +273,9 @@ class Component:
         self.part.fields["Spice_Include"] = str(si).strip() if si else ""
         ss = comp_data.get("spice_subckt")
         self.part.fields["Spice_Subckt"] = str(ss).strip() if ss else ""
+        desc = str(comp_data.get("description") or "").strip()
+        if desc:
+            self.part.fields["Description"] = desc
         self.part.fields["OpenHaC_JIT_Confidence"] = conf
         self.part.fields["OpenHaC_JIT_Score"] = f"{jit_score:.2f}"
 

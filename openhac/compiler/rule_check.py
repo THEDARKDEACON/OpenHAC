@@ -49,6 +49,48 @@ def _net_requires_power_flag(board, net) -> bool:
     return any(net_name_lower.startswith(prefix) for prefix in _power_prefixes_for_board(board))
 
 
+def ensure_power_flags(board) -> None:
+    """Attach graph PWR_FLAG anchors on power/GND nets (SCH-004).
+
+    Compile does this in ``phase_fixup_power_flags``. Simulate must do the same
+    before :func:`run_erc` — schematic emission can place ``power:PWR_FLAG``
+    without a graph part, but native ERC still requires the pin on the net.
+    """
+    from openhac.circuit import get_default_circuit
+
+    circuit = get_default_circuit()
+    for net in list(getattr(circuit, "nets", []) or []):
+        net_name = str(getattr(net, "name", "") or "")
+        if net_name in ("__NOCONNECT", "NC") or net_name.upper().startswith("NC"):
+            continue
+        ntype = getattr(net, "_openhac_net_type", None)
+        if ntype not in ("power", "gnd") and not _net_requires_power_flag(board, net):
+            continue
+        try:
+            pins = list(net.get_pins()) if hasattr(net, "get_pins") else list(getattr(net, "pins", []) or [])
+        except Exception:
+            pins = []
+        if not pins:
+            continue
+        has_pwr_flag = any(
+            str(getattr(p.part, "name", "") or "").upper() == "PWR_FLAG"
+            or str(getattr(p.part, "ref_prefix", "") or "") == "PWR"
+            for p in pins
+            if getattr(p, "part", None) is not None
+        )
+        if has_pwr_flag:
+            continue
+        try:
+            flag = Component("PWR_FLAG", pins={"1": ("pwr", "power_out")})
+            if getattr(flag, "part", None) is not None:
+                flag.part.fields["kicad_symbol"] = "power:PWR_FLAG"
+                flag.part.value = "PWR_FLAG"
+            flag["1"] += net
+            logger.info("Injected PWR_FLAG on net %s", net_name)
+        except Exception as e:
+            logger.warning("Failed to inject PWR_FLAG on net %s: %s", net_name, e)
+
+
 def _ma_aggregate(val, mod_name: str, field_name: str) -> float:
     """Normalize current to a single float (mA) for **DRC** aggregate IPC width checks.
 

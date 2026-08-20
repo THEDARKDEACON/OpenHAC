@@ -54,7 +54,7 @@ The JSON manifest written after a successful compile is the primary **audit trai
 - **`openhac.compiler.spice_models`**: registry JSON + `OPENHAC_SPICE_VENDOR_DIR` + sha256 + `pin_map`.
 - **`openhac.compiler.spice_gen.generate_spice(..., signoff=True)`**: Kirchhoff instance lines; no dropped subckt pins; no unmarked IC value lines.
 - **`openhac.compiler.spice_physics`**: datasheet benches; **`ngspice_runner.parse_ngspice_op_voltages`**: OP numbers.
-- **`Board.simulate(..., spice_signoff=True)`** / CLI **`--spice-signoff`**: ngspice + probes + `{project}.openhac-spice-signoff-audit.json`.
+- **`Board.simulate(..., spice_signoff=True)`** / CLI **`--spice-signoff`**: ngspice + probes + `{project}.openhac-spice-signoff-audit.json` (`coverage[]`, optional `--spice-island`).
 - Bundled **physics** MOSFET (`openhac/database/spice_models/nmos_l1.cir`) is in-repo. Proprietary vendor `.lib` files are **not**.
 
 ## ERC example hooks (SCH-005)

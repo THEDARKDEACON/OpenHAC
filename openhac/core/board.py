@@ -157,6 +157,7 @@ class Board:
         self.spice_signoff: bool = bool((quality_gates or {}).get("spice_signoff")) or _sps_env
         self._spice_rails: dict[str, float] = {}
         self._spice_probes: list[dict] = []
+        self._spice_island_names: list[str] = []
         self._spice_signoff_audit: dict | None = None
         #: Optional BOM labeling profile: ``prod`` / ``production`` / ``cm`` strips internal & alternate columns from CSV (LIB-004).
         _bp = bom_profile
@@ -307,9 +308,59 @@ class Board:
     def declare_spice_probe(self, net, vmin: float, vmax: float):
         """Declare an operating-point voltage window for spice_signoff (SPS-022)."""
         name = str(getattr(net, "name", net))
-        rec = {"net": name, "vmin": float(vmin), "vmax": float(vmax)}
-        self._spice_probes.append(rec)
-        return rec
+        self._spice_probes.append({"net": name, "vmin": float(vmin), "vmax": float(vmax)})
+        return net
+
+    def declare_spice_island(self, *modules) -> "Board":
+        """Restrict spice_signoff to these modules (SPS-043).
+
+        *modules* may be :class:`Module` instances or names. Parts on other
+        modules are omitted from the analog deck (coverage ``out_of_island``).
+        Digital cores and connectors are omitted even inside the island unless
+        they carry an explicit ``Spice_Subckt``. Analog ICs still fail SPS-005
+        if they have no vendor/physics model.
+        """
+        from openhac.core.base import Module
+
+        for m in modules:
+            if isinstance(m, Module):
+                name = str(m.name).strip()
+            else:
+                name = str(m).strip()
+            if name and name not in self._spice_island_names:
+                self._spice_island_names.append(name)
+        return self
+
+    def _expanded_spice_island_names(self, extra: list[str] | tuple[str, ...] | None = None) -> frozenset[str] | None:
+        declared: list[str] = list(self._spice_island_names)
+        qg = dict(getattr(self, "quality_gates", None) or {})
+        for x in qg.get("spice_islands") or ():
+            if str(x).strip():
+                declared.append(str(x).strip())
+        for x in extra or ():
+            if str(x).strip():
+                declared.append(str(x).strip())
+        wanted = {n for n in declared if n}
+        if not wanted:
+            return None
+        from openhac.core.base import Module
+
+        out = set(wanted)
+        try:
+            mods = self._get_all_modules()
+        except Exception:
+            return frozenset(out)
+
+        def _walk(mod):
+            out.add(str(mod.name))
+            for child in mod:
+                if isinstance(child, Module):
+                    _walk(child)
+
+        for mod in mods:
+            if str(mod.name) in wanted:
+                _walk(mod)
+        return frozenset(out)
 
     def declare_power_rail(self, rail_name: str, net):
         """Mark *net* as a power rail for ERC (SCH-004). *rail_name* is for documentation only.
@@ -828,6 +879,7 @@ class Board:
         allow_behavioral_spice_models: bool = False,
         require_vendor_models: bool = False,
         run_model_benches: bool | None = None,
+        spice_islands: list[str] | tuple[str, ...] | None = None,
     ):
         logger.info(f"Preparing to simulate analog hardware graph: {project_name}")
 
@@ -874,11 +926,11 @@ class Board:
                 raise OpenHaCError(
                     "SPS-034: --require-vendor-models set but OPENHAC_SPICE_VENDOR_DIR is unset."
                 )
-            from openhac.compiler.rule_check import run_erc
+            from openhac.compiler.rule_check import ensure_power_flags, run_erc
 
+            ensure_power_flags(self)
             run_erc(self)
-            from openhac.compiler.spice_gen import generate_spice
-            from openhac.circuit import get_default_circuit
+            from openhac.compiler.spice_gen import generate_spice, spice_circuit_parts
 
             analysis_lines = spice_analysis_lines
             if analysis_lines is None and spice_analysis_json_path is not None:
@@ -904,10 +956,19 @@ class Board:
             probes = list(getattr(self, "_spice_probes", None) or [])
 
             cir_path = _artifact_path(project_name, ".cir", output_dir)
+            island_names = self._expanded_spice_island_names(spice_islands)
+            from openhac.compiler.spice_models import collect_spice_coverage
+
+            coverage = collect_spice_coverage(
+                list(spice_circuit_parts()[1]),
+                island_names=island_names,
+            )
             if require_spice_models and not signoff:
                 from openhac.compiler.spice_gen import spice_model_coverage_summary
 
-                s = spice_model_coverage_summary(get_default_circuit())
+                s = spice_model_coverage_summary(
+                    spice_circuit_parts()[0], island_names=island_names
+                )
                 need = int(s.get("parts_requiring_models", 0) or 0)
                 have = int(s.get("parts_with_models", 0) or 0)
                 if need > have:
@@ -915,26 +976,50 @@ class Board:
                         f"SPICE model coverage gate failed: {have}/{need} model-required parts "
                         f"have Spice_Subckt annotations."
                     )
-            generate_spice(
-                cir_path,
-                analysis_lines=analysis_lines,
-                signoff=signoff,
-                merge_hints=list(getattr(self, "_net_merge_hints", None) or []),
-                rails=rails,
-                probes=probes,
-                allow_behavioral=allow_beh,
-                require_rail_sources=signoff,
-            )
             audit: dict = {
                 "schema": "openhac.spice_signoff_audit.v1",
                 "project_name": project_name,
                 "spice_signoff": signoff,
                 "cir": cir_path,
                 "allow_behavioral_spice_models": allow_beh,
+                "spice_islands": sorted(island_names) if island_names else [],
+                "coverage": coverage,
+                "passed": True,
                 "probes": [],
                 "benches": [],
                 "models": [],
             }
+
+            def _write_signoff_audit(payload: dict) -> None:
+                if not signoff:
+                    return
+                import json
+
+                audit_path = Path(
+                    _artifact_path(project_name, ".openhac-spice-signoff-audit.json", output_dir)
+                )
+                audit_path.write_text(json.dumps(payload, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+                payload["audit_path"] = str(audit_path)
+
+            try:
+                generate_spice(
+                    cir_path,
+                    analysis_lines=analysis_lines,
+                    signoff=signoff,
+                    merge_hints=list(getattr(self, "_net_merge_hints", None) or []),
+                    rails=rails,
+                    probes=probes,
+                    allow_behavioral=allow_beh,
+                    require_rail_sources=signoff,
+                    island_names=island_names,
+                )
+            except OpenHaCError as e:
+                audit["passed"] = False
+                audit["error"] = str(e)
+                self._spice_signoff_audit = audit
+                _write_signoff_audit(audit)
+                raise
+
             if run_ngspice:
                 from openhac.compiler.ngspice_runner import parse_ngspice_op_voltages, run_ngspice_headless
                 from openhac.compiler.spice_physics import assert_probe_window
@@ -951,12 +1036,19 @@ class Board:
                     val = assert_probe_window(volts, str(pr["net"]), float(pr["vmin"]), float(pr["vmax"]))
                     audit["probes"].append({**pr, "value": val, "passed": True})
             if run_model_benches and signoff:
-                from openhac.compiler.spice_models import lookup_registry, record_from_part_fields
+                from openhac.compiler.spice_models import (
+                    lookup_registry,
+                    record_from_part_fields,
+                    spice_omit_reason,
+                )
                 from openhac.compiler.spice_physics import run_record_physics_checks
 
                 work = Path(output_dir) if output_dir is not None else Path(cir_path).parent
                 seen_keys: set[str] = set()
-                for part in getattr(get_default_circuit(), "parts", []) or []:
+                for part in spice_circuit_parts()[1]:
+                    ref = str(getattr(part, "refdes", None) or getattr(part, "ref", "") or "")
+                    if spice_omit_reason(part, ref, island_names=island_names):
+                        continue
                     fields = getattr(part, "fields", None) or {}
                     rec = record_from_part_fields(part)
                     if rec is None or rec.kind not in ("vendor", "physics"):
@@ -983,12 +1075,7 @@ class Board:
                         continue
                     audit["benches"].extend(run_record_physics_checks(rec, work_dir=work))
             self._spice_signoff_audit = audit
-            if signoff:
-                audit_path = Path(_artifact_path(project_name, ".openhac-spice-signoff-audit.json", output_dir))
-                import json
-
-                audit_path.write_text(json.dumps(audit, indent=2, sort_keys=True) + "\n", encoding="utf-8")
-                audit["audit_path"] = str(audit_path)
+            _write_signoff_audit(audit)
         except Exception as e:
             logger.error("SIMULATION ABORTED DUE TO PHYSICS RULES!")
             raise e

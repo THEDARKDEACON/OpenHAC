@@ -402,40 +402,9 @@ def phase_groom_metadata(state: CompileState) -> None:
 
 def phase_fixup_power_flags(state: CompileState) -> None:
     """Automatically add PWR_FLAG components to nets categorized as 'power' or 'gnd' (SCH-004)."""
-    from openhac.circuit import get_default_circuit
-    from openhac.core.base import Component
-    from openhac.compiler.rule_check import _net_requires_power_flag
-    
-    circuit = get_default_circuit()
-    for net in circuit.nets:
-        # Skip the __NOCONNECT sentinel and any net literally named 'NC'
-        net_name = str(getattr(net, "name", ""))
-        if net_name in ("__NOCONNECT", "NC") or net_name.upper().startswith("NC"):
-            continue
-        ntype = getattr(net, "_openhac_net_type", None)
-        logger.debug(f"Checking net {getattr(net, 'name', net)} for PWR_FLAG: type={ntype}")
-        if ntype in ("power", "gnd"):
-            # Check if it already has a PWR_FLAG
-            has_pwr_flag = any(
-                getattr(p.part, 'name', '').upper() == 'PWR_FLAG' or
-                getattr(p.part, 'ref_prefix', '') == 'PWR'
-                for p in net.pins if hasattr(p, 'part') and p.part is not None
-            )
-            if not has_pwr_flag and len(net.pins) > 0:
-                # Inject a synthetic PWR_FLAG component
-                # Use a special generic name that rule_check.py recognizes
-                # We provide minimal pin definition to satisfy native Component logic
-                try:
-                    flag = Component("PWR_FLAG", pins={"1": ("pwr", "power_out")})
-                    flag.fields = {
-                        "kicad_symbol": "power:PWR_FLAG",
-                        "in_bom": False,
-                        "on_board": False
-                    }
-                    flag["1"] += net
-                    logger.info(f"Injected PWR_FLAG on net {net.name}")
-                except Exception as e:
-                    logger.warning(f"Failed to inject PWR_FLAG on net {net.name}: {e}")
+    from openhac.compiler.rule_check import ensure_power_flags
+
+    ensure_power_flags(state.board)
 
 
 def phase_warn_multilayer_stackup(state: CompileState) -> None:

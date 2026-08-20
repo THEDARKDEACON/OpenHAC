@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from pathlib import Path
 
@@ -170,9 +171,9 @@ def test_sps005_ic_without_model_fails_signoff(tmp_path, monkeypatch):
         def __init__(self):
             self.ref = "U1"
             self.refdes = "U1"
-            self.value = "ESP32"
-            self.name = "ESP32"
-            self.fields = {}
+            self.value = "AMS1117"
+            self.name = "AMS1117"
+            self.fields = {"category": "Regulator"}
             self.pins = [_Pin("1", _Net("A")), _Pin("2", _Net("B"))]
 
     class _Circuit:
@@ -181,6 +182,224 @@ def test_sps005_ic_without_model_fails_signoff(tmp_path, monkeypatch):
     monkeypatch.setattr("openhac.compiler.spice_gen.get_default_circuit", lambda: _Circuit())
     with pytest.raises(OpenHaCError, match="SPS-005"):
         generate_spice(str(tmp_path / "u.cir"), analysis_lines=[".op"], signoff=True)
+
+
+def test_sps005_connector_omitted_not_jfet(tmp_path, monkeypatch):
+    class _Net:
+        def __init__(self, name: str):
+            self.name = name
+
+    class _Pin:
+        def __init__(self, num, net):
+            self.num = num
+            self.net = net
+
+    class _R:
+        def __init__(self):
+            self.ref = "R1"
+            self.refdes = "R1"
+            self.value = "1k"
+            self.name = "R"
+            self.fields = {}
+            self.pins = [_Pin("1", _Net("3V3")), _Pin("2", _Net("GND"))]
+
+    class _J:
+        def __init__(self):
+            self.ref = "J1"
+            self.refdes = "J1"
+            self.value = "Conn_01x08"
+            self.name = "Conn_01x08"
+            self.fields = {"category": "connectors"}
+            self.pins = [
+                _Pin("1", _Net("AIN0")),
+                _Pin("7", _Net("3V3")),
+                _Pin("8", _Net("AGND")),
+            ]
+
+    class _Circuit:
+        parts = [_R(), _J()]
+
+    monkeypatch.setattr("openhac.compiler.spice_gen.get_default_circuit", lambda: _Circuit())
+    out = tmp_path / "j.cir"
+    generate_spice(
+        str(out),
+        analysis_lines=[".op"],
+        signoff=True,
+        rails={"3V3": 3.3},
+        ground_net_names=["GND", "AGND"],
+    )
+    text = out.read_text(encoding="utf-8")
+    assert any("skipped J1: connector/mechanical" in ln for ln in text.splitlines())
+    assert not re.search(r"^J1\s+", text, re.M)
+    assert re.search(r"^R1\s+", text, re.M)
+
+
+def test_sps043_digital_core_omitted_under_signoff(tmp_path, monkeypatch):
+    class _Net:
+        def __init__(self, name: str):
+            self.name = name
+
+    class _Pin:
+        def __init__(self, num, net):
+            self.num = num
+            self.net = net
+
+    class _R:
+        def __init__(self):
+            self.ref = "R1"
+            self.refdes = "R1"
+            self.value = "1k"
+            self.name = "R"
+            self.fields = {}
+            self.pins = [_Pin("1", _Net("3V3")), _Pin("2", _Net("GND"))]
+
+    class _U:
+        def __init__(self):
+            self.ref = "U1"
+            self.refdes = "U1"
+            self.value = "ESP32_S3"
+            self.name = "ESP32_S3"
+            self.fields = {"category": "MCU"}
+            self.pins = [_Pin("1", _Net("3V3")), _Pin("2", _Net("GND"))]
+
+    class _Circuit:
+        parts = [_R(), _U()]
+
+    monkeypatch.setattr("openhac.compiler.spice_gen.get_default_circuit", lambda: _Circuit())
+    out = tmp_path / "mcu.cir"
+    generate_spice(str(out), analysis_lines=[".op"], signoff=True, rails={"3V3": 3.3})
+    text = out.read_text(encoding="utf-8")
+    assert any("skipped U1: digital core" in ln for ln in text.splitlines())
+    assert not re.search(r"^U1\s+", text, re.M)
+    assert re.search(r"^R1\s+", text, re.M)
+
+
+def test_sps043_island_omits_out_of_scope_analog(tmp_path, monkeypatch):
+    class _Net:
+        def __init__(self, name: str):
+            self.name = name
+
+    class _Pin:
+        def __init__(self, num, net):
+            self.num = num
+            self.net = net
+
+    class _R:
+        def __init__(self):
+            self.ref = "R1"
+            self.refdes = "R1"
+            self.value = "1k"
+            self.name = "R"
+            self.fields = {"OpenHaC_Module": "LdoCaps"}
+            self.pins = [_Pin("1", _Net("3V3")), _Pin("2", _Net("GND"))]
+
+    class _Ldo:
+        def __init__(self):
+            self.ref = "U2"
+            self.refdes = "U2"
+            self.value = "AMS1117"
+            self.name = "AMS1117"
+            self.fields = {"category": "Regulator", "OpenHaC_Module": "Ldo3V3"}
+            self.pins = [_Pin("1", _Net("3V3")), _Pin("2", _Net("GND"))]
+
+    class _Circuit:
+        parts = [_R(), _Ldo()]
+
+    monkeypatch.setattr("openhac.compiler.spice_gen.get_default_circuit", lambda: _Circuit())
+    out = tmp_path / "island.cir"
+    generate_spice(
+        str(out),
+        analysis_lines=[".op"],
+        signoff=True,
+        rails={"3V3": 3.3},
+        island_names=frozenset({"LdoCaps"}),
+    )
+    text = out.read_text(encoding="utf-8")
+    assert re.search(r"^R1\s+", text, re.M)
+    assert any("skipped U2: outside spice island" in ln for ln in text.splitlines())
+    assert not re.search(r"^U2\s+", text, re.M)
+
+
+def test_sps043_island_still_fails_unmodeled_analog(tmp_path, monkeypatch):
+    class _Net:
+        def __init__(self, name: str):
+            self.name = name
+
+    class _Pin:
+        def __init__(self, num, net):
+            self.num = num
+            self.net = net
+
+    class _Ldo:
+        def __init__(self):
+            self.ref = "U2"
+            self.refdes = "U2"
+            self.value = "AMS1117"
+            self.name = "AMS1117"
+            self.fields = {"category": "Regulator", "OpenHaC_Module": "Ldo3V3"}
+            self.pins = [_Pin("1", _Net("VIN")), _Pin("2", _Net("GND"))]
+
+    class _Circuit:
+        parts = [_Ldo()]
+
+    monkeypatch.setattr("openhac.compiler.spice_gen.get_default_circuit", lambda: _Circuit())
+    with pytest.raises(OpenHaCError, match="SPS-005"):
+        generate_spice(
+            str(tmp_path / "ldo.cir"),
+            analysis_lines=[".op"],
+            signoff=True,
+            island_names=frozenset({"Ldo3V3"}),
+        )
+
+
+def test_sps044_coverage_rows_and_ldo_not_digital():
+    from types import SimpleNamespace
+
+    from openhac.compiler.spice_models import collect_spice_coverage, is_digital_core_part
+
+    ldo = SimpleNamespace(
+        refdes="U2",
+        ref="U2",
+        value="AMS1117",
+        name="AMS1117",
+        fields={"category": "Regulator", "OpenHaC_Module": "Ldo3V3"},
+        footprint="",
+    )
+    mcu = SimpleNamespace(
+        refdes="U1",
+        ref="U1",
+        value="ESP32_S3",
+        name="ESP32_S3",
+        fields={"category": "MCU", "OpenHaC_Module": "Compute"},
+        footprint="",
+    )
+    r = SimpleNamespace(
+        refdes="R1",
+        ref="R1",
+        value="1k",
+        name="R",
+        fields={"OpenHaC_Module": "LdoCaps"},
+        footprint="",
+    )
+    assert is_digital_core_part(ldo) is False
+    assert is_digital_core_part(mcu) is True
+    rows = collect_spice_coverage([r, ldo, mcu], island_names=frozenset({"LdoCaps", "Ldo3V3"}))
+    by_ref = {x["ref"]: x for x in rows}
+    assert by_ref["R1"]["status"] == "primitive"
+    assert by_ref["U2"]["status"] == "unmodeled"
+    assert by_ref["U1"]["status"] == "omitted"
+    assert by_ref["U1"]["reason"] == "digital_core"
+
+
+def test_is_omitted_spice_part_header():
+    from types import SimpleNamespace
+
+    from openhac.compiler.spice_models import is_omitted_spice_part
+
+    j = SimpleNamespace(refdes="J1", ref="J1", value="Conn_01x08", name="J", fields={}, footprint="")
+    u = SimpleNamespace(refdes="U1", ref="U1", value="ESP32", name="U", fields={}, footprint="")
+    assert is_omitted_spice_part(j) is True
+    assert is_omitted_spice_part(u) is False
 
 
 def test_sps010_registry_schema():
@@ -465,3 +684,43 @@ def test_sps034_require_vendor_dir_fails(monkeypatch):
     b = Board(size_mm=(10.0, 10.0), quality_gates={})
     with pytest.raises(E, match="SPS-034"):
         b.simulate("x", spice_signoff=True, require_vendor_models=True, run_ngspice=False)
+
+
+def test_sps044_failed_signoff_writes_coverage_audit(tmp_path, monkeypatch):
+    import json
+
+    import openhac.core  # noqa: F401
+    from skidl import Net, Part
+
+    from openhac.core.board import Board
+
+    vcc, gnd = Net("3V3"), Net("GND")
+    Part("power", "PWR_FLAG")[1] += vcc
+    Part("power", "PWR_FLAG")[1] += gnd
+    u = Part("Device", "R", value="AMS1117", ref="U2")
+    u[1] += vcc
+    u[2] += gnd
+    u.fields["category"] = "Regulator"
+
+    board = Board(size_mm=(10.0, 10.0))
+    board.declare_spice_rail("3V3", 3.3)
+    with pytest.raises(OpenHaCError, match="SPS-005"):
+        board.simulate("covfail", spice_signoff=True, output_dir=tmp_path, run_ngspice=False)
+    audit = json.loads((tmp_path / "covfail.openhac-spice-signoff-audit.json").read_text(encoding="utf-8"))
+    assert audit["passed"] is False
+    rows = {r["ref"]: r for r in audit["coverage"]}
+    assert rows["U2"]["status"] == "unmodeled"
+
+
+def test_declare_spice_island_names():
+    from openhac.core.board import Board
+    from openhac.core.base import Module
+
+    b = Board(size_mm=(10.0, 10.0))
+    m = Module("Ldo3V3")
+    b.add_module(m)
+    b.declare_spice_island(m, "LdoCaps")
+    names = b._expanded_spice_island_names(["LdoCaps"])
+    assert names is not None
+    assert "Ldo3V3" in names
+    assert "LdoCaps" in names

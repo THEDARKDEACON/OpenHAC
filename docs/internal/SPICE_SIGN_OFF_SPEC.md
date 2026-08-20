@@ -1,6 +1,6 @@
 # OpenHaC — SPICE Sign-Off Specification (SPS)
 
-**Purpose:** Normative contract for a **physics-correct** analog path: Kirchhoff-faithful ngspice decks, **vendor (or open physics) SPICE models** as the device source, datasheet benches, and a fail-closed `simulate --spice-signoff` gate.
+**Purpose:** Normative contract for a **physics-correct** analog path: Kirchhoff-faithful ngspice decks, **vendor (or open physics) SPICE models** as the device source, datasheet benches, and a fail-closed `--spice-signoff` gate on `openhac simulate` and `openhac compile`.
 
 **Audience:** Core maintainers implementing SPICE generation, model registry, and CI goldens.
 
@@ -14,13 +14,15 @@
 
 ## Honest claim
 
-When `Board.spice_signoff` is true (CLI `--spice-signoff`):
+When `Board.spice_signoff` is true (CLI `--spice-signoff` on `simulate` or `compile`):
 
 > Simulate either instantiates the native graph as a Kirchhoff-correct ngspice deck — ground is `0`, every non-primitive uses a **registered vendor (or waived physics) model** with a datasheet-validated pin map, declared rails are sources, the solver converges, and declared probes / model benches match datasheet windows — or exits non-zero.
 
 OpenHaC **does** claim: topology fidelity, vendor-model *instantiation* (right file, subckt, pins), and **encoded datasheet DC/OP checkpoints**.
 
 OpenHaC does **not** claim the vendor macromodel is a perfect physical twin, SI/PI, EMC, MCU digital internals, corners/Monte Carlo, or that an unannotated board is simulatable.
+
+**Analog islands (SPS-043):** `--spice-signoff` on a mixed compute board does not require an ESP32 SPICE twin. `Board.declare_spice_island(...)` / `--spice-island MODULE` stamps only those modules. Digital cores are omitted even without an island. Analog ICs inside the island still fail closed without a vendor/physics model.
 
 **Behavioral models are not the sign-off default.** `kind=behavioral` is allowed only with an explicit waiver (`quality_gates["allow_behavioral_spice_models"]=True`, CLI `--allow-behavioral-spice-models`, or per-part). Bundled behavioral fixtures exist **only** to unit-test the generator, never to satisfy device-physics sign-off.
 
@@ -71,7 +73,7 @@ Each requirement includes: **problem**, **current state**, **target state**, **a
 | `.cir` export | Yes | **Required** | n/a |
 | Ground → node `0` | Yes (Kirchhoff even in handoff) | **Required** | n/a |
 | Legal node names (`3V3` → `N_3V3`) | Yes | **Required**; collisions **fail** | n/a |
-| Non-primitive without model | Generic value line | **Hard fail** (unless behavioral waiver) | n/a |
+| Non-primitive without model | Generic value line | **Hard fail** unless omitted (connector / digital core / out of island) | n/a |
 | `kind=behavioral` | Allowed | **Fail** unless waived | n/a |
 | Vendor `.lib` missing / checksum mismatch | Warn | **Hard fail** | n/a |
 | ngspice | Optional `--run-ngspice` | **Required** | n/a |
@@ -274,9 +276,9 @@ As of this spec’s first implementation, the following defects in `spice_gen` /
 | Field | Content |
 |-------|---------|
 | **Severity** | P0 |
-| **Problem** | ICs emit `U1 n1 n2 ESP32`, which is not a SPICE device. |
-| **Target state** | Under sign-off, missing vendor/physics model **hard-fails** unless behavioral waiver. |
-| **Acceptance criteria** | Unannotated IC simulate `--spice-signoff` exits non-zero. |
+| **Problem** | ICs emit `U1 n1 n2 ESP32`, which is not a SPICE device. Connectors (`J*`) were incorrectly in the same bucket; ngspice letter `J` is a JFET. |
+| **Target state** | Under sign-off, missing vendor/physics model **hard-fails** unless behavioral waiver. **Connectors, test points, and mounting hardware are omitted** (interface, not a device) unless they carry an explicit `Spice_Subckt`. **Digital cores** (MCU/FPGA/USB-UART) are omitted (SIM-003) unless they carry an explicit model. **`declare_spice_island` / `--spice-island`** limits the analog deck to named modules; other modules are omitted (`out_of_island`). |
+| **Acceptance criteria** | Unannotated analog IC (LDO) simulate `--spice-signoff` exits non-zero. Unannotated header `J1` and MCU `ESP32` do **not**. Island-only passives sign off while an unmodeled LDO on another module is omitted. |
 | **Approach** | Coverage gate + `kind` check in `generate_spice`. |
 
 ### SPS-006 — Graph↔deck pin-net isomorphism
@@ -495,7 +497,7 @@ Stretch: `.temp` corners, Monte Carlo, Xyce.
 
 ---
 
-## E. Audit / docs (SPS-040…042)
+## E. Audit / docs (SPS-040…044)
 
 ### SPS-040 — `spice_signoff_audit`
 
@@ -504,8 +506,28 @@ Stretch: `.temp` corners, Monte Carlo, Xyce.
 | **Severity** | P1 |
 | **Problem** | No record of which model/hash was simulated. |
 | **Target state** | `{project}.openhac-spice-signoff-audit.json` (and compile-manifest key when present): model kind, sha256, include path, pin_map hash, bench results, probe results, ngspice log path. |
-| **Acceptance criteria** | Sign-off run writes the JSON. |
+| **Acceptance criteria** | Sign-off run writes the JSON. Coverage rows list each part as `primitive` / `modeled` / `omitted` / `unmodeled`. Failed sign-off still writes the JSON with `passed: false`. |
 | **Approach** | `Board.simulate`. |
+
+### SPS-043 — Analog island / subgraph sign-off
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | Whole-board `--spice-signoff` demanded a model for every `U*`, including MCUs that have no analog SPICE twin. That blocks stamping a power island on a compute brick. |
+| **Target state** | `declare_spice_island` / `--spice-island` restrict the deck to named modules (and their descendant modules). Digital cores omitted (SIM-003). Connectors omitted. In-island analog ICs still SPS-005. |
+| **Acceptance criteria** | Pytest: MCU+resistor sign-off succeeds; island of passives succeeds while an unmodeled LDO on another module is omitted; unmodeled LDO *in* the island fails SPS-005. |
+| **Approach** | `spice_omit_reason` + `Board.declare_spice_island` + CLI. |
+
+### SPS-044 — Coverage in the sign-off audit
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | Fail-closed errors did not list which refs were omitted vs unmodeled. |
+| **Target state** | Audit `coverage[]`: `{ref, value, module, status, reason}` with omit reasons `connector_mechanical` / `digital_core` / `out_of_island`. |
+| **Acceptance criteria** | Pytest on coverage helper + failed simulate writes audit JSON. |
+| **Approach** | `collect_spice_coverage` in `spice_models.py`. |
 
 ### SPS-041 — Docs honesty
 
@@ -535,7 +557,7 @@ Stretch: `.temp` corners, Monte Carlo, Xyce.
 - SI/PI, EMC/lab, IBIS
 - **Redistributing** proprietary vendor `.lib` in this git repo
 - Claiming a vendor macromodel is a perfect physical twin beyond encoded datasheet windows
-- Full MCU / digital-core SPICE
+- Full MCU / digital-core SPICE (omit + coverage; analog islands are the stamp)
 - Implying SPICE from `--production`
 - Treating unmarked behavioral stubs as physics-correct
 - `.temp` corners, Monte Carlo, Xyce, auto-download, passive ESR/C0 networks

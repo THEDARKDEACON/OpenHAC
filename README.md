@@ -1,6 +1,6 @@
 # OpenHaC — Open Hardware-as-Code
 
-Python compiler that turns declarative hardware code into **netlists**, **BOMs**, **KiCad PCB** outputs, optional **FreeRouting**, and **SPICE** — no GUI required. The native circuit graph is the compile source of truth. With `--schematic-signoff`, the generated `.kicad_sch` is the EE-stamped review artifact (library symbols or pinout boxes, KiCad ERC clean). With `--spice-signoff`, simulate is a fail-closed analog gate (Kirchhoff-correct `.cir`, vendor or physics models, ngspice operating-point windows). Fabrication (`--production`) may still omit the drawing and does not imply SPICE sign-off.
+Python compiler that turns declarative hardware code into **netlists**, **BOMs**, **KiCad PCB** outputs, optional **FreeRouting**, and **SPICE** — no GUI required. The native circuit graph is the compile source of truth. With `--schematic-signoff`, the generated `.kicad_sch` is the EE-stamped review artifact (library symbols or pinout boxes, KiCad ERC clean). With `--spice-signoff` on `compile` or `simulate`, SPICE is a fail-closed analog gate (Kirchhoff-correct `.cir`, vendor or physics models, ngspice operating-point windows). Fabrication (`--production`) may still omit the drawing and does not imply SPICE sign-off.
 
 ## Outputs
 
@@ -8,7 +8,7 @@ Python compiler that turns declarative hardware code into **netlists**, **BOMs**
 - `.kicad_pcb` — placement, pad nets; optional autoroute (FreeRouting or minimal `pcbnew` fallback)
 - `.kicad_sch` / `.kicad_pro` — schematic + project (off by default under `--production`; required under `--schematic-signoff`)
 - Generated symbol stubs (`*.openhac-generated.kicad_sym`) and manifest / handoff JSON when configured
-- `.cir` — SPICE from `Board.simulate()`. With `--spice-signoff`, fail-closed Kirchhoff + vendor/physics models + ngspice OP windows ([SPICE_SIGN_OFF_SPEC.md](docs/internal/SPICE_SIGN_OFF_SPEC.md)).
+- `.cir` — SPICE from `Board.simulate()`, also invoked by `openhac compile --run-ngspice` / `--spice-signoff`. With `--spice-signoff`, fail-closed Kirchhoff + vendor/physics models + ngspice OP windows ([SPICE_SIGN_OFF_SPEC.md](docs/internal/SPICE_SIGN_OFF_SPEC.md)).
 - Fab bundle — Gerbers / drill / position via `openhac export fab` (after a successful PCB)
 - `.dsn` — Specctra for FreeRouting. Compile writes one; after KiCad placement edits use `openhac export dsn` so IPC widths are not flattened to 0.2 mm
 
@@ -27,7 +27,7 @@ The active circuit is the **native** OpenHaC circuit (`openhac.core.circuit`). L
 - **Python** 3.11+
 - **KiCad** with **Python bindings** (`import pcbnew`) for layout/schematic — not only `kicad-cli` on `PATH`
 - **Footprint libraries:** set `KICAD8_FOOTPRINT_DIR`, `KICAD9_FOOTPRINT_DIR`, or `KICAD_FOOTPRINT_DIR` to the directory that contains `*.pretty` trees (e.g. `/usr/share/kicad/footprints` on Linux)
-- **ngspice (optional):** on `PATH` for `openhac simulate --run-ngspice` and required for `--spice-signoff`
+- **ngspice (optional):** on `PATH` for `--run-ngspice` (`simulate` or `compile`) and required for `--spice-signoff`
 - **FreeRouting (optional):** JRE + `FREEROUTING_JAR`. KiCad **9** has no `kicad-cli pcb export-dsn`; OpenHaC falls back to `pcbnew.ExportSpecctraDSN` / `ImportSpecctraSES` for the DSN/SES round trip.
 
 ---
@@ -219,6 +219,11 @@ Run `openhac compile --help` for the full list. Common flags:
 | `--production`, `--strict` | Fabrication-oriented umbrella: fab compile goal, pad-strict, verified parts, `OPENHAC_NO_NETWORK`, schematic off unless `OPENHAC_PRODUCTION_SCHEMATIC=1`. |
 | `--require-verified-parts` | Fail if unverified JIT parts are present. |
 | `--kicad-erc` | After schematic export, run `kicad-cli sch erc`. |
+| `--schematic-signoff` | SSO: EE-stamped `.kicad_sch` (library/pinout symbols, graph parity, `kicad-cli sch erc`). Forces schematic export even under `--production`. |
+| `--spice-signoff` | After compile, write a Kirchhoff `.cir` and fail-closed ngspice sign-off (same as `openhac simulate --spice-signoff`). Implies `--run-ngspice`. Does **not** follow from `--production`. Digital cores and connectors are omitted; analog ICs still need models. |
+| `--spice-island MODULE` | Repeatable. Restrict sign-off to these module names (power/analog island). |
+| `--run-ngspice` | After compile, write `{name}.cir` and run ngspice (handoff deck; not physics-correct for unmodeled ICs). |
+| `--spice-vendor-dir` | Vendor `.lib` directory for this run (`OPENHAC_SPICE_VENDOR_DIR`). |
 | `--kicad-erc-json` | With `--kicad-erc`, ERC report as JSON. |
 | `--kicad-symbol-dir`, `--kicad-symbol-dirs`, `--kicad-footprint-dir` | Override KiCad search paths for this run. |
 | `--release-tag`, `--build-profile`, `--bom-profile` | Manifest metadata. |
@@ -277,6 +282,9 @@ openhac compile my_design.py -o build --bbox-padding-mm 1.0 --deoverlap-iters 40
 # Schematic ERC, then optional JSON report
 openhac compile my_design.py -o build --kicad-erc --kicad-erc-json
 
+# After PCB compile, analog-island SPICE into the same -o dir
+openhac compile my_design.py -o build --spice-signoff --spice-island Ldo3V3 --spice-vendor-dir spice_vendor/
+
 # Release bundle
 openhac compile my_design.py -o dist --zip-release --release-tag v1.0.0
 
@@ -288,7 +296,7 @@ openhac compile my_design.py -o out --deterministic --manifest-sha256-sidecar
 
 ## `openhac simulate` and ngspice
 
-`openhac simulate board.py` writes a SPICE deck (`{name}.cir`). That handoff deck may be unsolvable; generic IC value lines are not physics-correct. Add `--run-ngspice` to execute it, or `--spice-signoff` for the fail-closed analog gate (implies ngspice). See [SPICE_SIGN_OFF_SPEC.md](docs/internal/SPICE_SIGN_OFF_SPEC.md).
+`openhac simulate board.py` writes a SPICE deck (`{name}.cir`). `openhac compile … --run-ngspice` / `--spice-signoff` does the same after a successful compile, into the compile `-o` directory. That handoff deck may be unsolvable; generic IC value lines are not physics-correct. Add `--run-ngspice` to execute it, or `--spice-signoff` for the fail-closed analog gate (implies ngspice). See [SPICE_SIGN_OFF_SPEC.md](docs/internal/SPICE_SIGN_OFF_SPEC.md).
 
 ```bash
 # Handoff deck + batch ngspice (log next to the .cir)
@@ -304,7 +312,7 @@ python3 -m openhac simulate examples/sso041_signoff_node.py --spice-signoff -o b
 |----------|----------------|
 | Deck | `build/myboard.cir` |
 | ngspice batch log | `build/myboard.cir.ngspice.log` (`--ngspice-log PATH` to override) |
-| Sign-off audit | `build/myboard.openhac-spice-signoff-audit.json` (`op_voltages`, probes, `ngspice_log`) |
+| Sign-off audit | `build/myboard.openhac-spice-signoff-audit.json` (`op_voltages`, probes, `coverage`, `ngspice_log`) |
 
 Read the log with `less build/myboard.cir.ngspice.log`. Run the solver yourself:
 

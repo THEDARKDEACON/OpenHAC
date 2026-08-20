@@ -88,6 +88,13 @@ def run_ngspice_headless(
         extra = ""
         if cp.stderr and cp.stderr.strip():
             extra = "\n" + cp.stderr.strip()
+        if logp.is_file():
+            try:
+                tail = logp.read_text(encoding="utf-8", errors="replace")[-2000:]
+            except OSError:
+                tail = ""
+            if tail.strip():
+                extra += "\n--- ngspice log ---\n" + tail.strip()
         raise OpenHaCError(f"ngspice failed (exit={cp.returncode}) for {str(cir)!r}{extra}")
 
     # Some ngspice builds write status to stdout/stderr even on success; the log is the primary artifact.
