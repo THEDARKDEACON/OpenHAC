@@ -11,6 +11,21 @@ DB_PATH = os.path.abspath(_default_db)
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schema.sql")
 
 
+def _sqlite_bind_values(row: dict) -> tuple:
+    """SQLite bindables only. Name the column if a tuple/list/dict slips in."""
+    bad: list[str] = []
+    values: list = []
+    for key, val in row.items():
+        if val is not None and not isinstance(val, (int, float, str, bytes)):
+            bad.append(f"{key}={type(val).__name__}")
+        values.append(val)
+    if bad:
+        raise TypeError(
+            "insert_component: SQLite cannot bind non-scalar fields: " + ", ".join(bad)
+        )
+    return tuple(values)
+
+
 def resolve_db_path(db_path=None) -> str:
     """Catalog file for this process: explicit path, then env, then packaged DB."""
     if db_path is not None and str(db_path).strip():
@@ -458,7 +473,7 @@ class DatabaseManager:
             cursor = conn.cursor()
             columns = ', '.join(component_data.keys())
             placeholders = ', '.join('?' * len(component_data))
-            values = tuple(component_data.values())
+            values = _sqlite_bind_values(component_data)
             verb = "INSERT OR IGNORE" if ignore_duplicate else "INSERT"
             cursor.execute(
                 f"{verb} INTO components ({columns}) VALUES ({placeholders})",
@@ -624,12 +639,28 @@ class DatabaseManager:
             if not row:
                 continue
             
-            # Check 1: 3D Model Existence
+            # Check 1: 3D Model Existence (skip KiCad library tokens — not vendor downloads)
             m3d = row.get("model_3d_local")
-            if m3d and not os.path.isfile(m3d):
-                logger.warning("Audit: 3D model for %s missing on disk: %s", gn, m3d)
-                failed.append(gn)
-                continue
+            if m3d:
+                from openhac.database.kicad_3d import (
+                    expand_3d_path,
+                    is_generated_3d_path,
+                    is_kicad_lib_3d_pointer,
+                )
+
+                src = str(row.get("model_3d_source") or "").strip().lower()
+                if src == "kicad_lib" or is_kicad_lib_3d_pointer(str(m3d)):
+                    expanded = expand_3d_path(str(m3d))
+                    if expanded and expanded != str(m3d) and not os.path.isfile(expanded):
+                        logger.debug(
+                            "Audit: KiCad library 3D for %s not on disk at %s", gn, expanded
+                        )
+                elif is_generated_3d_path(str(m3d)) or os.path.isabs(str(m3d)):
+                    expanded = expand_3d_path(str(m3d))
+                    if not os.path.isfile(expanded):
+                        logger.warning("Audit: 3D model for %s missing on disk: %s", gn, m3d)
+                        failed.append(gn)
+                        continue
             
             # Check 2: Footprint Sanity (Heuristic)
             fp = str(row.get("kicad_footprint") or "").lower()

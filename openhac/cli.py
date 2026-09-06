@@ -29,6 +29,7 @@ named ``board`` (an :class:`openhac.core.board.Board` instance). Do not call
 Environment (optional):
 
 - ``OPENHAC_DB_PATH`` — SQLite catalog path (default: ``openhac/database/openhac.db`` under the install).
+- ``OPENHAC_NO_BOARD_SIDECARS`` — if ``1``/``true``/``yes``, skip auto-load of ``{stem}.openhac.json`` / seed / ``catalog_overlays/`` next to the board.
 - ``OPENHAC_SKIP_LAYOUT`` — if ``1``/``true``/``yes``, ``compile`` skips ``pcbnew`` layout and autoroute
   (netlist + BOM + manifest only; for headless CI / SW-006).
 - ``OPENHAC_MANIFEST_SHA256_SIDECAR`` — if set, write ``*.openhac-manifest.json.sha256`` (STR-002 / MFG-005).
@@ -52,6 +53,23 @@ load_repo_dotenv(quiet=True)
 apply_kicad_env_aliases()
 
 logger = logging.getLogger("openhac")
+
+
+def _add_board_sidecar_flag(parser) -> None:
+    parser.add_argument(
+        "--no-board-sidecars",
+        action="store_true",
+        help="Do not auto-load {stem}.openhac.json, {stem}.openhac-seed.json, "
+        "openhac.seed.json, or catalog_overlays/ next to the board script.",
+    )
+
+
+def _apply_board_sidecars(script_path: str, args=None):
+    """Seed the local catalog from files next to the board before import."""
+    from openhac.compiler.board_sidecars import apply_board_sidecars
+
+    enabled = not bool(getattr(args, "no_board_sidecars", False)) if args is not None else True
+    return apply_board_sidecars(script_path, enabled=enabled)
 
 
 def _load_user_script(script_path: str):
@@ -137,6 +155,8 @@ def _preview_compile_once(args, *, name: str, out_dir: str, overlay_paths: list)
     from openhac.core.base import Component
     from openhac.core.exceptions import KiCadCliNotFoundError
 
+    sidecar = _apply_board_sidecars(args.script, args)
+    merged_overlays = [str(p) for p in sidecar.overlay_paths] + list(overlay_paths or [])
     user_mod = _load_user_script(args.script)
     board = _find_board_instance(user_mod)
     if board is None:
@@ -150,7 +170,7 @@ def _preview_compile_once(args, *, name: str, out_dir: str, overlay_paths: list)
         kicad_sch_erc=False,
         source_script_path=os.path.abspath(args.script),
         output_dir=out_dir,
-        catalog_overlay_paths=tuple(overlay_paths) if overlay_paths else (),
+        catalog_overlay_paths=tuple(merged_overlays) if merged_overlays else (),
         schematic_signoff=False,
         compile_profile="preview_pcb" if bool(getattr(args, "pcb", False)) else "preview",
     )
@@ -348,6 +368,7 @@ def cmd_compile(args):
     _prev_strict_fp_pad = os.environ.get("OPENHAC_STRICT_FOOTPRINT_PIN_PAD")
     _prev_spice_signoff = os.environ.get("OPENHAC_SPICE_SIGNOFF")
     _prev_spice_vendor = os.environ.get("OPENHAC_SPICE_VENDOR_DIR")
+    _prev_catalog_overlay = os.environ.get("OPENHAC_CATALOG_OVERLAY")
     _kicad_sym_keys = ("KICAD9_SYMBOL_DIR", "KICAD8_SYMBOL_DIR", "KICAD7_SYMBOL_DIR", "KICAD6_SYMBOL_DIR")
     _kicad_fp_keys = ("KICAD9_FOOTPRINT_DIR", "KICAD8_FOOTPRINT_DIR", "KICAD_FOOTPRINT_DIR")
     _prev_kicad_sym = {k: os.environ.get(k) for k in _kicad_sym_keys}
@@ -431,6 +452,8 @@ def cmd_compile(args):
             n = sync_catalog(categories=categories, verbose=True)
             logger.info("Pipeline: JLC sync wrote %s components.", n)
 
+        sidecar = _apply_board_sidecars(args.script, args)
+
         if getattr(args, "pre_seed_file", None):
             from openhac.database.sync_jlc import seed_from_file
 
@@ -474,7 +497,8 @@ def cmd_compile(args):
                 db = DatabaseManager()
                 targets = discover_enrich_targets_from_board(board)
                 logger.info(
-                    "Auto-enrich-board: %s unique part(s) lack pinout/symbol metadata in the DB; running vendor enrich.",
+                    "Auto-enrich-board: %s unique part(s) missing pinout or 3D; "
+                    "will not replace a stock KiCad footprint with EasyEDA.",
                     len(targets),
                 )
                 if targets:
@@ -565,7 +589,9 @@ def cmd_compile(args):
             else:
                 zip_path = f"{name}-release.zip"
 
-        overlay_paths = getattr(args, "catalog_overlay", None) or []
+        overlay_paths = [str(p) for p in sidecar.overlay_paths] + list(
+            getattr(args, "catalog_overlay", None) or []
+        )
         board.compile(
             project_name=name,
             generate_bom=True,
@@ -729,6 +755,9 @@ def cmd_compile(args):
             os.environ["OPENHAC_MANIFEST_SHA256_SIDECAR"] = _prev_manifest_sha
         Component.require_kicad_symbols = _prev_req_sym
         Component.strict_jit_lookups = _prev_sjit_comp
+        from openhac.compiler.board_sidecars import restore_catalog_overlay_env
+
+        restore_catalog_overlay_env(_prev_catalog_overlay)
 
 
 def cmd_simulate(args):
@@ -757,6 +786,7 @@ def cmd_simulate(args):
         for k in _kicad_fp_keys:
             os.environ[k] = v
     logger.info("Simulating: %s", args.script)
+    _apply_board_sidecars(args.script, args)
     user_module = _load_user_script(args.script)
     board = _find_board_instance(user_module)
     if board is None:
@@ -1070,6 +1100,7 @@ def cmd_sync(args):
         verbose=verbose,
         include_extended=bool(getattr(args, "include_extended", False)),
         max_per_category=getattr(args, "max_per_category", None),
+        fetch_easyeda=bool(getattr(args, "fetch_easyeda", False)),
     )
     logger.info("Synced %s components.", count)
     if _prev_db_path is None:
@@ -1227,6 +1258,7 @@ def cmd_lock(args):
     os.environ["OPENHAC_NO_NETWORK"] = "1"
     logger.info("LOCK-001: writing lock from local catalog only (no network).")
     try:
+        _apply_board_sidecars(args.script, args)
         user_mod = _load_user_script(args.script)
         board = _find_board_instance(user_mod)
         if board is None:
@@ -1280,7 +1312,7 @@ def cmd_catalog_coverage(args):
 
 
 def cmd_catalog_prefetch_3d(args):
-    """3D-003: prefetch EasyEDA 3D into ~/.kiro/openhac/. Forbidden under no-network / fab."""
+    """3D-003 / 3D-006: find and cache STEP for stock footprints that have no KiCad pack mesh."""
     from openhac.database.db_manager import DatabaseManager
     from openhac.database.enrich import network_allowed, prefetch_3d_for_skus, prefetch_3d_from_board
 
@@ -1295,14 +1327,19 @@ def cmd_catalog_prefetch_3d(args):
     skus_raw = getattr(args, "skus", None) or ""
     skus = [s.strip() for s in str(skus_raw).split(",") if s.strip()]
     if script:
+        _apply_board_sidecars(script, args)
         user_mod = _load_user_script(script)
         board = _find_board_instance(user_mod)
         if board is None:
             logger.error("No Board instance in %s", script)
             raise SystemExit(1)
-        attempted, updated = prefetch_3d_from_board(board, db=db)
+        attempted, updated = prefetch_3d_from_board(
+            board, db=db, force=bool(getattr(args, "force", False))
+        )
     elif skus:
-        attempted, updated = prefetch_3d_for_skus(skus, db=db)
+        attempted, updated = prefetch_3d_for_skus(
+            skus, db=db, force=bool(getattr(args, "force", False))
+        )
     else:
         logger.error("Provide a board .py or --skus C123,C456")
         raise SystemExit(2)
@@ -1314,6 +1351,7 @@ def cmd_spice_coverage(args):
     from openhac.compiler.spice_gen import _circuit_and_parts
     from openhac.compiler.spice_models import collect_spice_coverage
 
+    _apply_board_sidecars(args.script, args)
     user_mod = _load_user_script(args.script)
     board = _find_board_instance(user_mod)
     if board is None:
@@ -1407,6 +1445,7 @@ def main():
 
     p_compile = subparsers.add_parser("compile", help="Compile hardware to KiCad project")
     p_compile.add_argument("script", help="Path to the hardware description .py file")
+    _add_board_sidecar_flag(p_compile)
     p_compile.add_argument("--name", default=None, help="Project name (default: script basename)")
     p_compile.add_argument(
         "--no-route",
@@ -1689,7 +1728,8 @@ def main():
         "--pre-seed-file",
         default=None,
         metavar="PATH",
-        help="Before compile, seed the DB from JSON (same as `python -m openhac.database.sync_jlc --seed-file`).",
+        help="Before compile, seed the DB from JSON (same as `python -m openhac.database.sync_jlc --seed-file`). "
+        "Usually unnecessary: `{stem}.openhac-seed.json` next to the board is loaded automatically.",
     )
     p_compile.add_argument(
         "--pre-enrich-json",
@@ -1712,9 +1752,9 @@ def main():
     p_compile.add_argument(
         "--auto-enrich-board",
         action="store_true",
-        help="After loading the board script, discover parts missing pinout/symbol_data in the DB, run batch enrich "
-        "(requires vendor API env vars; see vendor_apis), then compile. "
-        "Implicit-pin warnings during script import are unchanged unless the DB was already filled (e.g. sync + enrich).",
+        help="Optional 3D / vendor fill after the board is already constructed. "
+        "Does not replace a stock KiCad footprint with EasyEDA. "
+        "Not required when the board ships a sidecar catalog. Needs network.",
     )
     p_compile.add_argument(
         "--auto-enrich-vendor",
@@ -1755,6 +1795,7 @@ def main():
         help="SSO-012: schematic + KiCad SVG (not ERC-stamped; never runs sch erc)",
     )
     p_preview.add_argument("script", help="Path to the hardware description .py file")
+    _add_board_sidecar_flag(p_preview)
     p_preview.add_argument("--name", default=None, help="Output base name (default: script basename)")
     p_preview.add_argument("-o", "--output-dir", default=None, metavar="DIR")
     p_preview.add_argument(
@@ -1787,6 +1828,7 @@ def main():
 
     p_sim = subparsers.add_parser("simulate", help="Generate SPICE netlist")
     p_sim.add_argument("script", help="Path to the hardware description .py file")
+    _add_board_sidecar_flag(p_sim)
     p_sim.add_argument("--name", default=None, help="Output base name (default: script basename)")
     p_sim.add_argument(
         "--allow-risky-parts",
@@ -1893,6 +1935,12 @@ def main():
         default=None,
         metavar="N",
         help="Cap fetches/inserts per typed category (CAT-003)",
+    )
+    p_sync.add_argument(
+        "--fetch-easyeda",
+        action="store_true",
+        help="Also fetch EasyEDA CAD for unmapped packages (rate-limited; trips after repeated 403). "
+        "Default sync uses footprint_map.json + KiCad scan only.",
     )
     p_sync.set_defaults(func=cmd_sync)
 
@@ -2085,10 +2133,16 @@ def main():
     p_cov.set_defaults(func=cmd_catalog_coverage)
     p_pf = cat_sub.add_parser(
         "prefetch-3d",
-        help="Prefetch EasyEDA 3D into ~/.kiro/openhac/ (forbidden under no-network / fab)",
+        help="Prefetch missing 3D (pack miss → map/catalog LCSC or jlcsearch by MPN; no-network / fab denied)",
     )
-    p_pf.add_argument("script", nargs="?", default=None, help="Board .py whose SKUs to prefetch")
+    p_pf.add_argument("script", nargs="?", default=None, help="Board .py: fetch 3D for footprints without a pack mesh")
+    _add_board_sidecar_flag(p_pf)
     p_pf.add_argument("--skus", default=None, help="Comma-separated LCSC SKUs (Cxxxxx)")
+    p_pf.add_argument(
+        "--force",
+        action="store_true",
+        help="Re-fetch even when a valid fill-in STEP exists; still refuses chip-on-module meshes",
+    )
     p_pf.set_defaults(func=cmd_catalog_prefetch_3d)
 
     p_spice = subparsers.add_parser("spice", help="SPICE coverage and vendor-dir verify (SPS-05x)")
@@ -2098,6 +2152,7 @@ def main():
         help="List primitive/modeled/omitted/unmodeled without running ngspice",
     )
     p_scov.add_argument("script", help="Board .py")
+    _add_board_sidecar_flag(p_scov)
     p_scov.add_argument("--json", dest="as_json", action="store_true", help="Print JSON")
     p_scov.set_defaults(func=cmd_spice_coverage)
     p_sver = spice_sub.add_parser(
@@ -2109,6 +2164,7 @@ def main():
 
     p_lock = subparsers.add_parser("lock", help="Write catalog lockfile from the local DB (LOCK-001, no fetch)")
     p_lock.add_argument("script", help="Board .py")
+    _add_board_sidecar_flag(p_lock)
     p_lock.add_argument("--name", default=None, help="Project name recorded in the lock")
     p_lock.add_argument(
         "-o",

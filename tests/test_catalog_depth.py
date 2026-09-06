@@ -1,4 +1,4 @@
-"""CAT / 3D catalog-depth tests (CAT-001…015, 3D-001…005)."""
+"""CAT / 3D catalog-depth tests (CAT-001…015, 3D-001…006)."""
 
 from __future__ import annotations
 

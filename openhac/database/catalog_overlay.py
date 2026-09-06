@@ -46,6 +46,7 @@ _MERGE_KEYS = frozenset(
         "model_3d_source",
         "catalog_tier",
         "pinout_source",
+        "easyeda_sku",
     }
 )
 

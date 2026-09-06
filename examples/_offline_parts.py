@@ -998,6 +998,49 @@ PCA9548A = offline_part(
 )
 
 
+# --- 1N4007 silicon diode (SPS physics deck D_1N4007) ------------------------
+
+D_1N4007 = offline_part(
+    generic_name="D_1N4007",
+    footprint="Diode_SMD:D_SOD-123",
+    pins={
+        1: ("K", "passive"),
+        2: ("A", "passive"),
+    },
+    category="diodes",
+    symbol="Device:D",
+    package="SOD-123",
+    mpn="1N4007",
+    description="1N4007 silicon diode (OpenHaC physics model, not a vendor twin)",
+)
+D_1N4007["spice_include"] = "d_1n4007.cir"
+D_1N4007["spice_subckt"] = "D1N4007"
+
+# --- AD620 instrumentation amp DIP-8 (SPS physics deck AD620) ----------------
+
+AD620 = offline_part(
+    generic_name="AD620",
+    footprint="Package_DIP:DIP-8_W7.62mm",
+    pins={
+        1: ("RG1", "passive"),
+        2: ("INN", "input"),
+        3: ("INP", "input"),
+        4: ("VSM", "power_in"),
+        5: ("REF", "passive"),
+        6: ("OUT", "output"),
+        7: ("VSP", "power_in"),
+        8: ("RG2", "passive"),
+    },
+    category="amplifier",
+    symbol="Amplifier_Instrumentation:AD620",
+    package="DIP-8",
+    mpn="AD620ANZ",
+    description="AD620 in-amp (OpenHaC physics macromodel, not a vendor twin)",
+)
+AD620["spice_include"] = "ad620.cir"
+AD620["spice_subckt"] = "AD620"
+
+
 def mk_component(name: str, data: dict):
     """Build a Component from offline ``comp_data`` and force the KiCad footprint field."""
     from openhac.core.base import Component

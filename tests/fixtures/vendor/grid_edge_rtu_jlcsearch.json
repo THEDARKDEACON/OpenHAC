@@ -1,0 +1,169 @@
+{
+  "resistors": [
+    {
+      "lcsc": 17513,
+      "mfr": "RC0805FR-0710KL",
+      "package": "0805",
+      "resistance": 10000,
+      "description": "10000 ohm 0805",
+      "stock": 50000,
+      "price": "[{\"qFrom\": 1, \"qTo\": null, \"price\": 0.01}]",
+      "category": "Resistors"
+    },
+    {
+      "lcsc": 17512,
+      "mfr": "RC0805FR-071KL",
+      "package": "0805",
+      "resistance": 1000,
+      "description": "1000 ohm 0805",
+      "stock": 50000,
+      "price": "[{\"qFrom\": 1, \"qTo\": null, \"price\": 0.01}]",
+      "category": "Resistors"
+    },
+    {
+      "lcsc": 23149,
+      "mfr": "RC0805FR-074K7L",
+      "package": "0805",
+      "resistance": 4700,
+      "description": "4700 ohm 0805",
+      "stock": 50000,
+      "price": "[{\"qFrom\": 1, \"qTo\": null, \"price\": 0.01}]",
+      "category": "Resistors"
+    },
+    {
+      "lcsc": 23150,
+      "mfr": "RC0805FR-075K1L",
+      "package": "0805",
+      "resistance": 5100,
+      "description": "5100 ohm 0805",
+      "stock": 50000,
+      "price": "[{\"qFrom\": 1, \"qTo\": null, \"price\": 0.01}]",
+      "category": "Resistors"
+    },
+    {
+      "lcsc": 17520,
+      "mfr": "RC0805FR-07100KL",
+      "package": "0805",
+      "resistance": 100000,
+      "description": "100000 ohm 0805",
+      "stock": 50000,
+      "price": "[{\"qFrom\": 1, \"qTo\": null, \"price\": 0.01}]",
+      "category": "Resistors"
+    },
+    {
+      "lcsc": 17521,
+      "mfr": "RC0805FR-07120RL",
+      "package": "0805",
+      "resistance": 120,
+      "description": "120 ohm 0805",
+      "stock": 50000,
+      "price": "[{\"qFrom\": 1, \"qTo\": null, \"price\": 0.01}]",
+      "category": "Resistors"
+    },
+    {
+      "lcsc": 17522,
+      "mfr": "RC0805FR-0749RL",
+      "package": "0805",
+      "resistance": 49,
+      "description": "49 ohm 0805",
+      "stock": 50000,
+      "price": "[{\"qFrom\": 1, \"qTo\": null, \"price\": 0.01}]",
+      "category": "Resistors"
+    },
+    {
+      "lcsc": 17523,
+      "mfr": "RC0805FR-071RL",
+      "package": "0805",
+      "resistance": 1,
+      "description": "1 ohm 0805",
+      "stock": 50000,
+      "price": "[{\"qFrom\": 1, \"qTo\": null, \"price\": 0.01}]",
+      "category": "Resistors"
+    }
+  ],
+  "capacitors": [
+    {
+      "lcsc": 14663,
+      "mfr": "CL10B104KB8NNNC",
+      "package": "0603",
+      "capacitance": 1e-07,
+      "description": "1e-07 F 0603",
+      "stock": 40000,
+      "price": "[{\"qFrom\": 1, \"qTo\": null, \"price\": 0.02}]",
+      "category": "Capacitors"
+    },
+    {
+      "lcsc": 15850,
+      "mfr": "CL21A106KAYNNNE",
+      "package": "0805",
+      "capacitance": 1e-05,
+      "description": "1e-05 F 0805",
+      "stock": 40000,
+      "price": "[{\"qFrom\": 1, \"qTo\": null, \"price\": 0.02}]",
+      "category": "Capacitors"
+    },
+    {
+      "lcsc": 15851,
+      "mfr": "CL21A226KAYNNNE",
+      "package": "0805",
+      "capacitance": 2.2e-05,
+      "description": "2.2e-05 F 0805",
+      "stock": 40000,
+      "price": "[{\"qFrom\": 1, \"qTo\": null, \"price\": 0.02}]",
+      "category": "Capacitors"
+    },
+    {
+      "lcsc": 15852,
+      "mfr": "CL21A107KAYNNNE",
+      "package": "0805",
+      "capacitance": 0.0001,
+      "description": "0.0001 F 0805",
+      "stock": 40000,
+      "price": "[{\"qFrom\": 1, \"qTo\": null, \"price\": 0.02}]",
+      "category": "Capacitors"
+    },
+    {
+      "lcsc": 15853,
+      "mfr": "CL21A475KAYNNNE",
+      "package": "0805",
+      "capacitance": 4.7e-06,
+      "description": "4.7e-06 F 0805",
+      "stock": 40000,
+      "price": "[{\"qFrom\": 1, \"qTo\": null, \"price\": 0.02}]",
+      "category": "Capacitors"
+    },
+    {
+      "lcsc": 15854,
+      "mfr": "CL10C180JB8NNNC",
+      "package": "0603",
+      "capacitance": 1.8e-11,
+      "description": "1.8e-11 F 0603",
+      "stock": 40000,
+      "price": "[{\"qFrom\": 1, \"qTo\": null, \"price\": 0.02}]",
+      "category": "Capacitors"
+    }
+  ],
+  "leds": [
+    {
+      "lcsc": 2286,
+      "mfr": "19-217/GHC-YR1S2/3T",
+      "package": "0805",
+      "color": "Green",
+      "description": "Green LED 0805",
+      "stock": 20000,
+      "price": "[{\"qFrom\": 1, \"qTo\": null, \"price\": 0.03}]",
+      "category": "LEDs"
+    }
+  ],
+  "fuses": [
+    {
+      "lcsc": 18980,
+      "mfr": "F0805",
+      "package": "0805",
+      "description": "2A fuse 0805",
+      "stock": 8000,
+      "price": "[{\"qFrom\": 1, \"qTo\": null, \"price\": 0.05}]",
+      "category": "Fuses"
+    }
+  ]
+}

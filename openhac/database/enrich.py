@@ -619,15 +619,15 @@ def enrich_component_in_db(
     # Step: EasyEDA Footprint & 3D Model Generation (PCB-008)
     # Moved before pinout check to ensure 3D models are generated even if pinout is sufficient.
     try:
-        from openhac.database.sync_jlc import _verify_and_resolve_kicad_footprint
         chosen = str(row.get("kicad_footprint") or "").strip()
-        resolved = row.get("footprint_resolved")
-        current_m3d = row.get("model_3d_local")
-        m3d_exists = current_m3d and (
-            os.path.isfile(current_m3d) or str(current_m3d).startswith("${KICAD")
+        from openhac.database.kicad_3d import (
+            catalog_3d_is_on_disk,
+            library_3d_fields_for_row,
+            should_skip_easyeda_3d,
         )
+        from openhac.database.cad_ids import is_stock_kicad_id
 
-        from openhac.database.kicad_3d import library_3d_fields_for_row, should_skip_easyeda_3d
+        m3d_exists = catalog_3d_is_on_disk(row)
 
         if should_skip_easyeda_3d(row):
             lib3d = library_3d_fields_for_row(row)
@@ -639,11 +639,15 @@ def enrich_component_in_db(
                     pass
             m3d_exists = True
 
-        # [Professional Grade] Always attempt to fetch 3D model from API if missing, even if we have a footprint override
-        if not m3d_exists or not resolved or "easyeda_generated" not in str(chosen):
+        want_generated_fp = not is_stock_kicad_id(chosen)
+        want_3d = not m3d_exists
+        if want_generated_fp or want_3d:
             mpn_eff = str(mpn or row.get("mpn") or "").strip() or None
             sku_eff = str(jlcpcb_sku or row.get("supplier_sku") or "").strip() or None
+            easyeda_sku = str(row.get("easyeda_sku") or "").strip()
             jlc_eff = sku_eff if (sku_eff and sku_eff.upper().startswith("C") and sku_eff[1:].isdigit()) else None
+            if not jlc_eff and easyeda_sku.upper().startswith("C") and easyeda_sku[1:].isdigit():
+                jlc_eff = easyeda_sku
             sku_to_gen = jlc_eff or sku_eff or mpn_eff
             
             # Use the SKU from the override if it was mapped
@@ -652,12 +656,15 @@ def enrich_component_in_db(
 
             if sku_to_gen and str(sku_to_gen).startswith("C") and not m3d_exists:
                 from openhac.database.easyeda_integration import generate_footprint_from_lcsc
+                from openhac.database.cad_ids import is_stock_kicad_id
+
                 new_fp, model_path = generate_footprint_from_lcsc(sku_to_gen)
                 if new_fp:
                     logger.info("Generated EasyEDA assets for %s: %s (3D: %s)", gn, new_fp, model_path or "no")
                     row_update_jlc = {}
-                    # Only override the footprint if we don't have a manual override
-                    if not has_override:
+                    # Stock KiCad id + named pin table is electrical SoT. EasyEDA pads often
+                    # do not match (USB-C A1 vs numeric), so never replace a packed footprint.
+                    if not has_override and want_generated_fp:
                         row_update_jlc["kicad_footprint"] = new_fp
                         row_update_jlc["footprint_resolved"] = 1
                     
@@ -691,14 +698,17 @@ def enrich_component_in_db(
         sku_to_gen = jlc_eff or sku_eff or mpn_eff
         
         if sku_to_gen and sku_to_gen.startswith("C"):
+            from openhac.database.cad_ids import is_stock_kicad_id
+            from openhac.database.kicad_3d import should_skip_easyeda_3d
+
             has_sym = row_d.get("kicad_symbol")
-            if not has_sym or "jlc2kicad" not in str(has_sym):
+            if not is_stock_kicad_id(has_sym):
                 from openhac.database.jlc2kicad_integration import generate_symbol_from_lcsc
                 new_sym, new_m3d = generate_symbol_from_lcsc(sku_to_gen)
                 if new_sym:
                     logger.info("Generated JLC2KiCAD symbol for %s: %s", gn, new_sym)
                     db.update_component_fields(gn, {"kicad_symbol": new_sym})
-                    if new_m3d and os.path.isfile(new_m3d):
+                    if new_m3d and os.path.isfile(new_m3d) and not should_skip_easyeda_3d(row_d):
                         db.update_component_fields(gn, {"model_3d_local": new_m3d})
                         logger.info("Updated 3D model path (JLC2KiCAD) for %s: %s", gn, new_m3d)
                     # Refresh row_d for final pinout checks
@@ -916,66 +926,22 @@ def prefetch_3d_for_skus(
     skus: list[str],
     *,
     db=None,
+    force: bool = False,
 ) -> tuple[int, int]:
-    """Download EasyEDA 3D into ``~/.kiro/openhac/`` (3D-003). Requires network."""
+    """Download EasyEDA 3D into the footprint fill-in cache (3D-003 / 3D-006)."""
     if not network_allowed():
         raise RuntimeError("3D-003: prefetch-3d requires network (OPENHAC_NO_NETWORK / fabrication denied)")
-    from openhac.database.easyeda_integration import generate_footprint_from_lcsc
-    from openhac.database.catalog_coverage import sha256_file
-    from openhac.database.kicad_3d import should_skip_easyeda_3d
+    from openhac.database.threed_fillin import prefetch_fillin_for_skus
 
-    attempted = 0
-    updated = 0
-    for sku in skus:
-        s = str(sku or "").strip()
-        if not s.startswith("C"):
-            continue
-        attempted += 1
-        row = None
-        if db is not None:
-            try:
-                row = db.get_component_by_supplier_sku(s)
-            except Exception:
-                row = None
-        if row and should_skip_easyeda_3d(row):
-            continue
-        fp, model_path = generate_footprint_from_lcsc(s)
-        if not model_path:
-            continue
-        updated += 1
-        if db is not None and row:
-            fields = {
-                "model_3d_local": str(model_path),
-                "model_3d_source": "easyeda",
-                "model_3d_license": "EasyEDA",
-            }
-            if os.path.isfile(str(model_path)):
-                fields["model_3d_sha256"] = sha256_file(model_path)
-            if fp:
-                fields.setdefault("kicad_footprint", fp)
-            try:
-                db.update_component_fields(row["generic_name"], fields)
-            except Exception:
-                pass
-    return attempted, updated
+    return prefetch_fillin_for_skus(skus, db=db, force=force)
 
 
-def prefetch_3d_from_board(board, *, db=None) -> tuple[int, int]:
-    skus: list[str] = []
-    seen: set[str] = set()
-    try:
-        modules = board._get_all_modules()
-    except Exception:
-        modules = getattr(board, "modules", []) or []
-    for mod in modules:
-        for comp in getattr(mod, "components", []) or []:
-            sku = str(getattr(comp, "supplier_sku", "") or "")
-            cd = getattr(comp, "_comp_data", None) or {}
-            sku = sku or str(cd.get("supplier_sku") or "")
-            if sku and sku not in seen:
-                seen.add(sku)
-                skus.append(sku)
-    return prefetch_3d_for_skus(skus, db=db)
+def prefetch_3d_from_board(board, *, db=None, force: bool = False) -> tuple[int, int]:
+    if not network_allowed():
+        raise RuntimeError("3D-003: prefetch-3d requires network (OPENHAC_NO_NETWORK / fabrication denied)")
+    from openhac.database.threed_fillin import prefetch_fillin_from_board
+
+    return prefetch_fillin_from_board(board, db=db, force=force)
 
 
 def fill_pin_names_from_kicad_symbol(row: dict[str, Any]) -> list[dict] | None:
@@ -1022,11 +988,13 @@ def discover_enrich_targets_from_board(board: Any) -> list[dict[str, Any]]:
             needs_3d = False
             if row_d:
                 sku = str(row_d.get("supplier_sku") or "").strip()
-                has_lcsc = sku.upper().startswith("C") and sku[1:].isdigit()
-                has_3d = bool(
-                    row_d.get("model_3d_local")
-                    and os.path.isfile(str(row_d.get("model_3d_local")))
+                easyeda_sku = str(row_d.get("easyeda_sku") or "").strip()
+                has_lcsc = (sku.upper().startswith("C") and sku[1:].isdigit()) or (
+                    easyeda_sku.upper().startswith("C") and easyeda_sku[1:].isdigit()
                 )
+                from openhac.database.kicad_3d import catalog_3d_is_on_disk
+
+                has_3d = catalog_3d_is_on_disk(row_d)
                 needs_3d = has_lcsc and not has_3d
 
             if not needs_pinout and not needs_3d:

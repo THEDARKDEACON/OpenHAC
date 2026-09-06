@@ -119,4 +119,11 @@ def bootstrap_environment() -> None:
                     os.environ.setdefault(k, _fp)
                 break
 
+    try:
+        from openhac.database.kicad_3d import ensure_kicad_3d_env
+
+        ensure_kicad_3d_env()
+    except Exception:
+        pass
+
     _bootstrapped = True

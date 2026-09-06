@@ -21,7 +21,7 @@
 ```
 jlcsearch ──► openhac sync ──► SQLite rows (warehouse or compile_ready)
 Digi-Key / Mouser / TME ──► openhac database enrich ──► named pinouts
-EasyEDA ──► prefetch-3d (network) ──► ~/.kiro/openhac/ cache
+EasyEDA ──► prefetch-3d (network) ──► ~/.kiro/openhac/3d_models/<Lib>/<Footprint>.step
 overlay JSON ──► pinout / footprint / 3D / spice pointers
 spice overlay + OPENHAC_SPICE_VENDOR_DIR ──► verify-vendor-dir ──► --spice-signoff
 coverage report (no fetch) ──► compile / CI
@@ -240,7 +240,7 @@ Leverage [`openhac/database/sync_jlc.py`](../../openhac/database/sync_jlc.py) (`
 
 ---
 
-## B. 3D as a catalog field — 3D-001…005
+## B. 3D as a catalog field — 3D-001…006
 
 Leverage `model_3d_url` / `model_3d_local` (schema v9), [`easyeda_integration.py`](../../openhac/database/easyeda_integration.py), [`threed_downloader.py`](../../openhac/database/threed_downloader.py), [3D_MODELS_AND_FOOTPRINTS.md](../3D_MODELS_AND_FOOTPRINTS.md).
 
@@ -273,7 +273,7 @@ Leverage `model_3d_url` / `model_3d_local` (schema v9), [`easyeda_integration.py
 | **Severity** | P0 |
 | **Problem** | JIT during compile surprises `--production` (network denied) and leaves empty 3D in pcbnew. |
 | **Current state** | JIT inside enrich phase / `--auto-enrich-board`. |
-| **Target state** | `openhac catalog prefetch-3d` (board file or SKU list) fills `~/.kiro/openhac/easyeda_generated.3dshapes/` (and pretty). Honors `network_allowed()`. **Forbidden** under fabrication compile and `OPENHAC_NO_NETWORK`. |
+| **Target state** | `openhac catalog prefetch-3d` (board file or SKU list) fills `~/.kiro/openhac/3d_models/<Lib>/<Footprint>.step` from the fill-in map, catalog `C…` SKUs, or jlcsearch by MPN (**3D-006**). Honors `network_allowed()`. **Forbidden** under fabrication compile and `OPENHAC_NO_NETWORK`. |
 | **Acceptance criteria** | Prefetch with network mocked downloads once. `--production` compile does not call EasyEDA. `OPENHAC_NO_NETWORK=1` prefetch exits non-zero. |
 | **Approach** | CLI; reuse `easyeda_integration`; same cache paths. |
 
@@ -298,6 +298,17 @@ Leverage `model_3d_url` / `model_3d_local` (schema v9), [`easyeda_integration.py
 | **Target state** | Spec restates: no `.step` / `.wrl` in this repo; cache under `~/.kiro/openhac/`. Overlays store **paths and hashes**, not file bytes. |
 | **Acceptance criteria** | This paragraph exists; gitignore remains. CI does not require committed STEP. |
 | **Approach** | Docs only unless gitignore regresses. |
+
+### 3D-006 — Footprint-keyed fill-in map
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P0 |
+| **Problem** | Compile globbed EasyEDA/JLC cache folders and could attach `R0805.step` to USB-C. Overlay `easyeda_sku` does not scale. KiCad pack files and vendor meshes need different keys. |
+| **Current state** | Stock footprints with a pack file use `${KICAD9_3DMODEL_DIR}`. Missing pack bodies used filename globs under `~/.kiro/openhac/easyeda_generated.3dshapes`. |
+| **Target state** | `openhac/database/3d_fillin_map.json` maps `Lib:Footprint` → `lcsc:C…` / `kicad` / `file:…`. Prefetch writes `~/.kiro/openhac/3d_models/<Lib>/<Footprint>.step`. For any stock footprint without a pack file, prefetch uses the map, a catalog `C…` SKU, or jlcsearch by MPN (`mfr` match; never `items[0]`). Hits are remembered in `~/.kiro/openhac/3d_fillin_discovered.json` (not git; does not override bundled). Prefetch **audits** cache: chip-package STEP (QFN/SOP/…) on a module/connector footprint is evicted and the SKU is rejected so it is not replayed. Compile attaches the KiCad pack file **or** a mesh that passes that gate. No folder glob on the compile path. No fake cube, no Hirose-for-Molex, no IC body on a breakout. Missing 3D is **3D-004**. `--production` never fetches. `--force` re-fetches a valid cache only. |
+| **Acceptance criteria** | USB-C / microSD map entries. Prefetch `--skus C165948` installs the USB-C fill-in path. Prefetch of a board with MPN `PC817` and no pack SOIC-4 STEP installs `Package_SO/SOIC-4_….step` from a matching jlcsearch hit, not from an unrelated first row. Compile test: pack miss + fill-in hit attaches that STEP; `R0805.step` in an EasyEDA folder is ignored. Coverage treats fill-in-on-disk as present without copying. |
+| **Approach** | `threed_fillin.py`; `pcb_3d_model_filename` pack-then-fill-in; optional one-time seed from a **name-matched** legacy STEP into the stable path. |
 
 ---
 
@@ -416,7 +427,7 @@ Does **not** reopen **SPS-010…044**. Registry, `${OPENHAC_SPICE_VENDOR_DIR}`, 
 
 ## Implementation order
 
-**P0 (first implementation wave after this spec):** CAT-001, CAT-002, CAT-004, CAT-005, CAT-006, CAT-007, 3D-001…005, SPS-050, SPS-052, SPS-053, SPS-056, SPS-057.
+**P0 (first implementation wave after this spec):** CAT-001, CAT-002, CAT-004, CAT-005, CAT-006, CAT-007, 3D-001…006, SPS-050, SPS-052, SPS-053, SPS-056, SPS-057.
 
 **P1:** CAT-003, CAT-008, CAT-009, CAT-010, CAT-013, SPS-051, SPS-054, SPS-055.
 

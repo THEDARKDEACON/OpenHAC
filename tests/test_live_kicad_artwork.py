@@ -280,8 +280,50 @@ def test_overlay_wire_shorts_fail_generate(tmp_path: Path, monkeypatch):
     conflicts = overlay_wire_conflicts(ov, ir.pin_xy, pin_to_net)
     assert conflicts
     board._kicad_artwork_overlay = ov
+    generate_schematic(str(tmp_path / "short_default.kicad_sch"), board)
+    assert (tmp_path / "short_default.kicad_sch").is_file()
+    board._keep_kicad_artwork = True
     with pytest.raises(ArtworkParityError, match="LIVE-006"):
         generate_schematic(str(tmp_path / "short.kicad_sch"), board)
+
+
+def test_overlay_ir_echo_stub_is_not_a_user_short():
+    """Re-ingesting OpenHaC's own pin stub must not LIVE-006, even if pin_xy stacks nets."""
+    from openhac.compiler.kicad_artwork import ir_wire_echo_keys
+    from openhac.schematic.ir import SchematicIR, WireSeg
+
+    ir = SchematicIR(title="echo")
+    ir.pin_xy = {("U1", "2"): (45.72, 797.56), ("U1", "8"): (48.26, 797.56)}
+    ir.wires.append(WireSeg(45.72, 797.56, 48.26, 797.56, sheet="COMMS", net="3V3"))
+    ov = KicadArtworkOverlay()
+    ov.sch_wires.append(SchWire(45.72, 797.56, 48.26, 797.56, sheet="COMMS"))
+    pin_to_net = {("U1", "2"): "GND", ("U1", "8"): "I2C_SDA"}
+    raw = overlay_wire_conflicts(ov, ir.pin_xy, pin_to_net)
+    assert raw
+    skipped = overlay_wire_conflicts(
+        ov, ir.pin_xy, pin_to_net, echo_keys=ir_wire_echo_keys(ir)
+    )
+    assert skipped == []
+
+
+def test_overlay_child_sheet_local_coords_do_not_cross_short():
+    """Same numeric xy on ANALOG vs COMMS must not snap as a cross-net short."""
+    ov = KicadArtworkOverlay()
+    ov.sch_wires.append(SchWire(38.1, 38.1, 40.64, 38.1, sheet="ANALOG"))
+    analog_xy = {("U1", "4"): (38.1, 38.1)}
+    comms_xy = {("U12", "2"): (38.1, 38.1), ("U6", "8"): (40.64, 38.1)}
+    pin_to_net = {("U1", "4"): "INA_OUT", ("U12", "2"): "SPI_MISO", ("U6", "8"): "GND"}
+    packed = {**analog_xy, **comms_xy}
+    crossed = overlay_wire_conflicts(ov, packed, pin_to_net)
+    assert crossed
+    scoped = overlay_wire_conflicts(
+        ov,
+        packed,
+        pin_to_net,
+        pin_xy_by_sheet={"ANALOG": analog_xy, "COMMS": comms_xy},
+        hierarchical=True,
+    )
+    assert scoped == []
 
 
 def test_keep_kicad_artwork_missing_overlay_errors(tmp_path: Path):

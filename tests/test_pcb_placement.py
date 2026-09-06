@@ -117,6 +117,122 @@ def test_place_circuit_applies_rotation_field(monkeypatch, tmp_path):
     assert str(fps[0].path) == footprint_schematic_path(p, parts=[p])
 
 
+def test_place_circuit_clears_dead_3d_pointer(monkeypatch, tmp_path):
+    from skidl import Net, Part
+
+    class _Models(list):
+        def push_back(self, m):
+            self.append(m)
+
+    class _Dead:
+        m_Filename = "${KICAD9_3DMODEL_DIR}/missing.step"
+
+    class _Fp:
+        def __init__(self):
+            self.rot_deg = None
+            self.path = None
+            self._models = _Models([_Dead()])
+
+        def SetReference(self, _):
+            pass
+
+        def SetValue(self, _):
+            pass
+
+        def SetPosition(self, _):
+            pass
+
+        def SetPath(self, p):
+            self.path = p
+
+        def SetOrientationDegrees(self, d):
+            self.rot_deg = float(d)
+
+        def Pads(self):
+            return []
+
+        def Models(self):
+            return self._models
+
+    class _Plugin:
+        def FootprintLoad(self, *_args, **_kwargs):
+            return _Fp()
+
+    class _Pcb:
+        def __init__(self):
+            self.items = []
+
+        def Add(self, x):
+            self.items.append(x)
+
+        def GetNetsByName(self):
+            return {}
+
+    class _PcbNew:
+        class PCB_IO_MGR:
+            KICAD_SEXP = 1
+
+            @staticmethod
+            def PluginFind(_):
+                return _Plugin()
+
+        @staticmethod
+        def FromMM(v):
+            return int(v * 1_000_000)
+
+        @staticmethod
+        def VECTOR2I(x, y):
+            return (x, y)
+
+        class KIID_PATH(str):
+            pass
+
+        class NETINFO_ITEM:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+        class FP_3DMODEL:
+            def __init__(self):
+                self.m_Filename = ""
+                self.m_Scale = type("V", (), {"x": 0, "y": 0, "z": 0})()
+                self.m_Offset = type("V", (), {"x": 0, "y": 0, "z": 0})()
+                self.m_Rotation = type("V", (), {"x": 0, "y": 0, "z": 0})()
+
+    n = Net("N")
+    p = Part("Device", "R", value="PC817", ref="U4", footprint="Package_SO:SOIC-4_4.55x2.6mm_P1.27mm")
+    p[1] += n
+
+    monkeypatch.setattr(
+        "openhac.compiler.pcb_placement.resolve_pretty_directory",
+        lambda _lib: str(tmp_path),
+    )
+    monkeypatch.setattr(
+        "openhac.compiler.pcb_placement.collect_skidl_part_positions",
+        lambda _b: {p: (5.0, 5.0)},
+    )
+    monkeypatch.setattr(
+        "openhac.database.kicad_3d.pcb_3d_model_filename",
+        lambda *_a, **_k: None,
+    )
+
+    from openhac.compiler.pcb_placement import place_circuit_on_board
+
+    pcb = _Pcb()
+
+    class _Child:
+        part = p
+
+    class _Mod:
+        components = [_Child()]
+
+    board = Board(size_mm=(10, 10))
+    board._get_all_modules = lambda: [_Mod()]  # type: ignore[method-assign]
+    place_circuit_on_board(pcb, board, _PcbNew)
+    fps = [x for x in pcb.items if isinstance(x, _Fp)]
+    assert fps and len(fps[0].Models()) == 0
+
+
+
 class TestParseFootprintId:
 
     def test_valid(self):

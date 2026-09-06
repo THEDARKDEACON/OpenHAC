@@ -9,6 +9,7 @@ mirrors the official JLCPCB component catalog.
 import json
 import logging
 import os
+import re
 import sys
 import urllib.parse
 import urllib.request
@@ -165,22 +166,110 @@ def _load_footprint_map() -> dict:
         _FOOTPRINT_MAP_CACHE = {}
     return _FOOTPRINT_MAP_CACHE
 
-def _package_to_footprint(category: str, package: str, lcsc: str = "") -> str:
+def _lookup_package_map(cat_map: dict | None, pkg: str) -> str | None:
+    """Exact map key, then JLC ``SMA(DO-214AC)`` / ``DO-214AC(SMA)`` aliases."""
+    if not cat_map or not pkg:
+        return None
+    hit = cat_map.get(pkg)
+    if hit:
+        return hit
+    base = pkg.split("(", 1)[0].strip()
+    if base and base != pkg:
+        hit = cat_map.get(base)
+        if hit:
+            return hit
+    if "(" in pkg and pkg.endswith(")"):
+        inner = pkg[pkg.find("(") + 1 : -1].strip()
+        if inner and inner.lower() not in {"mm", "mil"} and len(inner) >= 3:
+            hit = cat_map.get(inner)
+            if hit:
+                return hit
+    return None
+
+
+def _footprint_compatible_with_request(requested: str, found: str) -> bool:
+    """True if *found* is *requested* or a more specific variant of that name.
+
+    ``SOP-8`` may become ``SOP-8_3.9x4.9mm_P1.27mm``. It must not become
+    ``Texas_HSOP-8-1EP_...`` or ``Fuseholder_Keystone_...``.
+    """
+    req = (requested or "").strip()
+    got = (found or "").strip()
+    if ":" in req:
+        req = req.split(":", 1)[1].strip()
+    if ":" in got:
+        got = got.split(":", 1)[1].strip()
+    if not req or not got:
+        return False
+    req_core = req.split("(", 1)[0].strip().lower()
+    gl = got.lower()
+    if gl == req_core:
+        return True
+    if gl.startswith(req_core) and len(gl) > len(req_core) and gl[len(req_core)] in "-_":
+        return True
+    return False
+
+
+def _package_reflected_in_footprint(pkg: str, fp: str) -> bool:
+    """Require the JLC package token to appear as a name token in the footprint id."""
+    core = (pkg or "").split("(", 1)[0].strip()
+    if len(core) < 2:
+        return True
+    needle = re.escape(core.lower().replace("_", "-"))
+    hay = (fp or "").lower().replace("_", "-")
+    return re.search(rf"(^|[^a-z0-9]){needle}([^a-z0-9]|$)", hay) is not None
+
+
+_UNKNOWN_PACKAGE_WARNED: set[tuple[str, str]] = set()
+
+
+def _warn_unknown_package(pkg: str, category: str) -> None:
+    key = (category, pkg)
+    if key in _UNKNOWN_PACKAGE_WARNED:
+        return
+    _UNKNOWN_PACKAGE_WARNED.add(key)
+    logger.warning(
+        "Unknown package %r for category %r, using generic fallback. "
+        "Add to overlay or footprint_map.json if needed.",
+        pkg,
+        category,
+    )
+
+
+def _package_to_footprint(
+    category: str,
+    package: str,
+    lcsc: str = "",
+    *,
+    extra_fields: dict | None = None,
+    allow_easyeda: bool = True,
+) -> str:
     pkg = package or ""
     fmap = _load_footprint_map()
     
     # 1. Check JSON map
     cat_map = fmap.get(category)
-    if cat_map and pkg in cat_map:
-        return cat_map[pkg]
+    mapped = _lookup_package_map(cat_map, pkg)
+    if mapped:
+        return mapped
 
     # Helper to attempt introspection and return if valid
     def try_resolve(candidate_fp: str) -> str | None:
         chosen, ok, res, notes = _verify_and_resolve_kicad_footprint(candidate_fp)
-        if ok:
-            logger.info("Resolved %r via KiCad library scan: %s (consider adding to footprint_map.json)", pkg, res)
-            return res
-        return None
+        if not ok or not res:
+            return None
+        requested_name = candidate_fp.split(":", 1)[-1]
+        found_name = str(res).split(":", 1)[-1]
+        if not _footprint_compatible_with_request(requested_name, found_name):
+            return None
+        if not _package_reflected_in_footprint(pkg, str(res)):
+            return None
+        logger.info(
+            "Resolved %r via KiCad library scan: %s (consider adding to footprint_map.json)",
+            pkg,
+            res,
+        )
+        return res
 
     # 3. Try intelligent construction (which feeds into step 2: Introspection)
     candidate = None
@@ -254,15 +343,20 @@ def _package_to_footprint(category: str, package: str, lcsc: str = "") -> str:
         if res:
             return res
 
-    # 3. EasyEDA Fallback
-    if lcsc:
+    # 3. EasyEDA Fallback — unpack (footprint_id, model_3d_path); never store the tuple.
+    # Bulk catalog sync leaves this off (allow_easyeda=False). Board enrich / prefetch keep it on.
+    if allow_easyeda and lcsc:
         from openhac.database.easyeda_integration import generate_footprint_from_lcsc
-        res = generate_footprint_from_lcsc(lcsc)
-        if res:
-            return res
+        fp_id, model_path = generate_footprint_from_lcsc(lcsc)
+        if fp_id:
+            if extra_fields is not None and model_path:
+                extra_fields["model_3d_local"] = str(model_path)
+                extra_fields["model_3d_source"] = "easyeda"
+                extra_fields["model_3d_license"] = "EasyEDA"
+            return str(fp_id)
 
     # 4. Generic Fallback
-    logger.warning("Unknown package %r for category %r, using generic fallback. Add to overlay or footprint_map.json if needed.", pkg, category)
+    _warn_unknown_package(pkg, category)
     if category == "microcontrollers":
         return "Package_QFP:Generic_QFP"
     if category == "connectors":
@@ -448,7 +542,12 @@ def probe_typed_category(category: str, *, opener=None) -> bool:
     return True
 
 
-def _component_row_from_jlc_item(category: str, item: dict) -> dict | None:
+def _component_row_from_jlc_item(
+    category: str,
+    item: dict,
+    *,
+    allow_easyeda: bool = False,
+) -> dict | None:
     from openhac.database.kicad_3d import library_3d_fields_for_row
     from openhac.database.pin_policy import pinout_for_sync_category
 
@@ -464,7 +563,10 @@ def _component_row_from_jlc_item(category: str, item: dict) -> dict | None:
         kicad_symbol = _diode_kicad_symbol(item)
     else:
         kicad_symbol = KICAD_SYMBOL_MAP.get(category, "Device:R")
-    fp = _package_to_footprint(category, package, lcsc=supplier_sku)
+    easyeda_3d: dict = {}
+    fp = _package_to_footprint(
+        category, package, lcsc=supplier_sku, extra_fields=easyeda_3d, allow_easyeda=allow_easyeda
+    )
     pinout = pinout_for_sync_category(category)
     row = {
         "generic_name": generic_name,
@@ -489,6 +591,8 @@ def _component_row_from_jlc_item(category: str, item: dict) -> dict | None:
     if pinout:
         row["pinout_json"] = json.dumps(pinout)
     row.update(library_3d_fields_for_row(row))
+    if easyeda_3d and not row.get("model_3d_local"):
+        row.update(easyeda_3d)
     return row
 
 
@@ -542,6 +646,7 @@ def sync_catalog(
     *,
     include_extended: bool = False,
     max_per_category: int | None = None,
+    fetch_easyeda: bool = False,
 ) -> int:
     """Sync real in-stock JLCPCB parts from jlcsearch API into the local database.
 
@@ -550,6 +655,8 @@ def sync_catalog(
         verbose: print progress
         include_extended: CAT-003 — drop ``is_basic=true`` (default stays Basic)
         max_per_category: cap inserts/fetches per typed category
+        fetch_easyeda: if True, EasyEDA CAD for unmapped packages (rate-limited).
+            Default False so bulk sync does not hammer easyeda.com.
 
     Returns:
         number of new components inserted
@@ -597,7 +704,9 @@ def sync_catalog(
 
         inserted = 0
         for item in items:
-            component = _component_row_from_jlc_item(category, item)
+            component = _component_row_from_jlc_item(
+                category, item, allow_easyeda=fetch_easyeda
+            )
             if not component:
                 continue
             row_id = db.insert_component(component, ignore_duplicate=True)
@@ -662,7 +771,9 @@ def search_and_add_components(queries: list[str], verbose: bool = True) -> int:
 
             kicad_footprint = item.get("kicad_footprint", "")
             if not kicad_footprint:
-                kicad_footprint = _package_to_footprint(category, item.get("package", ""), lcsc=lcsc)
+                kicad_footprint = _package_to_footprint(
+                    category, item.get("package", ""), lcsc=lcsc, allow_easyeda=False
+                )
 
             component = {
                 "generic_name": generic_name,
@@ -767,6 +878,35 @@ def _verify_and_resolve_kicad_footprint(fp: str) -> tuple[str, int, str, str]:
                 return base
         return None
 
+    def _best_variant_in_lib(lib_name: str, requested: str) -> str | None:
+        """Same-library footprint whose name is *requested* or a more specific variant."""
+        pretty = resolve_pretty_directory(lib_name)
+        if not pretty or not requested:
+            return None
+        try:
+            files = os.listdir(pretty)
+        except Exception:
+            return None
+        core = requested.split("(", 1)[0].strip()
+        inner = ""
+        if "(" in requested and requested.endswith(")"):
+            inner = requested[requested.find("(") + 1 : -1].strip().lower()
+        hits: list[str] = []
+        for fn in files:
+            if not fn.endswith(".kicad_mod"):
+                continue
+            base = fn[: -len(".kicad_mod")]
+            if _footprint_compatible_with_request(core, base):
+                hits.append(base)
+        if not hits:
+            return None
+        if inner and "x" in inner:
+            dim_hits = [h for h in hits if inner in h.lower().replace("_", "")]
+            if dim_hits:
+                hits = dim_hits
+        hits.sort(key=lambda s: (len(s), s))
+        return hits[0]
+
     def _dim_tokens(n: str) -> list[str]:
         """Extract useful dimension tokens like '3x2.5' and 'p0.4' from a footprint name."""
         low = (n or "").lower()
@@ -828,25 +968,16 @@ def _verify_and_resolve_kicad_footprint(fp: str) -> tuple[str, int, str, str]:
             resolved = f"Inductor_SMD:{hit}"
             return (resolved, 1, resolved, f"fuzzy resolved {raw} -> {resolved}")
 
-    # Generic fuzzy fallback within the same library (often dimension string mismatches).
-    prefix = name.split("_", 1)[0].strip()
-    if prefix and len(prefix) >= 4:
-        # Add pitch token if present.
-        must = [prefix]
-        low = name.lower()
-        if "p0.4" in low or "p0_4" in low:
-            must.append("p0.4")
-        if "p0.5" in low or "p0_5" in low:
-            must.append("p0.5")
-        if "p1.27" in low or "p1_27" in low:
-            must.append("p1.27")
-        hit = _best_fuzzy_match_in_lib(lib, must_contain=must)
-        if hit:
-            resolved = f"{lib}:{hit}"
-            return (resolved, 1, resolved, f"fuzzy resolved {raw} -> {resolved}")
+    # Same-library variant: SOP-8 → SOP-8_3.9x..., Fuse_1812 → Fuse_1812_4532Metric.
+    # Do not accept unrelated names that only share a substring (Fuse → Fuseholder).
+    hit = _best_variant_in_lib(lib, name)
+    if hit:
+        resolved = f"{lib}:{hit}"
+        return (resolved, 1, resolved, f"variant resolved {raw} -> {resolved}")
 
     # Package_LGA special-case: footprints often encode dims/pitch slightly differently.
     if lib == "Package_LGA":
+        prefix = name.split("_", 1)[0].strip()
         must = []
         # e.g. "LGA-14"
         if prefix:
@@ -855,7 +986,7 @@ def _verify_and_resolve_kicad_footprint(fp: str) -> tuple[str, int, str, str]:
         # If we have at least 2 tokens, try a targeted fuzzy search.
         if len(must) >= 2:
             hit = _best_fuzzy_match_in_lib("Package_LGA", must_contain=must[:4])
-            if hit:
+            if hit and _footprint_compatible_with_request(prefix.split("(", 1)[0], hit):
                 resolved = f"Package_LGA:{hit}"
                 return (resolved, 1, resolved, f"fuzzy resolved {raw} -> {resolved}")
         # If pitch is missing from local KiCad, fall back to the closest common pitch variant.
@@ -937,12 +1068,24 @@ def verify_footprints_in_db(*, apply_fixes: bool = True, limit: int = 0, verbose
         chosen, ok, res, notes = _verify_and_resolve_kicad_footprint(fp)
         if not ok and lcsc:
             from openhac.database.easyeda_integration import generate_footprint_from_lcsc
-            e_res = generate_footprint_from_lcsc(lcsc)
-            if e_res:
-                chosen = e_res
+            e_fp, e_3d = generate_footprint_from_lcsc(lcsc)
+            if e_fp:
+                chosen = e_fp
                 ok = 1
-                res = e_res
+                res = e_fp
                 notes = "Generated via easyeda2kicad"
+                if e_3d:
+                    try:
+                        db.update_component_fields(
+                            gn,
+                            {
+                                "model_3d_local": str(e_3d),
+                                "model_3d_source": "easyeda",
+                                "model_3d_license": "EasyEDA",
+                            },
+                        )
+                    except Exception:
+                        pass
         
         if ok:
             verified += 1
@@ -997,6 +1140,16 @@ def seed_from_file(seed_file: str, verbose: bool = True) -> int:
         if not isinstance(row, dict):
             continue
         row = dict(row)
+        gn = str(row.get("generic_name") or "").strip()
+        if not gn:
+            continue
+        row["generic_name"] = gn
+        if not str(row.get("mpn") or "").strip():
+            row["mpn"] = gn
+        if not str(row.get("kicad_symbol") or "").strip():
+            row["kicad_symbol"] = "Device:R"
+        if row.get("kicad_footprint") is None:
+            row["kicad_footprint"] = ""
         if "supplier_sku" in row:
             row["supplier_sku"] = _normalize_jlc_sku(str(row["supplier_sku"]))
         # Allow user files to provide richer pin metadata without requiring schema changes.
@@ -1021,6 +1174,11 @@ def seed_from_file(seed_file: str, verbose: bool = True) -> int:
         row_id = db.insert_component(row, ignore_duplicate=True)
         if row_id:
             inserted += 1
+        elif verbose:
+            logger.warning(
+                "Seed skipped %s (already present, or a NOT NULL catalog field was missing)",
+                gn,
+            )
     if verbose:
         logger.info("Seed complete. %s component(s) inserted.", inserted)
     return inserted

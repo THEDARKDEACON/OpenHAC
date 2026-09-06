@@ -107,5 +107,36 @@
       {"num": "2", "name": "GND", "type": "power_in"},
       {"num": "3", "name": "IN", "type": "power_in"}
     ]
+  },
+  {
+    "generic_name": "USB_C_HRO_TYPE_C_31_M_12",
+    "kicad_symbol": "Connector:USB_C_Receptacle_USB2.0_16P",
+    "kicad_footprint": "Connector_USB:USB_C_Receptacle_HRO_TYPE-C-31-M-12",
+    "easyeda_sku": "C165948",
+    "category": "Connectors",
+    "pinout": [
+      {"num": "A1", "name": "GND", "type": "power_in"},
+      {"num": "A4", "name": "VBUS", "type": "power_in"},
+      {"num": "A5", "name": "CC1", "type": "bidirectional"},
+      {"num": "A6", "name": "DP", "type": "bidirectional"},
+      {"num": "A7", "name": "DN", "type": "bidirectional"},
+      {"num": "A8", "name": "SBU1", "type": "bidirectional"},
+      {"num": "A9", "name": "VBUS_A9", "type": "power_in"},
+      {"num": "A12", "name": "GND_A12", "type": "power_in"},
+      {"num": "B1", "name": "GND_B1", "type": "power_in"},
+      {"num": "B4", "name": "VBUS_B4", "type": "power_in"},
+      {"num": "B5", "name": "CC2", "type": "bidirectional"},
+      {"num": "B6", "name": "DN_B", "type": "bidirectional"},
+      {"num": "B7", "name": "DP_B", "type": "bidirectional"},
+      {"num": "B8", "name": "SBU2", "type": "bidirectional"},
+      {"num": "B9", "name": "VBUS_B9", "type": "power_in"},
+      {"num": "B12", "name": "GND_B12", "type": "power_in"},
+      {"num": "S1", "name": "SHIELD", "type": "passive"}
+    ]
+  },
+  {
+    "generic_name": "MICROSD_SLOT",
+    "kicad_footprint": "Connector_Card:microSD_HC_Molex_47219-2001",
+    "easyeda_sku": "C164170"
   }
 ]

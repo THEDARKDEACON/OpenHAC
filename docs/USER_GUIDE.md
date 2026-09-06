@@ -61,11 +61,13 @@ b.compile()
 To generate KiCad schematic and PCB files, use the `openhac` CLI:
 
 ```bash
-openhac compile hello_world.py --auto-enrich-board
+openhac compile hello_world.py
 ```
 
-### Key CLI Flags:
-- `--auto-enrich-board`: Automatically fetches missing footprints and 3D models from LCSC/EasyEDA.
+If the board ships `{stem}.openhac-seed.json` or `{stem}.openhac.json` beside the `.py`, those parts are loaded before the script runs. `openhac sync` is warehouse maintenance, not a compile prerequisite.
+
+### Optional CLI flags:
+- `--auto-enrich-board`: Fetches missing footprints and 3D models from LCSC/EasyEDA (needs network).
 - `--name <name>`: Sets the output project name.
 - `--output-dir <dir>`: Sets where the KiCad files are saved.
 - `--deoverlap-iters <N>`: Sets the number of iterations for the spatial solver (default 100).
@@ -95,9 +97,11 @@ openhac catalog coverage -o build/catalog_coverage.json
 openhac database enrich --missing-pinouts
 # alias: openhac database enrich --from-db
 
-# Prefetch EasyEDA 3D into ~/.kiro/openhac/ before fabrication (forbidden under OPENHAC_NO_NETWORK)
+# Prefetch 3D for stock footprints that have no KiCad pack mesh
+# (map / catalog C… / jlcsearch by MPN). Forbidden under OPENHAC_NO_NETWORK.
+# Compile then attaches that file or the KiCad pack.
 openhac catalog prefetch-3d board.py
-openhac catalog prefetch-3d --skus C123,C456
+openhac catalog prefetch-3d --skus C165948,C164170
 
 # Optional Extended JLC parts (default sync stays Basic in-stock)
 openhac sync --include-extended --max-per-category 200
@@ -183,6 +187,6 @@ openhac compile board.py --keep-kicad-artwork --placement-intent
 
 `Board(variant="lite")` / `--variant lite` marks excluded modules DNP on the BOM (not netted, not placed). `Board.declare_rail("3V3", voltage_v=3.3, max_amp=0.5)` plus `module.draws_from("3V3", amp=0.1)` is ERC-gated (**PWR-010**); it does not model converter efficiency. `Board.declare_testpoint(net)` plus `--require-testpoints` (or `--production` when testpoints were declared) fails if the TP is missing. SPICE still omits `TP*`.
 
-SPICE-island CI golden: `examples/spice_island_golden.py` (bundled Apache diode/opto/in-amp). That is **not** `--require-all` (still the 2×0805 resistor class). Schematic stamp golden: `examples/sso041_signoff_node.py`. Spec: **[WORKFLOW_GATES_SPEC.md](internal/WORKFLOW_GATES_SPEC.md)**.
+SPICE-island CI golden: `examples/spice_island_golden.py` (bundled Apache diode/opto/in-amp). That is **not** `--require-all` (still the 2×0805 resistor class). Schematic stamp golden: `examples/sso041_signoff_node.py`. Workflow-gates stress board: `examples/complex_grid_edge_rtu.py` — `openhac compile examples/complex_grid_edge_rtu.py` loads recorded vendor JSON via `complex_grid_edge_rtu.openhac.json` (not `_offline_parts`). Spec: **[WORKFLOW_GATES_SPEC.md](internal/WORKFLOW_GATES_SPEC.md)**.
 
 For capability tiers and non-goals, see **[SCOPE](internal/SCOPE.md)**. For the Phase-2 fail-closed **code → fab** contract (`FAB-*` IDs), see **[Fabrication Readiness Spec](internal/FABRICATION_READINESS_SPEC.md)** and status in **[Implementation Status](internal/IMPLEMENTATION_STATUS.md)**. Release steps: **[RELEASE_CHECKLIST](internal/RELEASE_CHECKLIST.md)**.

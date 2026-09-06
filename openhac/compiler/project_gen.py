@@ -528,6 +528,20 @@ def generate_project_file(
     board_block["design_settings"] = ds
     board_block.setdefault("layer_presets", [])
 
+    environment = {}
+    if isinstance(existing.get("environment"), dict):
+        environment = dict(existing.get("environment") or {})
+    env_vars = dict(environment.get("vars") or {}) if isinstance(environment.get("vars"), dict) else {}
+    try:
+        from openhac.database.kicad_3d import kicad_project_3d_env_vars
+
+        for k, v in kicad_project_3d_env_vars().items():
+            env_vars.setdefault(k, v)
+    except Exception:
+        pass
+    if env_vars:
+        environment["vars"] = env_vars
+
     project_payload = {
         "board": board_block,
         "boards": list(existing.get("boards") or []),
@@ -557,6 +571,8 @@ def generate_project_file(
         if isinstance(existing.get("text_variables"), dict)
         else {},
     }
+    if environment:
+        project_payload["environment"] = environment
 
     with open(output_path, "w", encoding="utf-8") as f:
         json.dump(project_payload, f, indent=2, sort_keys=True)

@@ -185,8 +185,11 @@ class Component:
                     comp_data = self._create_from_explicit_pins(generic_name, pins)
                 else:
                     raise ValueError(
-                        f"Component '{generic_name}' not found in database or LCSC catalog. "
-                        f"Run sync_catalog() to refresh the component database, or check the part name."
+                        f"Component {generic_name!r} is not in the catalog. "
+                        "Put a packed seed next to the board "
+                        "({stem}.openhac-seed.json or {stem}.openhac.json), "
+                        "run `openhac sync` for warehouse passives, "
+                        "or pass pins= on the constructor."
                     )
 
         from openhac.database.lookup_meta import (
@@ -754,8 +757,12 @@ class Component:
         self.part.fields["DigiKey_SKU"] = comp_data.get("digikey_sku") or ""
         self.part.fields["Model_3D_Local"] = comp_data.get("model_3d_local") or ""
         new_fp = comp_data.get("kicad_footprint")
-        if new_fp and (not self.part.footprint or "easyeda_generated" in str(new_fp)):
-            self.part.footprint = new_fp
+        if new_fp:
+            from openhac.database.cad_ids import is_generated_cad_id, is_stock_kicad_id
+
+            cur = str(getattr(self.part, "footprint", "") or "")
+            if not cur or not (is_generated_cad_id(str(new_fp)) and is_stock_kicad_id(cur)):
+                self.part.footprint = new_fp
 
     def refresh_from_db(self):
         """Re-read component metadata from the database and update Part fields."""

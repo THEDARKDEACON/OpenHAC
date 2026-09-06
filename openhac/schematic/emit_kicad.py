@@ -418,7 +418,20 @@ def generate_schematic(
         from openhac.compiler.kicad_artwork import merge_schematic_overlay, raise_if_overlay_conflicts
 
         conflicts = merge_schematic_overlay(ir, overlay, nets)
-        raise_if_overlay_conflicts(conflicts)
+        live = getattr(board, "_live_kicad_artwork", None) or {}
+        fail_closed = bool(getattr(board, "_keep_kicad_artwork", False)) or (
+            isinstance(live, dict) and bool(live.get("keep"))
+        ) or truthy_env("OPENHAC_KEEP_KICAD_ARTWORK")
+        if fail_closed:
+            raise_if_overlay_conflicts(conflicts)
+        elif conflicts:
+            logger.warning(
+                "LIVE-006: dropping %s overlay wire(s) that short graph nets "
+                "(pass --keep-kicad-artwork to fail closed)",
+                len(conflicts),
+            )
+            for msg in conflicts:
+                logger.warning("%s", msg)
     extra_power = _synth_power_embed(ir)
     lib_ids = [inst.lib_id for inst in ir.instances]
     lib_ids.extend(p.lib_id for p in ir.power_ports)

@@ -1,8 +1,113 @@
 import logging
 import os
+import time
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 logger = logging.getLogger("openhac.database.easyeda_integration")
+
+# Process-wide EasyEDA CAD throttle / 403 breaker (no API key; public CAD endpoint).
+_THROTTLE: dict = {
+    "last_mono": 0.0,
+    "fails": 0,
+    "open": False,
+    "logged_open": False,
+}
+_BLOCK_HTTP = frozenset({403, 429, 503})
+
+
+def reset_easyeda_client_state() -> None:
+    """Test helper: clear rate-limit / circuit-breaker state."""
+    _THROTTLE["last_mono"] = 0.0
+    _THROTTLE["fails"] = 0
+    _THROTTLE["open"] = False
+    _THROTTLE["logged_open"] = False
+
+
+def _env_float(name: str, default: float) -> float:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        return default
+
+
+def _env_int(name: str, default: int) -> int:
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(raw)
+    except ValueError:
+        return default
+
+
+def _sleep_for_interval() -> None:
+    interval = max(0.0, _env_float("OPENHAC_EASYEDA_MIN_INTERVAL_S", 1.0))
+    now = time.monotonic()
+    if interval > 0 and _THROTTLE["last_mono"] > 0:
+        wait = interval - (now - _THROTTLE["last_mono"])
+        if wait > 0:
+            time.sleep(wait)
+            now = time.monotonic()
+    _THROTTLE["last_mono"] = now
+
+
+def _note_block_status(code: int) -> None:
+    max_fail = max(1, _env_int("OPENHAC_EASYEDA_MAX_CONSECUTIVE_FAILS", 3))
+    _THROTTLE["fails"] = int(_THROTTLE["fails"]) + 1
+    if int(_THROTTLE["fails"]) >= max_fail and not _THROTTLE["open"]:
+        _THROTTLE["open"] = True
+        if not _THROTTLE["logged_open"]:
+            logger.warning(
+                "EasyEDA CAD HTTP %s × %s; skipping further EasyEDA fetches this process. "
+                "Wait and retry, or map packages in footprint_map.json. "
+                "`openhac sync` does not call EasyEDA unless --fetch-easyeda.",
+                code,
+                _THROTTLE["fails"],
+            )
+            _THROTTLE["logged_open"] = True
+
+
+def _call_easyeda_cad(api, lcsc_id: str):
+    """Invoke easyeda2kicad CAD fetch; record HTTP 403/429/503 even when the library swallows them."""
+    http_state: dict = {"code": None}
+    real_urlopen = urllib.request.urlopen
+
+    def wrapped(*args, **kwargs):
+        try:
+            resp = real_urlopen(*args, **kwargs)
+            code = getattr(resp, "status", None) or getattr(resp, "code", None)
+            if code is not None:
+                http_state["code"] = int(code)
+            return resp
+        except urllib.error.HTTPError as e:
+            http_state["code"] = int(e.code)
+            raise
+
+    urllib.request.urlopen = wrapped  # type: ignore[assignment]
+    try:
+        try:
+            return api.get_cad_data_of_component(lcsc_id), http_state["code"]
+        except urllib.error.HTTPError as e:
+            return None, int(e.code)
+        except Exception:
+            return None, http_state["code"]
+    finally:
+        urllib.request.urlopen = real_urlopen
+
+
+def _easyeda_backends():
+    """Import easyeda2kicad lazily so tests can stub the CAD client."""
+    from easyeda2kicad.easyeda.easyeda_api import EasyedaApi
+    from easyeda2kicad.kicad.export_kicad_footprint import ExporterFootprintKicad
+    from easyeda2kicad.easyeda.easyeda_importer import EasyedaFootprintImporter, Easyeda3dModelImporter
+    from easyeda2kicad.kicad.export_kicad_3d_model import Exporter3dModelKicad
+
+    return EasyedaApi, ExporterFootprintKicad, EasyedaFootprintImporter, Easyeda3dModelImporter, Exporter3dModelKicad
 
 def get_easyeda_library_dir() -> Path:
     """Return the global directory for EasyEDA generated footprints."""
@@ -19,41 +124,53 @@ def get_easyeda_3d_library_dir() -> Path:
     p.mkdir(parents=True, exist_ok=True)
     return p
 
-def generate_footprint_from_lcsc(lcsc_id: str) -> str | None:
+def generate_footprint_from_lcsc(lcsc_id: str) -> tuple[str | None, str | None]:
     """Fetch CAD data from EasyEDA and generate a KiCad footprint.
-    
+
     Args:
         lcsc_id: The LCSC part number (e.g. 'C12345').
-        
+
     Returns:
-        The generated footprint ID (e.g. 'easyeda_generated:LQFP-100...') or None on failure.
+        ``(footprint_id, model_3d_path)``. Either element may be None.
+        Always a 2-tuple so callers can unpack; never a bare ``None``.
     """
     if not lcsc_id or not str(lcsc_id).startswith("C"):
-        return None
-        
+        return None, None
+    if _THROTTLE["open"]:
+        return None, None
+    denied = (os.environ.get("OPENHAC_NO_NETWORK") or "").strip().lower()
+    if denied in ("1", "true", "yes", "on"):
+        return None, None
+
     out_dir = get_easyeda_library_dir()
     out_3d_dir = get_easyeda_3d_library_dir()
-    
+
     try:
-        from easyeda2kicad.easyeda.easyeda_api import EasyedaApi
-        from easyeda2kicad.kicad.export_kicad_footprint import ExporterFootprintKicad
-        from easyeda2kicad.easyeda.easyeda_importer import EasyedaFootprintImporter, Easyeda3dModelImporter
-        from easyeda2kicad.kicad.export_kicad_3d_model import Exporter3dModelKicad
+        EasyedaApi, ExporterFootprintKicad, EasyedaFootprintImporter, Easyeda3dModelImporter, Exporter3dModelKicad = (
+            _easyeda_backends()
+        )
     except ImportError:
         logger.warning("easyeda2kicad is not installed. Cannot fetch footprint for %s", lcsc_id)
-        return None
-        
+        return None, None
+
     try:
         api = EasyedaApi()
-        data = api.get_cad_data_of_component(lcsc_id)
+        _sleep_for_interval()
+        data, http_code = _call_easyeda_cad(api, lcsc_id)
+        if http_code in _BLOCK_HTTP:
+            _note_block_status(int(http_code))
+            logger.warning("EasyEDA CAD HTTP %s for %s", http_code, lcsc_id)
+            return None, None
+        if data:
+            _THROTTLE["fails"] = 0
         if not data:
             logger.warning("No CAD data found on EasyEDA for %s", lcsc_id)
-            return None
-            
+            return None, None
+
         fp = EasyedaFootprintImporter(data).get_footprint()
         if not fp or not getattr(fp, "info", None) or not fp.info.name:
             logger.warning("Failed to parse footprint from EasyEDA data for %s", lcsc_id)
-            return None
+            return None, None
             
         # Clean the footprint name to avoid filesystem issues
         safe_name = str(fp.info.name).replace("/", "_").replace("\\", "_").strip()
@@ -102,10 +219,10 @@ def generate_footprint_from_lcsc(lcsc_id: str) -> str | None:
         else:
             exporter.export(str(out_path), "")
         
-        logger.info("Successfully generated footprint %s for %s via EasyEDA (3D: %s)", 
+        logger.info("Successfully generated footprint %s for %s via EasyEDA (3D: %s)",
                     safe_name, lcsc_id, "yes" if model_3d_path else "no")
-        return f"easyeda_generated:{safe_name}", model_3d_path
-        
+        return f"easyeda_generated:{safe_name}", (model_3d_path or None)
+
     except Exception as e:
         logger.warning("Error generating EasyEDA footprint for %s: %s", lcsc_id, e)
         return None, None

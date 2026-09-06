@@ -37,6 +37,25 @@ def test_bundled_index_ldo_matches_sot223_three_pads() -> None:
     assert [p["num"] for p in po] == ["1", "2", "3"]
 
 
+def test_bundled_usb_c_hro_keeps_kicad_pads() -> None:
+    reset_catalog_overlay_caches()
+    idx = load_bundled_overlay_index()
+    row = idx["USB_C_HRO_TYPE_C_31_M_12"]
+    assert row["kicad_footprint"] == "Connector_USB:USB_C_Receptacle_HRO_TYPE-C-31-M-12"
+    assert row.get("easyeda_sku") == "C165948"
+    po = json.loads(row["pinout_json"])
+    nums = {p["num"] for p in po}
+    assert "A1" in nums and "A4" in nums and "S1" in nums
+
+
+def test_bundled_microsd_has_easyeda_sku() -> None:
+    reset_catalog_overlay_caches()
+    idx = load_bundled_overlay_index()
+    row = idx["MICROSD_SLOT"]
+    assert row["kicad_footprint"] == "Connector_Card:microSD_HC_Molex_47219-2001"
+    assert row.get("easyeda_sku") == "C164170"
+
+
 def test_user_overlay_overrides_bundled(monkeypatch, tmp_path) -> None:
     reset_catalog_overlay_caches()
     monkeypatch.setenv("OPENHAC_NO_BUNDLED_CATALOG_OVERLAYS", "1")

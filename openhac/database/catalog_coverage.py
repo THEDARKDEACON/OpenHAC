@@ -12,7 +12,11 @@ import os
 from pathlib import Path
 from typing import Any
 
-from openhac.database.kicad_3d import library_3d_file_exists, library_3d_relpath_for_footprint
+from openhac.database.kicad_3d import (
+    expand_3d_path,
+    library_3d_file_exists,
+    library_3d_relpath_for_footprint,
+)
 from openhac.database.pin_policy import (
     is_two_terminal_category,
     pinout_is_named,
@@ -61,19 +65,7 @@ def footprint_is_resolvable(row: dict) -> bool:
 
 
 def _expand_3d_path(raw: str) -> str:
-    s = raw.strip()
-    for key in (
-        "KICAD9_3DMODEL_DIR",
-        "KICAD8_3DMODEL_DIR",
-        "KICAD7_3DMODEL_DIR",
-        "KICAD6_3DMODEL_DIR",
-        "KICAD_3DMODEL_DIR",
-    ):
-        val = (os.environ.get(key) or "").strip()
-        token = "${%s}" % key
-        if token in s and val:
-            s = s.replace(token, val)
-    return os.path.expanduser(s)
+    return expand_3d_path(raw)
 
 
 def threed_is_ok(row: dict) -> bool:
@@ -96,6 +88,16 @@ def threed_is_ok(row: dict) -> bool:
     if local:
         expanded = _expand_3d_path(local)
         if os.path.isfile(expanded):
+            fp = _norm(row.get("kicad_footprint"))
+            if fp:
+                try:
+                    from openhac.database.cad_ids import is_stock_kicad_id
+                    from openhac.database.kicad_3d import fillin_mesh_ok_for_footprint
+
+                    if is_stock_kicad_id(fp) and not fillin_mesh_ok_for_footprint(expanded, fp):
+                        return False
+                except Exception:
+                    pass
             return True
         if "${KICAD" in local and library_3d_relpath_for_footprint(row.get("kicad_footprint")):
             return True

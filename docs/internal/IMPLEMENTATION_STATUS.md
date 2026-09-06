@@ -1,6 +1,32 @@
 # Implementation status (OpenHaC)
 
-Track record of fixes applied against [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md) (Phase-1), [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md) (Phase-2), [SCHEMATIC_SIGN_OFF_SPEC.md](./SCHEMATIC_SIGN_OFF_SPEC.md) (**SSO-***), [SPICE_SIGN_OFF_SPEC.md](./SPICE_SIGN_OFF_SPEC.md) (**SPS-***), [LIVE_KICAD_SPEC.md](./LIVE_KICAD_SPEC.md) (**LIVE-***), [CATALOG_DEPTH_SPEC.md](./CATALOG_DEPTH_SPEC.md) (**CAT-*** / **3D-*** / **SPS-05x**), and [WORKFLOW_GATES_SPEC.md](./WORKFLOW_GATES_SPEC.md) (**ECO-*** / **LOCK-*** / **MFG-010** / **PWR-010** / **PIN-001** / **VAR-001** / **LIVE-010** / **PLC-001** / **TST-001** / **GLD-001**). Live follow-on work is the [Sep 2026 job spec](#audit-follow-on-job-spec-sep-2026) at the top of this file. Update this file when you close spec items.
+Track record of fixes applied against [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md) (Phase-1), [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md) (Phase-2), [SCHEMATIC_SIGN_OFF_SPEC.md](./SCHEMATIC_SIGN_OFF_SPEC.md) (**SSO-***), [SPICE_SIGN_OFF_SPEC.md](./SPICE_SIGN_OFF_SPEC.md) (**SPS-***), [LIVE_KICAD_SPEC.md](./LIVE_KICAD_SPEC.md) (**LIVE-***), [CATALOG_DEPTH_SPEC.md](./CATALOG_DEPTH_SPEC.md) (**CAT-*** / **3D-*** / **SPS-05x**), [WORKFLOW_GATES_SPEC.md](./WORKFLOW_GATES_SPEC.md) (**ECO-*** / **LOCK-*** / **MFG-010** / **PWR-010** / **PIN-001** / **VAR-001** / **LIVE-010** / **PLC-001** / **TST-001** / **GLD-001**), and [COMPONENT_AGNOSTIC_SPEC.md](./COMPONENT_AGNOSTIC_SPEC.md) (**UNF-***). Live follow-on work is the [component-agnostic UNF table](#component-agnostic-library-unf) (Open). The [Sep 2026 job spec](#audit-follow-on-job-spec-sep-2026) below is **closed** history. Update this file when you close spec items.
+
+---
+
+## Component-agnostic library (UNF-*)
+
+Python remains the HDL. Part identity is a catalog row, a board overlay / sidecar, or an explicit named wrapper — not an example BOM hardcoded in `openhac/`. Spec: [COMPONENT_AGNOSTIC_SPEC.md](./COMPONENT_AGNOSTIC_SPEC.md). Does **not** reopen **LIB-007**, **CODE-003**, **SCH-006**, **ABC-046**, or **CODE-004** (those stay **Done**; UNF is leftover honesty). `--production` stays offline (**FAB-010**). `--require-all` stays 2R (**FAB-051**). HTTP fetch of vendor SPICE `.lib` stays out of scope (**SPS-019** reserved unused). Examples must keep compiling via sidecars / `--catalog-overlay` / vendor cassettes.
+
+**Execution order:** UNF-002 + UNF-009 → UNF-003 → UNF-004 → UNF-001 golden → UNF-005 → UNF-006 → UNF-007 → UNF-008 → P2 (UNF-010…013).
+
+| Spec ID | Pri | Status | One-line target |
+|---------|-----|--------|-----------------|
+| **UNF-001** | P0 | Open | Synthetic `IC_SYNTH_*` overlay board compiles; parametric miss raises |
+| **UNF-002** | P0 | Open | Bundled auto-merge is package-class only; demo pinouts are example overlays |
+| **UNF-003** | P0 | Open | Category default symbols are `Device:IC` / `Generic_MCU`, not STM32/AMS1117/W25Q128 |
+| **UNF-004** | P0 | Open | Parametric miss never picks MAX3485 / BMP280 / TPS65217; named wrappers stay |
+| **UNF-005** | P1 | Open | Pins/footprints from the catalog row, not AMS1117 1/2/3 or Bourns SRN6045TA |
+| **UNF-006** | P1 | Open | Move Pi/Teensy/XT90 SKU tables out of `enrich.py` into JSON overlay |
+| **UNF-007** | P1 | Open | ERC/layout from `role` / category / power-tree, not `imu`/`ldo`/`xt60` names |
+| **UNF-008** | P1 | Open | `seed_data` is an opt-in tutorial pack, not the default catalog personality |
+| **UNF-009** | P1 | Open | Overlay tests use synthetic names; CI grep forbids demo tokens in auto-merge |
+| **UNF-010** | P2 | Open | 3D match keys from `3d_fillin_map.json`, not HRO/Molex regexes in Python |
+| **UNF-011** | P2 | Open | Rename placement profile `complex_ci` → `dense_ci` (alias one release) |
+| **UNF-012** | P2 | Open | SPICE digital-core omit by category; name markers not SoT |
+| **UNF-013** | P2 | Open | Bundled SPICE `D_1N4007` / PC817 / AD620 documented as physics aliases |
+
+**Open in this batch:** **13**. Spec landed 6 Sep 2026. No compiler behavior change until the implement batch.
 
 ## Audit follow-on job spec (Sep 2026)
 
@@ -47,7 +73,7 @@ Normative executable backlog from the Sep 2026 code, overfitting, live-schematic
 
 **Open in this batch:** **0**. Closed 4 Sep 2026 (`pytest tests/`: 640 passed, 6 skipped; mypy island exit 0). **CODE-001:** env restore shipped; `pcbnew.SaveBoard` remains in-process (SIGSEGV is not catchable). **PERF-008:** stretch partial — `generate_layout` board reused into autoroute, not through zone fill.
 
-Follow-on (not a reopen of FAB/PERF): live KiCad artwork overlay — [LIVE_KICAD_SPEC.md](./LIVE_KICAD_SPEC.md) (**LIVE-001…008**). Catalog depth, 3D pointers, and SPICE operator follow-on — [CATALOG_DEPTH_SPEC.md](./CATALOG_DEPTH_SPEC.md) (**CAT-001…015**, **3D-001…005**, **SPS-050…057**). Operator workflow gates — [WORKFLOW_GATES_SPEC.md](./WORKFLOW_GATES_SPEC.md) (**ECO-001**, **LOCK-001**, **MFG-010**, **PWR-010**, **PIN-001**, **VAR-001**, **LIVE-010**, **PLC-001**, **TST-001**, **GLD-001**). Does not reopen **SPS-010…044**. HTTP fetch of vendor SPICE `.lib` stays out of scope (**SPS-019** reserved unused).
+Follow-on (not a reopen of FAB/PERF): live KiCad artwork overlay — [LIVE_KICAD_SPEC.md](./LIVE_KICAD_SPEC.md) (**LIVE-001…008**). Catalog depth, 3D pointers, and SPICE operator follow-on — [CATALOG_DEPTH_SPEC.md](./CATALOG_DEPTH_SPEC.md) (**CAT-001…015**, **3D-001…006**, **SPS-050…057**). Operator workflow gates — [WORKFLOW_GATES_SPEC.md](./WORKFLOW_GATES_SPEC.md) (**ECO-001**, **LOCK-001**, **MFG-010**, **PWR-010**, **PIN-001**, **VAR-001**, **LIVE-010**, **PLC-001**, **TST-001**, **GLD-001**). Component-agnostic leftover (does **not** reopen **LIB-007** / **CODE-003** / **SCH-006** / **ABC-046** / **CODE-004**): [COMPONENT_AGNOSTIC_SPEC.md](./COMPONENT_AGNOSTIC_SPEC.md) (**UNF-001…013**). Does not reopen **SPS-010…044**. HTTP fetch of vendor SPICE `.lib` stays out of scope (**SPS-019** reserved unused).
 
 ---
 
@@ -96,6 +122,7 @@ Packed catalog is **depth** (named pin table + real footprint + 3D pointer), not
 | **3D-003** | P0 | Done | `catalog prefetch-3d`; forbidden under fab / no-network |
 | **3D-004** | P0 | Done | Missing 3D is a coverage row; no fake cube |
 | **3D-005** | P0 | Done | No STEP/WRL in git; cache under `~/.kiro/openhac/` |
+| **3D-006** | P0 | Done | Footprint-keyed fill-in; prefetch discovers LCSC by MPN; compile does not glob EasyEDA folders |
 | **SPS-050** | P0 | Done | `openhac spice coverage BOARD.py` without ngspice |
 | **SPS-051** | P1 | Done | Vendor-record template; `download_page` ignored by loader |
 | **SPS-052** | P0 | Done | `openhac spice verify-vendor-dir` hash + arity; no network |

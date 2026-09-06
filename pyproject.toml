@@ -49,7 +49,7 @@ Repository = "https://github.com/THEDARKDEACON/OpenHAC"
 include = ["openhac*"]
 
 [tool.setuptools.package-data]
-"openhac.database" = ["schema.sql", "footprint_map.json"]
+"openhac.database" = ["schema.sql", "footprint_map.json", "3d_fillin_map.json"]
 "openhac.fab_profiles" = ["*.json"]
 
 [tool.pytest.ini_options]

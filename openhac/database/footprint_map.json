@@ -21,7 +21,9 @@
     "SMA": "Capacitor_Tantalum_SMD:CP_EIA-3216-18_Kemet-A",
     "SMB": "Capacitor_Tantalum_SMD:CP_EIA-3528-21_Kemet-B",
     "SMC": "Capacitor_Tantalum_SMD:CP_EIA-6032-28_Kemet-C",
-    "SMD": "Capacitor_Tantalum_SMD:CP_EIA-7343-31_Kemet-D"
+    "SMD": "Capacitor_Tantalum_SMD:CP_EIA-7343-31_Kemet-D",
+    "CASE-A-3216-18": "Capacitor_Tantalum_SMD:CP_EIA-3216-18_Kemet-A",
+    "CASE-B-3528-21": "Capacitor_Tantalum_SMD:CP_EIA-3528-21_Kemet-B"
   },
   "inductors": {
     "0402": "Inductor_SMD:L_0402_1005Metric",
@@ -40,29 +42,47 @@
   "mosfets": {
     "SOT-23":   "Package_TO_SOT_SMD:SOT-23",
     "SOT-23-3": "Package_TO_SOT_SMD:SOT-23",
+    "SOT-23-3L": "Package_TO_SOT_SMD:SOT-23",
+    "SOT23-3L": "Package_TO_SOT_SMD:SOT-23",
     "SOT-23-5": "Package_TO_SOT_SMD:SOT-23-5",
     "SOT-23-6": "Package_TO_SOT_SMD:SOT-23-6",
     "SOT-89":   "Package_TO_SOT_SMD:SOT-89-3",
     "SOT-223":  "Package_TO_SOT_SMD:SOT-223-3_TabPin2",
     "TO-252":   "Package_TO_SOT_SMD:TO-252-2",
-    "TO-263":   "Package_TO_SOT_SMD:TO-263-2"
+    "TO-263":   "Package_TO_SOT_SMD:TO-263-2",
+    "SOP-8":    "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"
   },
   "voltage_regulators": {
     "SOT-23":   "Package_TO_SOT_SMD:SOT-23",
+    "SOT-23-3": "Package_TO_SOT_SMD:SOT-23",
+    "SOT-23-3L": "Package_TO_SOT_SMD:SOT-23",
     "SOT-23-5": "Package_TO_SOT_SMD:SOT-23-5",
     "SOT-89":   "Package_TO_SOT_SMD:SOT-89-3",
+    "SOT-89-3": "Package_TO_SOT_SMD:SOT-89-3",
+    "SOT-89-3L": "Package_TO_SOT_SMD:SOT-89-3",
     "SOT-223":  "Package_TO_SOT_SMD:SOT-223-3_TabPin2",
+    "SOT-223-3": "Package_TO_SOT_SMD:SOT-223-3_TabPin2",
+    "SOT-223-3L": "Package_TO_SOT_SMD:SOT-223-3_TabPin2",
     "TO-252":   "Package_TO_SOT_SMD:TO-252-2",
-    "TO-263":   "Package_TO_SOT_SMD:TO-263-3_TabPin2"
+    "TO-252-2": "Package_TO_SOT_SMD:TO-252-2",
+    "TO-252-2L": "Package_TO_SOT_SMD:TO-252-2",
+    "DPAK":     "Package_TO_SOT_SMD:TO-252-2",
+    "TO-263":   "Package_TO_SOT_SMD:TO-263-3_TabPin2",
+    "TO-92":    "Package_TO_SOT_THT:TO-92",
+    "TO-92-3":  "Package_TO_SOT_THT:TO-92",
+    "SOIC-8":   "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm"
   },
   "diodes": {
     "SOD-123": "Diode_SMD:D_SOD-123",
+    "SOD-123FL": "Diode_SMD:D_SOD-123F",
     "SOD-323": "Diode_SMD:D_SOD-323",
     "SOD-523": "Diode_SMD:D_SOD-523",
     "SOT-23":  "Diode_SMD:D_SOT-23",
     "SMA":     "Diode_SMD:D_SMA",
     "SMB":     "Diode_SMD:D_SMB",
     "SMC":     "Diode_SMD:D_SMC",
+    "DO-214AC": "Diode_SMD:D_SMA",
+    "DO-214AA": "Diode_SMD:D_SMB",
     "MELF":    "Diode_SMD:D_MELF",
     "MiniMELF": "Diode_SMD:D_MiniMELF"
   },
@@ -72,5 +92,24 @@
     "3225": "Crystal:Crystal_SMD_3225-4Pin_3.2x2.5mm",
     "5032": "Crystal:Crystal_SMD_5032-2Pin_5.0x3.2mm",
     "7050": "Crystal:Crystal_SMD_7050-4Pin_7.0x5.0mm"
+  },
+  "fuses": {
+    "0402": "Fuse:Fuse_0402_1005Metric",
+    "0603": "Fuse:Fuse_0603_1608Metric",
+    "0805": "Fuse:Fuse_0805_2012Metric",
+    "1206": "Fuse:Fuse_1206_3216Metric",
+    "1210": "Fuse:Fuse_1210_3225Metric",
+    "1812": "Fuse:Fuse_1812_4532Metric",
+    "2920": "Fuse:Fuse_2920_7451Metric"
+  },
+  "microcontrollers": {
+    "LQFP-32": "Package_QFP:LQFP-32_7x7mm_P0.8mm",
+    "LQFP-48": "Package_QFP:LQFP-48_7x7mm_P0.5mm",
+    "LQFP-64": "Package_QFP:LQFP-64_10x10mm_P0.5mm",
+    "LQFP-100": "Package_QFP:LQFP-100_14x14mm_P0.5mm",
+    "LQFP-144": "Package_QFP:LQFP-144_20x20mm_P0.5mm",
+    "TSSOP-20": "Package_SO:TSSOP-20_4.4x6.5mm_P0.65mm",
+    "SOP-8": "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm",
+    "SOT-23-6": "Package_TO_SOT_SMD:SOT-23-6"
   }
 }

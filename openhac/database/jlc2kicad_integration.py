@@ -108,11 +108,15 @@ def generate_symbol_from_lcsc(lcsc_id: str) -> str | None:
         lib_name = sym_file.stem
         
         m3d_path = None
-        # JLC2KiCAD usually puts 3D models in a 'packages3d' or '3d' subdirectory
-        m3d_files = list(out_dir.rglob("*.step")) + list(out_dir.rglob("*.wrl"))
-        if m3d_files:
-            # Pick the one matching our lcsc_id or the most recent
-            m3d_path = str(m3d_files[0].absolute())
+        from openhac.database.kicad_3d import is_jedec_placeholder_3d
+
+        m3d_files = [p for p in out_dir.rglob("*") if p.suffix.lower() in {".step", ".wrl", ".stp"}]
+        sku_l = str(lcsc_id).lower()
+        named = [p for p in m3d_files if sku_l in p.name.lower()]
+        ranked = named or [p for p in m3d_files if not is_jedec_placeholder_3d(str(p))]
+        if ranked:
+            ranked.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            m3d_path = str(ranked[0].resolve())
             logger.info("Found generated 3D model file: %s", m3d_path)
 
         return f"jlc2kicad_generated:{lib_name}", m3d_path

@@ -1,0 +1,14 @@
+{
+  "schema": "openhac.3d-fillin.v1",
+  "description": "KiCad footprint id → 3D fill-in when the KiCad 3D pack has no body. Compile never fetches; prefetch writes ~/.kiro/openhac/3d_models/<Lib>/<Footprint>.step from this map, catalog C… SKUs, or jlcsearch by MPN. source is lcsc:Cxxxxx, kicad, or file:/path.",
+  "entries": {
+    "Connector_USB:USB_C_Receptacle_HRO_TYPE-C-31-M-12": {
+      "source": "lcsc:C165948",
+      "note": "HRO TYPE-C-31-M-12. KiCad pack has no HRO STEP."
+    },
+    "Connector_Card:microSD_HC_Molex_47219-2001": {
+      "source": "lcsc:C164170",
+      "note": "Molex 47219-2001. KiCad pack ships Hirose meshes only."
+    }
+  }
+}

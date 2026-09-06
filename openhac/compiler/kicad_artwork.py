@@ -22,6 +22,9 @@ from openhac.schematic.util import net_name, part_ref, pin_num, sorted_net_pins
 logger = logging.getLogger("openhac.kicad_artwork")
 
 _PIN_SNAP_MM = 1.27
+# Conflict checks need a tighter hit than layout snap: 1.27 mm can land on the
+# neighbour pin of the same symbol (LIVE-006 false shorts on recompile).
+_CONFLICT_SNAP_MM = 0.51
 
 _AT_RE = re.compile(r"\(at\s+([-0-9.]+)\s+([-0-9.]+)(?:\s+([-0-9.]+))?\)")
 _CRTYD_START_RE = re.compile(r"\(start\s+([-0-9.]+)\s+([-0-9.]+)\)")
@@ -187,6 +190,7 @@ class SchWire:
     y1: float
     x2: float
     y2: float
+    sheet: str = ""
 
 
 @dataclass
@@ -195,6 +199,7 @@ class SchLabel:
     x: float
     y: float
     kind: str = "local"
+    sheet: str = ""
 
 
 @dataclass
@@ -322,6 +327,8 @@ def parse_sch_graphics(text: str) -> list[str]:
 
 def parse_sch_overlay(
     text: str,
+    *,
+    sheet: str = "",
 ) -> tuple[dict[str, SchSymbolPose], dict[str, SchSymbolPose], list[SchWire], list[SchLabel], list[str]]:
     records = parse_sch_symbol_records(text)
     symbols: dict[str, SchSymbolPose] = {}
@@ -331,14 +338,14 @@ def parse_sch_overlay(
             by_uuid[pose.uuid] = pose
         if _usable_refdes(pose.ref):
             symbols[pose.ref] = pose
-    wires = [SchWire(*seg) for seg in parse_kicad_sch_wire_segments(text)]
+    wires = [SchWire(*seg, sheet=sheet) for seg in parse_kicad_sch_wire_segments(text)]
     labels: list[SchLabel] = []
     for m in _LABEL_KIND_RE.finditer(text):
         kind_raw, name, x, y = m.group(1), m.group(2), float(m.group(3)), float(m.group(4))
         kind = "global" if kind_raw == "global_label" else "hierarchical" if kind_raw == "hierarchical_label" else "local"
-        labels.append(SchLabel(name=name, x=x, y=y, kind=kind))
+        labels.append(SchLabel(name=name, x=x, y=y, kind=kind, sheet=sheet))
     if not labels:
-        labels = [SchLabel(name=n, x=x, y=y) for n, x, y in parse_kicad_sch_net_labels(text)]
+        labels = [SchLabel(name=n, x=x, y=y, sheet=sheet) for n, x, y in parse_kicad_sch_net_labels(text)]
     graphics = parse_sch_graphics(text)
     return symbols, by_uuid, wires, labels, graphics
 
@@ -409,6 +416,17 @@ def parse_pcb_copper(text: str, net_table: dict[int, str] | None = None) -> tupl
     return tracks, vias, zones
 
 
+def sibling_sheet_name(project_stem: str, path: Path) -> str:
+    """``board.ANALOG.kicad_sch`` → ``ANALOG``; empty if not a sibling sheet file."""
+    name = path.name
+    prefix = f"{project_stem}."
+    suffix = ".kicad_sch"
+    if not name.startswith(prefix) or not name.endswith(suffix):
+        return ""
+    mid = name[len(prefix) : -len(suffix)]
+    return mid if mid and "/" not in mid else ""
+
+
 def load_overlay_from_dir(output_dir: str | os.PathLike[str] | None, project_name: str) -> KicadArtworkOverlay:
     """Parse saved KiCad files next to compile artifacts (before they are overwritten)."""
     overlay = KicadArtworkOverlay()
@@ -427,7 +445,7 @@ def load_overlay_from_dir(output_dir: str | os.PathLike[str] | None, project_nam
         overlay.source_sch = str(sch)
         try:
             text = sch.read_text(encoding="utf-8")
-            symbols, by_uuid, wires, labels, graphics = parse_sch_overlay(text)
+            symbols, by_uuid, wires, labels, graphics = parse_sch_overlay(text, sheet="")
             overlay.symbols.update(symbols)
             overlay.symbols_by_uuid.update(by_uuid)
             overlay.sch_wires.extend(wires)
@@ -438,8 +456,9 @@ def load_overlay_from_dir(output_dir: str | os.PathLike[str] | None, project_nam
         stem = sch.stem
         for sibling in sorted(base.glob(f"{stem}.*.kicad_sch")):
             try:
+                sheet = sibling_sheet_name(stem, sibling)
                 text = sibling.read_text(encoding="utf-8")
-                symbols, by_uuid, wires, labels, graphics = parse_sch_overlay(text)
+                symbols, by_uuid, wires, labels, graphics = parse_sch_overlay(text, sheet=sheet)
                 overlay.symbols.update(symbols)
                 overlay.symbols_by_uuid.update(by_uuid)
                 overlay.sch_wires.extend(wires)
@@ -485,6 +504,7 @@ def attach_overlay_to_state(state) -> KicadArtworkOverlay:
         state.artwork_overlay = overlay
         try:
             setattr(state.board, "_kicad_artwork_overlay", overlay)
+            setattr(state.board, "_keep_kicad_artwork", False)
             setattr(state.board, "_live_kicad_artwork", {"merged": False, "regenerate": True})
         except Exception:
             pass
@@ -509,6 +529,7 @@ def attach_overlay_to_state(state) -> KicadArtworkOverlay:
         state.auto_route = False
     try:
         setattr(state.board, "_kicad_artwork_overlay", overlay)
+        setattr(state.board, "_keep_kicad_artwork", keep)
         setattr(
             state.board,
             "_live_kicad_artwork",
@@ -610,16 +631,67 @@ def nearest_pin(
     return best
 
 
+def _pin_xy_for_wire(
+    wire: SchWire,
+    pin_xy: dict[tuple[str, str], tuple[float, float]],
+    pin_xy_by_sheet: dict[str, dict[tuple[str, str], tuple[float, float]]] | None,
+    hierarchical: bool,
+) -> dict[tuple[str, str], tuple[float, float]]:
+    """Child-sheet wires live in that page's coordinates, not the packed parent canvas."""
+    if hierarchical and not wire.sheet:
+        return {}
+    if wire.sheet and pin_xy_by_sheet is not None:
+        return pin_xy_by_sheet.get(wire.sheet) or {}
+    return pin_xy
+
+
+def _seg_key(x1: float, y1: float, x2: float, y2: float, nd: int = 2) -> tuple:
+    a = (round(x1, nd), round(y1, nd))
+    b = (round(x2, nd), round(y2, nd))
+    return (a, b) if a <= b else (b, a)
+
+
+def ir_wire_echo_keys(ir) -> set[tuple]:
+    """Canonical overlay-wire keys for segments the graph IR already emits."""
+    keys: set[tuple] = set()
+    children = getattr(ir, "child_sheets", None) or {}
+
+    def harvest(obj, sheet: str) -> None:
+        for w in list(getattr(obj, "wires", None) or []):
+            sh = getattr(w, "sheet", None)
+            if sh is None or sh == "":
+                sh = sheet
+            keys.add((sh, _seg_key(w.x1, w.y1, w.x2, w.y2)))
+
+    harvest(ir, "")
+    for name, child in children.items():
+        harvest(child, name)
+    return keys
+
+
 def overlay_wire_conflicts(
     overlay: KicadArtworkOverlay,
     pin_xy: dict[tuple[str, str], tuple[float, float]],
     pin_to_net: dict[tuple[str, str], str],
+    *,
+    pin_xy_by_sheet: dict[str, dict[tuple[str, str], tuple[float, float]]] | None = None,
+    hierarchical: bool = False,
+    echo_keys: set[tuple] | None = None,
 ) -> list[str]:
-    """LIVE-005/006: user wires whose endpoints sit on two different graph nets."""
+    """LIVE-005/006: user wires whose endpoints sit on two different graph nets.
+
+    Segments the current IR already draws (OpenHaC stubs / power-port leads) are
+    not user shorts — re-ingesting last compile's ``.kicad_sch`` must not abort.
+    """
     conflicts: list[str] = []
     for w in overlay.sch_wires:
-        a = nearest_pin(w.x1, w.y1, pin_xy)
-        b = nearest_pin(w.x2, w.y2, pin_xy)
+        if echo_keys is not None and (w.sheet, _seg_key(w.x1, w.y1, w.x2, w.y2)) in echo_keys:
+            continue
+        xy = _pin_xy_for_wire(w, pin_xy, pin_xy_by_sheet, hierarchical)
+        if not xy:
+            continue
+        a = nearest_pin(w.x1, w.y1, xy, _CONFLICT_SNAP_MM)
+        b = nearest_pin(w.x2, w.y2, xy, _CONFLICT_SNAP_MM)
         if a is None or b is None:
             continue
         na, nb = pin_to_net.get(a), pin_to_net.get(b)
@@ -654,24 +726,46 @@ def merge_schematic_overlay(ir, overlay: KicadArtworkOverlay | None, nets: Itera
     graph_nets = {net_name(n) for n in nets if net_name(n)}
     pin_to_net = pin_to_net_map(nets)
     pin_xy = dict(getattr(ir, "pin_xy", None) or {})
-    conflicts = overlay_wire_conflicts(overlay, pin_xy, pin_to_net)
+    children = getattr(ir, "child_sheets", None) or {}
+    hierarchical = bool(children)
+    pin_xy_by_sheet = {name: dict(getattr(child, "pin_xy", None) or {}) for name, child in children.items()}
+    conflicts = overlay_wire_conflicts(
+        overlay,
+        pin_xy,
+        pin_to_net,
+        pin_xy_by_sheet=pin_xy_by_sheet,
+        hierarchical=hierarchical,
+        echo_keys=ir_wire_echo_keys(ir),
+    )
     from openhac.schematic.ir import NetLabel, WireSeg
+
+    def _target(sheet: str):
+        if hierarchical and sheet and sheet in children:
+            return children[sheet]
+        return ir
 
     existing = {
         (round(w.x1, 3), round(w.y1, 3), round(w.x2, 3), round(w.y2, 3))
-        for w in list(getattr(ir, "wires", None) or [])
+        for dest in [ir, *children.values()]
+        for w in list(getattr(dest, "wires", None) or [])
     }
     for w in overlay.sch_wires:
-        a = nearest_pin(w.x1, w.y1, pin_xy)
-        b = nearest_pin(w.x2, w.y2, pin_xy)
+        dest = _target(w.sheet)
+        xy = _pin_xy_for_wire(w, pin_xy, pin_xy_by_sheet, hierarchical)
+        a = nearest_pin(w.x1, w.y1, xy) if xy else None
+        b = nearest_pin(w.x2, w.y2, xy) if xy else None
         net_a = pin_to_net.get(a) if a else None
         net_b = pin_to_net.get(b) if b else None
         if net_a and net_b and net_a != net_b:
             continue  # conflict; do not emit the short
         keep_net = net_a or net_b
         if keep_net is None:
-            # Label near an endpoint can claim the wire.
-            for lb in overlay.sch_labels:
+            labels = [
+                lb
+                for lb in overlay.sch_labels
+                if (not w.sheet or not getattr(lb, "sheet", "") or lb.sheet == w.sheet)
+            ]
+            for lb in labels:
                 if lb.name not in graph_nets:
                     continue
                 if _dist2(lb.x, lb.y, w.x1, w.y1) <= _PIN_SNAP_MM ** 2 or _dist2(lb.x, lb.y, w.x2, w.y2) <= _PIN_SNAP_MM ** 2:
@@ -682,17 +776,22 @@ def merge_schematic_overlay(ir, overlay: KicadArtworkOverlay | None, nets: Itera
         key = (round(w.x1, 3), round(w.y1, 3), round(w.x2, 3), round(w.y2, 3))
         if key in existing:
             continue
-        ir.wires.append(WireSeg(w.x1, w.y1, w.x2, w.y2, net=keep_net))
+        dest.wires.append(WireSeg(w.x1, w.y1, w.x2, w.y2, net=keep_net))
         existing.add(key)
 
-    have_labels = {(lb.name, round(lb.x, 3), round(lb.y, 3)) for lb in list(getattr(ir, "labels", None) or [])}
+    have_labels = {
+        (lb.name, round(lb.x, 3), round(lb.y, 3))
+        for dest in [ir, *children.values()]
+        for lb in list(getattr(dest, "labels", None) or [])
+    }
     for lb in overlay.sch_labels:
         if lb.name not in graph_nets:
             continue
+        dest = _target(getattr(lb, "sheet", "") or "")
         key = (lb.name, round(lb.x, 3), round(lb.y, 3))
         if key in have_labels:
             continue
-        ir.labels.append(NetLabel(lb.name, lb.x, lb.y, lb.kind))
+        dest.labels.append(NetLabel(lb.name, lb.x, lb.y, lb.kind))
         have_labels.add(key)
 
     extra = list(getattr(ir, "overlay_sexp", None) or [])

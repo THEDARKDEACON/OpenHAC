@@ -146,30 +146,30 @@ OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_complex_boards.py --place
 python3 scripts/ci_validate_complex_boards.py --api --only lcsc_api_mixed   # live jlcsearch
 ```
 
-Examples: `complex_esp32_devkit_node.py`, `complex_stm32_can_node.py`, `complex_rs485_node.py`, `complex_esp32c3_usb_node.py`, `complex_sensor_hub.py`, `complex_industrial_mesh_gateway.py`, `complex_amr_compute_brick.py`, `complex_lcsc_api_mixed_node.py`.  
+Examples: `complex_esp32_devkit_node.py`, `complex_stm32_can_node.py`, `complex_rs485_node.py`, `complex_esp32c3_usb_node.py`, `complex_sensor_hub.py`, `complex_industrial_mesh_gateway.py`, `complex_amr_compute_brick.py`, `complex_lcsc_api_mixed_node.py`, `complex_grid_edge_rtu.py` (`openhac compile examples/complex_grid_edge_rtu.py` — catalog from `complex_grid_edge_rtu.openhac.json`, not `_offline_parts`, not in the default `--production` matrix).  
 See the “Complex multi-IC boards” section in PRODUCTION_VALIDATION.md.
 
 ### JLC / LCSC boards — simple workflow
 
-Use this when your design uses LCSC/JLC parts and you want the catalog, enrich, and optional pad checks to line up.
+Use this when your design uses LCSC/JLC parts.
 
-1. **Footprints** — Set `KICAD*_FOOTPRINT_DIR` so every `*.kicad_mod` your BOM references can be found (see Requirements above).
-2. **Catalog in SQLite** — Refresh occasionally: `python3 -m openhac.database.sync_jlc`, or add `--sync-jlc-before` on `openhac compile` so sync runs automatically before the board loads. Depth report: `openhac catalog coverage` (`compile_ready` vs `warehouse`). An LCSC CSV dump (`import_lcsc_csv`) is warehouse, not a packed catalog. Maintainer snapshot (not `--production`, not user CI): `python scripts/catalog_snapshot.py`.
-3. **Fill gaps after load** — Add `--auto-enrich-board` so OpenHaC can discover missing DB rows and enrich symbol/pinout data for the parts on your board.
-4. **Stricter fab check (optional)** — When you are ready to fail on bad pin↔pad pairing: `--strict-footprint-pads` (or `OPENHAC_STRICT_FOOTPRINT_PIN_PAD=1`). For stricter merge rules during enrich, set `OPENHAC_ENRICH_STRICT_PINOUT_PADS=1`.
-5. **Catalog overlays** — Bundled JSON fixes live under `openhac/database/package_catalog_overlays/` and merge automatically unless `OPENHAC_NO_BUNDLED_CATALOG_OVERLAYS=1`. For **extra** project-specific overrides, use `--catalog-overlay /path/to/dir-or-file` or `OPENHAC_CATALOG_OVERLAY`. Details: `openhac/database/package_catalog_overlays/README.md`.
+1. **Compile** — `openhac compile my_design.py -o build`. If the board ships `{stem}.openhac-seed.json` or `{stem}.openhac.json` (seed / vendor cassettes / overlays), those files load before `Component()` runs. That is the default path.
+2. **Footprints** — Set `KICAD*_FOOTPRINT_DIR` so every `*.kicad_mod` your BOM references can be found (see Requirements above).
+3. **Warehouse catalog (optional)** — `openhac sync` fills passives/ICs you did not seed. Not required for boards that ship a sidecar. Depth report: `openhac catalog coverage`.
+4. **3D / EasyEDA (optional, needs network)** — `--auto-enrich-board` after the board already constructed. Forbidden under `--production`.
+5. **Catalog overlays** — Bundled JSON under `openhac/database/package_catalog_overlays/` merges on read. Project extras: `catalog_overlays/` next to the script, `--catalog-overlay`, or `OPENHAC_CATALOG_OVERLAY`.
 
-Example (sync + enrich in one compile):
+Example:
 
 ```bash
-openhac compile my_design.py -o build --sync-jlc-before --auto-enrich-board
+openhac compile my_design.py -o build
 ```
 
 ### 3D Model & Footprint Automation
 
 OpenHaC can automatically download 3D models and generate footprints for LCSC parts that lack them in the local database.
 
-- **Prefetch (before `--production`)**: `openhac catalog prefetch-3d board.py` (forbidden under `OPENHAC_NO_NETWORK`). STEP/WRL stay out of git; cache is `~/.kiro/openhac/`.
+- **Prefetch (before `--production`)**: `openhac catalog prefetch-3d board.py` (forbidden under `OPENHAC_NO_NETWORK`). STEP/WRL stay out of git. KiCad pack meshes stay `${KICAD9_3DMODEL_DIR}`; missing pack bodies are `~/.kiro/openhac/3d_models/<Lib>/<Footprint>.step` (bundled map, catalog LCSC, or jlcsearch by MPN).
 - **Trigger**: Run with `--auto-enrich-board`. If a part has a JLC SKU (e.g., `C6396158`) but no verified footprint or missing 3D model, OpenHaC will:
     1.  Fetch the footprint and 3D model from EasyEDA.
     2.  Convert them to KiCad formats (`.kicad_mod`, `.step`).

@@ -6,6 +6,8 @@ from io import BytesIO
 
 import pytest
 
+from openhac.database.easyeda_integration import generate_footprint_from_lcsc
+from openhac.database import sync_jlc as sync_jlc_mod
 from openhac.database.sync_jlc import (
     sync_catalog,
     _format_resistance,
@@ -13,6 +15,9 @@ from openhac.database.sync_jlc import (
     _package_to_footprint,
     _diode_kicad_symbol,
     _derive_generic_name,
+    _component_row_from_jlc_item,
+    _footprint_compatible_with_request,
+    _package_reflected_in_footprint,
     CATEGORY_ENDPOINTS,
 )
 
@@ -86,6 +91,100 @@ class TestPackageToFootprint:
     def test_unknown_package_fallback(self):
         fp = _package_to_footprint("resistors", "9999")
         assert fp == "9999"
+
+    def test_diode_sma_do214_alias(self):
+        fp = _package_to_footprint("diodes", "SMA(DO-214AC)")
+        assert fp == "Diode_SMD:D_SMA"
+
+    def test_diode_do214_inner_sma_alias(self):
+        sync_jlc_mod._FOOTPRINT_MAP_CACHE = None
+        fp = _package_to_footprint("diodes", "DO-214AC(SMA)")
+        assert fp == "Diode_SMD:D_SMA"
+
+    def test_fuse_1812_is_chip_fuse_not_holder(self):
+        sync_jlc_mod._FOOTPRINT_MAP_CACHE = None
+        fp = _package_to_footprint("fuses", "1812")
+        assert fp == "Fuse:Fuse_1812_4532Metric"
+        assert "Fuseholder" not in fp
+
+    def test_mcu_lqfp48_alias(self):
+        sync_jlc_mod._FOOTPRINT_MAP_CACHE = None
+        fp = _package_to_footprint("microcontrollers", "LQFP-48(7x7)")
+        assert fp == "Package_QFP:LQFP-48_7x7mm_P0.5mm"
+
+    def test_rejects_incompatible_fuseholder_fuzzy(self, monkeypatch):
+        monkeypatch.setattr(
+            sync_jlc_mod,
+            "_verify_and_resolve_kicad_footprint",
+            lambda fp: (fp, 1, "Fuse:Fuseholder_Keystone_3555-2", "fuzzy"),
+        )
+        fp = _package_to_footprint("fuses", "2410", allow_easyeda=False)
+        assert "Fuseholder" not in fp
+        assert fp == "2410"
+
+    def test_rejects_incompatible_sensor_mics_fuzzy(self, monkeypatch):
+        monkeypatch.setattr(
+            sync_jlc_mod,
+            "_verify_and_resolve_kicad_footprint",
+            lambda fp: (fp, 1, "Sensor:Sensortech_MiCS_5x7mm_P1.25mm", "fuzzy"),
+        )
+        fp = _package_to_footprint("accelerometers", "LFCSP-32(5x5)", allow_easyeda=False)
+        assert "MiCS" not in fp
+
+    def test_unknown_package_warns_once_per_pair(self, monkeypatch):
+        calls: list = []
+        monkeypatch.setattr(
+            sync_jlc_mod.logger, "warning", lambda *a, **k: calls.append(a)
+        )
+        sync_jlc_mod._UNKNOWN_PACKAGE_WARNED.clear()
+        _package_to_footprint("leds", "SMD5050-4P-ONCE", allow_easyeda=False)
+        _package_to_footprint("leds", "SMD5050-4P-ONCE", allow_easyeda=False)
+        assert len(calls) == 1
+
+    def test_footprint_compat_helpers(self):
+        assert _footprint_compatible_with_request("Fuse_1812", "Fuse_1812_4532Metric")
+        assert not _footprint_compatible_with_request("Fuse_1812", "Fuseholder_Keystone_3555-2")
+        assert not _footprint_compatible_with_request("SOP-8", "Texas_HSOP-8-1EP_3.9x4.9mm_P1.27mm")
+        assert _footprint_compatible_with_request("SOP-8", "SOP-8_3.76x4.96mm_P1.27mm")
+        assert not _package_reflected_in_footprint("1812", "Fuse:Fuseholder_Keystone_3555-2")
+        assert _package_reflected_in_footprint("1812", "Fuse:Fuse_1812_4532Metric")
+
+    def test_catalog_row_skips_easyeda_by_default(self, monkeypatch):
+        gen = MagicMock(return_value=("easyeda_generated:X", None))
+        monkeypatch.setattr(
+            "openhac.database.easyeda_integration.generate_footprint_from_lcsc",
+            gen,
+        )
+        row = _component_row_from_jlc_item(
+            "diodes",
+            {"lcsc": "392013", "package": "SMD-NOMAP", "mfr": "X", "is_schottky": False},
+        )
+        assert row is not None
+        gen.assert_not_called()
+        assert isinstance(row["kicad_footprint"], str)
+
+    def test_easyeda_fallback_stores_string_not_tuple(self, monkeypatch):
+        monkeypatch.setattr(
+            "openhac.database.easyeda_integration.generate_footprint_from_lcsc",
+            lambda lcsc: ("easyeda_generated:CAP-SMD_L3.2-W1.6-RD-C7171", "/tmp/c7171.step"),
+        )
+        extra = {}
+        fp = _package_to_footprint(
+            "capacitors", "SMD,3.2x1.6mm", lcsc="C7171", extra_fields=extra
+        )
+        assert fp == "easyeda_generated:CAP-SMD_L3.2-W1.6-RD-C7171"
+        assert isinstance(fp, str)
+        assert extra["model_3d_local"] == "/tmp/c7171.step"
+        assert extra["model_3d_source"] == "easyeda"
+
+    def test_easyeda_failure_pair_does_not_become_footprint(self, monkeypatch):
+        monkeypatch.setattr(
+            "openhac.database.easyeda_integration.generate_footprint_from_lcsc",
+            lambda lcsc: (None, None),
+        )
+        fp = _package_to_footprint("capacitors", "SMD,3.2x1.6mm", lcsc="C7171")
+        assert isinstance(fp, str)
+        assert fp == "SMD,3.2x1.6mm"
 
 
 # ---------------------------------------------------------------------------
@@ -195,3 +294,63 @@ class TestSyncCatalog:
 
         with pytest.raises(RuntimeError, match="All category fetches failed"):
             sync_catalog(categories=["resistors"], verbose=False)
+
+
+def test_easyeda_invalid_id_returns_pair():
+    assert generate_footprint_from_lcsc("") == (None, None)
+    assert generate_footprint_from_lcsc("7171") == (None, None)
+
+
+def test_component_row_easyeda_footprint_is_scalar(monkeypatch):
+    monkeypatch.setattr(
+        "openhac.database.easyeda_integration.generate_footprint_from_lcsc",
+        lambda lcsc: ("easyeda_generated:CAP-SMD_L3.2-W1.6-RD-C7171", "/tmp/c7171.step"),
+    )
+    row = _component_row_from_jlc_item(
+        "capacitors",
+        {
+            "capacitance": 10e-6,
+            "package": "SMD,3.2x1.6mm",
+            "lcsc": "7171",
+            "mfr": "X",
+            "description": "10uF",
+        },
+        allow_easyeda=True,
+    )
+    assert row is not None
+    assert row["kicad_footprint"] == "easyeda_generated:CAP-SMD_L3.2-W1.6-RD-C7171"
+    assert isinstance(row["kicad_footprint"], str)
+    assert row["model_3d_local"] == "/tmp/c7171.step"
+    assert row["model_3d_source"] == "easyeda"
+
+
+def test_insert_component_rejects_tuple_footprint(tmp_db):
+    _, dm = tmp_db
+    with pytest.raises(TypeError, match="kicad_footprint=tuple"):
+        dm.insert_component(
+            {
+                "generic_name": "BAD_TUPLE_CAP",
+                "kicad_symbol": "Device:C",
+                "kicad_footprint": ("easyeda_generated:X", "/tmp/x.step"),
+            }
+        )
+
+
+def test_insert_component_accepts_easyeda_row(tmp_db, monkeypatch):
+    monkeypatch.setattr(
+        "openhac.database.easyeda_integration.generate_footprint_from_lcsc",
+        lambda lcsc: ("easyeda_generated:CAP-SMD_L3.2-W1.6-RD-C7171", "/tmp/c7171.step"),
+    )
+    _, dm = tmp_db
+    row = _component_row_from_jlc_item(
+        "capacitors",
+        {
+            "capacitance": 10e-6,
+            "package": "SMD,3.2x1.6mm",
+            "lcsc": "7171",
+            "mfr": "X",
+            "description": "10uF",
+        },
+        allow_easyeda=True,
+    )
+    assert dm.insert_component(row, ignore_duplicate=True)

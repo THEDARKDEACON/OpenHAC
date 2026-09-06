@@ -288,6 +288,43 @@ def _pin_covers_footprint_pad(pnum: str, pname: str, pads: set[str]) -> bool:
     return False
 
 
+def _footprint_declared_3d(fp) -> str | None:
+    """Filename from the first model already on a loaded ``.kicad_mod``."""
+    if fp is None or not hasattr(fp, "Models"):
+        return None
+    try:
+        models = fp.Models()
+    except Exception:
+        return None
+    if models is None:
+        return None
+    first = None
+    try:
+        if hasattr(models, "__len__") and len(models) == 0:
+            return None
+        first = models[0]
+    except Exception:
+        try:
+            first = next(iter(models))
+        except Exception:
+            return None
+    raw = str(getattr(first, "m_Filename", "") or "").strip()
+    return raw or None
+
+
+def _clear_footprint_3d(fp, ref: str) -> None:
+    if fp is None or not hasattr(fp, "Models"):
+        return
+    try:
+        models = fp.Models()
+        n = len(models) if hasattr(models, "__len__") else 1
+        models.clear()
+        if n:
+            logger.debug("Cleared missing 3D pointer on %s (3D-004)", ref)
+    except Exception as e:
+        logger.debug("Could not clear 3D models on %s: %s", ref, e)
+
+
 def resolve_pretty_directory(library_name: str) -> str | None:
     """Return path to ``{library_name}.pretty`` if found under any search root."""
     folder = f"{library_name}.pretty"
@@ -718,7 +755,7 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
                         "Part %s: footprint '%s:%s' not found locally — fetching from EasyEDA (LCSC: %s)...",
                         getattr(part, "ref", "?"), lib_name, fp_name, lcsc_id,
                     )
-                    easyeda_fp_id = generate_footprint_from_lcsc(lcsc_id)
+                    easyeda_fp_id, _easyeda_3d = generate_footprint_from_lcsc(lcsc_id)
                     if easyeda_fp_id:
                         logger.info("Part %s: downloaded footprint '%s' via EasyEDA.", getattr(part, "ref", "?"), easyeda_fp_id)
                         part.footprint = easyeda_fp_id
@@ -773,13 +810,18 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
         val = getattr(part, "value", None) or part.name
         fp.SetValue(str(val))
         
-        # Attach 3D model if metadata exists (PCB-008)
+        # Attach 3D model (PCB-008): KiCad pack or fill-in STEP. Clear dead
+        # library pointers when no mesh exists (3D-004).
         fields = getattr(part, "fields", {}) or {}
-        m3d = fields.get("Model_3D_Local")
-        if m3d and os.path.isfile(str(m3d)):
+        from openhac.database.kicad_3d import pcb_3d_model_filename
+
+        fp_id = str(getattr(part, "footprint", "") or "")
+        declared = _footprint_declared_3d(fp)
+        m3d = pcb_3d_model_filename(fp_id, fields.get("Model_3D_Local"), declared_model=declared)
+        if m3d:
             try:
                 m = pcbnew_mod.FP_3DMODEL()
-                m.m_Filename = str(os.path.abspath(m3d))
+                m.m_Filename = str(m3d) if str(m3d).startswith("${") else str(os.path.abspath(m3d))
                 
                 # Set explicit defaults (KiCad 8+ requires these to be set or they may default to 0)
                 try:
@@ -793,10 +835,8 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
                 except Exception as e:
                     logger.debug("Minor: 3D model property init partial for %s: %s", part.ref, e)
 
-                # Clear existing models to prevent duplicates (KiCad 8+)
                 if hasattr(fp, "Models"):
                     try:
-                        # Only clear if we actually have a replacement model to add
                         fp.Models().clear()
                     except Exception as e:
                         logger.debug("Could not clear existing 3D models on %s: %s", part.ref, e)
@@ -806,6 +846,8 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
                 logger.info("Attached 3D model to %s: %s", part.ref, m3d)
             except Exception as e:
                 logger.warning("Failed to attach 3D model to %s: %s", part.ref, e)
+        else:
+            _clear_footprint_3d(fp, getattr(part, "ref", "?"))
 
         if part in part_positions:
             x_mm, y_mm = part_positions[part]
