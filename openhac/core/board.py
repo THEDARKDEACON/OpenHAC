@@ -65,6 +65,7 @@ class Board:
         max_jlc_basic_parts: int | None = None,
         jlc_class_line_limits: dict[str, int] | None = None,
         power_net_prefixes: tuple[str, ...] | list[str] | None = None,
+        variant: str | None = None,
     ):
         # Strict mode enforces real components only - no synthetic parts allowed
         if strict:
@@ -158,6 +159,7 @@ class Board:
         self._spice_rails: dict[str, float] = {}
         self._spice_probes: list[dict] = []
         self._spice_island_names: list[str] = []
+        self._spice_ground_nets: list[str] = []
         self._spice_signoff_audit: dict | None = None
         #: Optional BOM labeling profile: ``prod`` / ``production`` / ``cm`` strips internal & alternate columns from CSV (LIB-004).
         _bp = bom_profile
@@ -259,6 +261,15 @@ class Board:
             self.power_net_prefixes: tuple[str, ...] = tuple(str(x).strip().lower() for x in pnp if str(x).strip())
         else:
             self.power_net_prefixes = ()
+        self.variant: str | None = str(variant).strip() if variant else None
+        self._power_tree = None
+        self._declared_testpoints: list[str] = []
+        self._testpoint_module = None
+        self._require_testpoints: bool = False
+        self._require_lock: bool = False
+        self._placement_intent: bool = False
+        self._lock_mismatch: list[str] = []
+        self._lock_missing_warning: bool = False
 
     def effective_compile_goal(self) -> str:
         """Return the compile goal, honoring env override."""
@@ -305,11 +316,92 @@ class Board:
         self._spice_rails[name] = float(voltage_v)
         return net
 
+    def set_variant(self, name: str | None) -> "Board":
+        """VAR-001: select which modules/parts are included vs DNP for this compile."""
+        self.variant = str(name).strip() if name else None
+        return self
+
+    def declare_power_tree(self):
+        """PWR-010: first-class named rails (voltage + optional max_amp). No efficiency claim."""
+        from openhac.core.power_tree import PowerTree
+
+        if self._power_tree is None:
+            self._power_tree = PowerTree(self)
+        return self._power_tree
+
+    def declare_rail(self, name: str, voltage_v: float, max_amp: float | None = None):
+        """PWR-010: ``declare_rail('3V3', voltage_v=3.3, max_amp=0.5)``."""
+        return self.declare_power_tree().declare_rail(name, voltage_v, max_amp=max_amp)
+
+    def declare_testpoint(self, net, *, footprint: str = "TestPoint:TestPoint_Pad_D1.5mm"):
+        """TST-001: ensure a TP footprint exists on *net*."""
+        import json
+
+        from openhac.core.base import Component, Module
+
+        name = str(getattr(net, "name", net)).strip()
+        if not name:
+            raise ValueError("declare_testpoint requires a net")
+        key = name.lower()
+        if key not in {n.lower() for n in self._declared_testpoints}:
+            self._declared_testpoints.append(name)
+        existing = tuple(self.require_test_point_on_nets or ())
+        if key not in existing:
+            self.require_test_point_on_nets = existing + (key,)
+        if self._testpoint_module is None:
+            self._testpoint_module = Module("OpenHaC_Testpoints")
+            self.add_module(self._testpoint_module)
+        n_tp = sum(
+            1
+            for c in getattr(self._testpoint_module, "components", []) or []
+            if str(getattr(c, "generic_name", "")).upper().startswith("TP_")
+        )
+        gn = f"TP_{name}_{n_tp + 1}"
+        pins = [{"num": "1", "name": "1", "type": "passive"}]
+        tp = Component(
+            gn,
+            {
+                "generic_name": gn,
+                "category": "testability",
+                "kicad_symbol": "Connector_Generic:Conn_01x01",
+                "kicad_footprint": footprint,
+                "pinout_json": json.dumps(pins),
+            },
+            pins={"1": ("1", "passive")},
+            footprint=footprint,
+        )
+        try:
+            tp.part.ref_prefix = "TP"
+        except Exception:
+            pass
+        tp["1"] += net
+        self._testpoint_module.add(tp)
+        return tp
+
+    def keep_together(self, parent, *satellites, max_center_mm: float | None = None):
+        """PLC-001: alias for module clustering (existing Z3 cluster_with)."""
+        for sat in satellites:
+            self.cluster_modules(parent, sat, max_center_mm=max_center_mm)
+        return parent
+
     def declare_spice_probe(self, net, vmin: float, vmax: float):
         """Declare an operating-point voltage window for spice_signoff (SPS-022)."""
         name = str(getattr(net, "name", net))
         self._spice_probes.append({"net": name, "vmin": float(vmin), "vmax": float(vmax)})
         return net
+
+    def declare_spice_ground(self, *nets) -> "Board":
+        """Extra Kirchhoff references mapped to SPICE node ``0`` (SPS-001).
+
+        Use for isolated analog returns (``GND3``, ``AGND``) when simulating an
+        analog island that does not contain primary ``GND``. Primary names
+        (``GND`` / ``VSS`` / …) still map to ``0``.
+        """
+        for net in nets:
+            name = str(getattr(net, "name", net)).strip()
+            if name and name not in self._spice_ground_nets:
+                self._spice_ground_nets.append(name)
+        return self
 
     def declare_spice_island(self, *modules) -> "Board":
         """Restrict spice_signoff to these modules (SPS-043).
@@ -753,11 +845,15 @@ class Board:
         return export_hardware_ir(self, output_path)
 
     def export_webview(self, output_path: str) -> None:
-        """Export an interactive HTML/JS graph explorer.
-        
-        This replaces the static `.kicad_sch` generated by the legacy schematic pipeline
-        with an interactive, beautiful browser-based topology viewer.
-        """
+        """Deprecated Cytoscape HTML explorer (FAB-041). Prefer ``openhac preview`` SVG."""
+        import warnings
+
+        warnings.warn(
+            "Board.export_webview is deprecated (FAB-041). Use openhac preview for KiCad SVG; "
+            "ERC stamp remains --schematic-signoff. Hardware IR JSON: export_ir().",
+            DeprecationWarning,
+            stacklevel=2,
+        )
         from openhac.webview.exporter import generate_interactive_webview
         generate_interactive_webview(self, output_path)
 
@@ -780,17 +876,57 @@ class Board:
         release_zip_path: str | os.PathLike[str] | None = None,
         catalog_overlay_paths: list[str | os.PathLike[str]] | tuple[str | os.PathLike[str], ...] | None = None,
         schematic_signoff: bool = False,
+        compile_profile: str | None = None,
+        keep_kicad_artwork: bool = False,
+        regenerate_artwork: bool = False,
+        require_lock: bool = False,
+        lock_file: str | os.PathLike[str] | None = None,
+        placement_intent: bool = False,
+        require_testpoints: bool = False,
+        variant: str | None = None,
     ):
         if schematic_signoff:
             self.schematic_signoff = True
             export_schematic = True
             kicad_sch_erc = True
+        if variant is not None:
+            self.set_variant(variant)
+        if require_testpoints or os.environ.get("OPENHAC_REQUIRE_TESTPOINTS", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            self._require_testpoints = True
+        if require_lock or os.environ.get("OPENHAC_REQUIRE_LOCK", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            self._require_lock = True
+        if placement_intent or os.environ.get("OPENHAC_PLACEMENT_INTENT", "").strip().lower() in (
+            "1",
+            "true",
+            "yes",
+            "on",
+        ):
+            self._placement_intent = True
+        from openhac.core.variant import apply_board_variant
+        from openhac.core.power_tree import sync_spice_rails_from_power_tree
+
+        apply_board_variant(self)
+        sync_spice_rails_from_power_tree(self)
         if kicad_sch_erc and not export_schematic:
             raise ValueError("kicad_sch_erc=True requires export_schematic=True")
         self.all_modules = self._get_all_modules()
 
         from openhac.core.compile_context import OpenHaCCompileContext, compile_context_reset, compile_context_set
-        from openhac.compiler.compile_pipeline import DEFAULT_COMPILE_PHASES, CompileState, run_compile_loop
+        from openhac.compiler.compile_pipeline import (
+            CompileState,
+            phases_for_profile,
+            run_compile_loop,
+        )
 
         # Deterministic mode: seed Python RNG for stable runs
         try:
@@ -844,6 +980,12 @@ class Board:
                 source_script_path=source_script_path,
                 output_dir=output_dir,
                 release_zip_path=release_zip_path,
+                keep_kicad_artwork=keep_kicad_artwork,
+                regenerate_artwork=regenerate_artwork,
+                require_lock=bool(self._require_lock),
+                lock_file=lock_file,
+                placement_intent=bool(self._placement_intent),
+                require_testpoints=bool(self._require_testpoints),
             )
             
             # Phase 3: Resolve Parametric Modules dynamically before generating the netlist
@@ -857,7 +999,52 @@ class Board:
             if max_attempts < 2 and str(getattr(self, "compile_goal", "") or "") == "fabrication":
                 if "max_attempts" not in (getattr(self, "quality_gates", None) or {}):
                     max_attempts = 2
-            run_compile_loop(state, generate_phases=DEFAULT_COMPILE_PHASES, max_attempts=max_attempts)
+            profile = (
+                compile_profile
+                or os.environ.get("OPENHAC_COMPILE_PROFILE")
+                or ""
+            ).strip().lower()
+            prev_skip = os.environ.get("OPENHAC_SKIP_LAYOUT")
+            try:
+                from openhac.compiler.kicad_artwork import attach_overlay_to_state
+
+                attach_overlay_to_state(state)
+                if profile == "preview":
+                    os.environ["OPENHAC_SKIP_LAYOUT"] = "1"
+                    state.skip_layout = True
+                    state.export_schematic = True
+                    state.kicad_sch_erc = False
+                    state.schematic_signoff = False
+                    state.lean_manifest = True
+                    state.generate_bom = False
+                    state.auto_route = False
+                elif profile in ("preview_pcb", "preview-pcb"):
+                    os.environ.pop("OPENHAC_SKIP_LAYOUT", None)
+                    state.skip_layout = False
+                    state.export_schematic = True
+                    state.kicad_sch_erc = False
+                    state.schematic_signoff = False
+                    state.lean_manifest = True
+                    state.generate_bom = False
+                    state.auto_route = False
+                elif profile == "logic":
+                    os.environ["OPENHAC_SKIP_LAYOUT"] = "1"
+                    state.skip_layout = True
+                    state.lean_manifest = True
+                    state.auto_route = False
+                state.compile_profile = profile or (
+                    "fabrication" if state.compile_goal == "fabrication" else "handoff"
+                )
+                if profile in ("preview_pcb", "preview-pcb"):
+                    state.compile_profile = "preview_pcb"
+                phases = phases_for_profile(profile)
+                run_compile_loop(state, generate_phases=phases, max_attempts=max_attempts)
+            finally:
+                if profile in ("preview", "logic", "preview_pcb", "preview-pcb"):
+                    if prev_skip is None:
+                        os.environ.pop("OPENHAC_SKIP_LAYOUT", None)
+                    else:
+                        os.environ["OPENHAC_SKIP_LAYOUT"] = prev_skip
         except Exception as e:
             logger.error("COMPILER ABORTED DUE TO PHYSICS RULES OR PIPELINE ERROR: %s", e)
             raise
@@ -1006,6 +1193,7 @@ class Board:
                     cir_path,
                     analysis_lines=analysis_lines,
                     signoff=signoff,
+                    ground_net_names=list(getattr(self, "_spice_ground_nets", None) or []),
                     merge_hints=list(getattr(self, "_net_merge_hints", None) or []),
                     rails=rails,
                     probes=probes,

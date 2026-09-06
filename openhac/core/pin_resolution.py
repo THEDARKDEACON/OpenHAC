@@ -168,23 +168,55 @@ def generate_generic_pins(comp_data: dict) -> list[Pin]:
     return [Pin(str(i), f"Pin_{i}", "bidirectional") for i in range(1, pin_count + 1)]
 
 
+# Chip EIA / metric sizes are two-terminal, not pin counts. PERF-001 stores
+# ``package`` from names like ``INDUCTOR_2R2_2520`` / ``C_10UF_0805``.
+_TWO_PIN_CHIP_PACKAGES = frozenset(
+    {
+        "0201",
+        "0402",
+        "0603",
+        "0805",
+        "1206",
+        "1210",
+        "2010",
+        "2512",
+        "2520",
+        "01005",
+        "1608",
+        "2012",
+        "3216",
+        "3225",
+        "4532",
+        "6332",
+    }
+)
+
+
 def estimate_pin_count(package: str) -> int:
     """Estimate number of pins from package name."""
     if not package:
         return 2
-    # Try to extract pin count from package name (e.g., "QFN-10", "SOIC-8")
-    match = re.search(r'(\d+)', str(package))
-    if match:
-        return int(match.group(1))
-    # Default guesses based on package type
-    pkg = str(package).upper()
-    if any(x in pkg for x in ['SOT-23', 'SOT23']):
-        return 3
-    if any(x in pkg for x in ['SOT-223', 'SOT223']):
-        return 4
-    if any(x in pkg for x in ['0805', '0603', '0402', '1206']):
+    pkg = str(package).strip()
+    compact = re.sub(r"[^0-9A-Za-z]", "", pkg).upper()
+    if compact in _TWO_PIN_CHIP_PACKAGES or re.fullmatch(r"\d{4}", pkg):
         return 2
-    return 8  # Default
+    pkg_u = pkg.upper()
+    if any(x in pkg_u for x in ("SOT-23", "SOT23")) and "223" not in pkg_u.replace("-", ""):
+        return 3
+    if any(x in pkg_u for x in ("SOT-223", "SOT223")):
+        return 4
+    # QFN-10 / SOIC-8: pin count is the trailing number after a letter prefix.
+    prefixed = re.search(r"[A-Za-z].*?(\d+)\s*$", pkg)
+    if prefixed:
+        n = int(prefixed.group(1))
+        return n if 1 <= n <= 512 else 8
+    match = re.search(r"(\d+)", pkg)
+    if match:
+        n = int(match.group(1))
+        if n > 512:
+            return 2
+        return n
+    return 8
 
 
 def infer_package(pin_count: int) -> str:

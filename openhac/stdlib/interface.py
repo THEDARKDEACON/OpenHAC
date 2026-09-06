@@ -20,8 +20,7 @@ class RS485_Transceiver(Module, _ParametricMixin):
     def __init__(self, v_cc: float = 3.3, package: str = "SOIC-8", **kwargs):
         super().__init__(f"RS485_{v_cc}V")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"RS485_Transceiver(v_cc={v_cc}V)"
 
@@ -82,8 +81,7 @@ class CAN_Transceiver(Module, _ParametricMixin):
     def __init__(self, v_cc: float = 3.3, package: str = "SOIC-8", **kwargs):
         super().__init__(f"CAN_{v_cc}V")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"CAN_Transceiver(v_cc={v_cc}V)"
 
@@ -140,8 +138,7 @@ class USB_Controller(Module, _ParametricMixin):
     def __init__(self, type: str = "uart", channels: int = 1, **kwargs):
         super().__init__(f"USB_{type.upper()}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"USB_Controller(type={type}, channels={channels})"
 
@@ -186,8 +183,7 @@ class Ethernet_PHY(Module, _ParametricMixin):
     def __init__(self, speed: str = "10/100", interface: str = "RMII", **kwargs):
         super().__init__(f"ETH_PHY_{interface}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"Ethernet_PHY(speed={speed}, interface={interface})"
 
@@ -225,8 +221,7 @@ class RF_Module(Module, _ParametricMixin):
     def __init__(self, protocol: str = "WiFi", form_factor: str = "Castellated", **kwargs):
         super().__init__(f"RF_{protocol}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"RF_Module(protocol={protocol}, form_factor={form_factor})"
 
@@ -237,14 +232,7 @@ class RF_Module(Module, _ParametricMixin):
         )
 
         if comp_data is None:
-            # Common part: ESP32-WROOM-32
-            generic_name = "ESP32-WROOM-32"
-            comp_data = db.get_component(generic_name)
-            if comp_data is None:
-                comp_data = Component._live_lookup(generic_name)
-            if comp_data is None:
-                self._raise_not_found(desc)
-            was_fallback = True
+            self._raise_not_found(desc)
 
         if was_fallback:
             self._warn_soft_fallback(desc, comp_data)

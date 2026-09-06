@@ -22,8 +22,7 @@ class USB_C_Connector(Module, _ParametricMixin):
                  package: str = None, **kwargs):
         super().__init__(f"USB_C_{type.upper()}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"USB_C_Connector(type={type}, data={data})"
 
@@ -93,8 +92,7 @@ class SD_Slot(Module, _ParametricMixin):
     def __init__(self, type: str = "micro", package: str = None, **kwargs):
         super().__init__(f"SD_{type.upper()}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"SD_Slot(type={type})"
 
@@ -142,8 +140,7 @@ class DSub_Connector(Module, _ParametricMixin):
     def __init__(self, pins: int = 9, type: str = "female", **kwargs):
         super().__init__(f"DB{pins}_{type.upper()[0]}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"DSub(pins={pins}, type={type})"
 
@@ -181,8 +178,7 @@ class TerminalBlock(Module, _ParametricMixin):
     def __init__(self, pins: int = 2, pitch: float = 5.08, **kwargs):
         super().__init__(f"TERM_{pins}P_{pitch}mm")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"TerminalBlock(pins={pins}, pitch={pitch}mm)"
 
@@ -222,8 +218,7 @@ class Mezzanine_Connector(Module, _ParametricMixin):
                  stack_height: float = 5.0, **kwargs):
         super().__init__(f"MEZZ_{pins}P_{stack_height}mm")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"Mezzanine(pins={pins}, pitch={pitch}mm, height={stack_height}mm)"
 

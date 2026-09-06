@@ -127,6 +127,19 @@ class StatusLed(Module):
         self.rled[2] += self.gnd
         self.led[2] += self.v3v3
         self.led[1] += self.gnd
+        self.r_probe = self.add(_r("R_PROBE_4K7", "4k7"))
+        self.r_probe = self.add(_r("R_PROBE_4K7", "4k7"))
+        self.c_probe = self.add(_c("C_PROBE_1U", "1uF"))
+        self.r_probe[1] += self.v3v3
+        self.r_probe[2] += self.gnd
+        self.c_probe[1] += self.v3v3
+        self.c_probe[2] += self.gnd
+        self.r_probe = self.add(_r("R_PROBE_4K7", "4k7"))
+        self.c_probe = self.add(_c("C_PROBE_1U", "1uF"))
+        self.r_probe[1] += self.v3v3
+        self.r_probe[2] += self.gnd
+        self.c_probe[1] += self.v3v3
+        self.c_probe[2] += self.gnd
         self.pwr = self.declare_interface("pwr_3v3", self.v3v3, self.gnd)
 
 

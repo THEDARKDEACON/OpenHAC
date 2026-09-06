@@ -20,8 +20,7 @@ class MEMS_Oscillator(Module, _ParametricMixin):
     def __init__(self, freq_mhz: float = 24.0, v_cc: float = 3.3, **kwargs):
         super().__init__(f"MEMS_{freq_mhz}MHz")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"MEMS_Oscillator(freq={freq_mhz}MHz, v_cc={v_cc}V)"
 
@@ -59,8 +58,7 @@ class VCO(Module, _ParametricMixin):
     def __init__(self, freq_min: float, freq_max: float, **kwargs):
         super().__init__(f"VCO_{freq_min}-{freq_max}MHz")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"VCO(freq_range={freq_min}-{freq_max}MHz)"
 

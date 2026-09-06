@@ -23,8 +23,7 @@ class OpAmp(Module, _ParametricMixin):
                  v_rail: float = 5.0, package: str = "SOT-23-5", **kwargs):
         super().__init__(f"OPA_{channels}CH_{gbp_mhz}MHz")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"OpAmp(channels={channels}, gbp={gbp_mhz}MHz, v_rail={v_rail}V)"
 
@@ -75,8 +74,7 @@ class ADC(Module, _ParametricMixin):
                  channels: int = 1, interface: str = "I2C", **kwargs):
         super().__init__(f"ADC_{resolution}BIT")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"ADC(resolution={resolution}, rate={sampling_rate}, channels={channels})"
 
@@ -125,8 +123,7 @@ class InstrumentationAmp(Module, _ParametricMixin):
     def __init__(self, v_offset: float = 100, cmrr: float = 100, **kwargs):
         super().__init__("InstAmp")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"InstrumentationAmp(v_offset={v_offset}uV, cmrr={cmrr}dB)"
 
@@ -163,8 +160,7 @@ class AnalogSwitch(Module, _ParametricMixin):
     def __init__(self, channels: int = 1, configuration: str = "SPDT", **kwargs):
         super().__init__(f"AnalogSwitch_{configuration}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"AnalogSwitch(channels={channels}, config={configuration})"
 
@@ -201,8 +197,7 @@ class Comparator(Module, _ParametricMixin):
     def __init__(self, channels: int = 1, response_time_ns: float = 100, **kwargs):
         super().__init__(f"Comparator_{channels}CH")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"Comparator(channels={channels}, speed={response_time_ns}ns)"
 

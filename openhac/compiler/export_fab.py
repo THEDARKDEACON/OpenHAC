@@ -109,6 +109,7 @@ def export_fabrication_bundle(
     include_ipc2581: bool = False,
     gerber_use_board_settings: bool = False,
     zip_path: str | os.PathLike[str] | None = None,
+    assembler: str | None = None,
 ) -> Path | None:
     """Export Gerbers, Excellon drill, and optionally CSV position files into *output_dir*.
 
@@ -200,6 +201,13 @@ def export_fabrication_bundle(
         pos_back = out / f"{pcb.stem}-pos_back.csv"
         for side, dest in (("front", pos_front), ("back", pos_back)):
             _export_pos_csv_side(kicad_cli, pcb, side, dest)
+
+    asm = str(assembler or "").strip().lower()
+    if asm in ("jlc", "jlcpcb"):
+        from openhac.compiler.export_jlc import export_jlc_pack
+
+        bom_sib = pcb.with_suffix(".csv")
+        export_jlc_pack(pcb if bom_sib.is_file() else bom_sib, out, strict=True, bom_csv=bom_sib if bom_sib.is_file() else None)
 
     zip_written: Path | None = None
     if zip_path is not None:

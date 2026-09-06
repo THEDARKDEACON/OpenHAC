@@ -97,7 +97,7 @@ def generate_interactive_webview(board: Board, output_path: str | Path) -> None:
                 })
                 net_idx += 1
 
-    cy_elements_json = json.dumps(cy_elements)
+    cy_elements_json = json.dumps(cy_elements).replace("<", "\\u003c")
 
     # 3. Generate HTML Template with Rich Aesthetics
     html_content = """<!DOCTYPE html>
@@ -106,10 +106,7 @@ def generate_interactive_webview(board: Board, output_path: str | Path) -> None:
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>OpenHaC Hardware Graph Explorer: __PROJECT_NAME__</title>
-    <!-- Google Fonts -->
-    <link rel="preconnect" href="https://fonts.googleapis.com">
-    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&family=JetBrains+Mono:wght@400;700&display=swap" rel="stylesheet">
+    <!-- CODE-005: no Google Fonts. Cytoscape CDN remains until FAB-041 delete. -->
     <!-- Cytoscape.js -->
     <script src="https://cdnjs.cloudflare.com/ajax/libs/cytoscape/3.28.1/cytoscape.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/dagre/0.8.5/dagre.min.js"></script>
@@ -136,7 +133,7 @@ def generate_interactive_webview(board: Board, output_path: str | Path) -> None:
         }
 
         body {
-            font-family: 'Outfit', sans-serif;
+            font-family: system-ui, sans-serif;
             background-color: var(--bg-color);
             background-image: 
                 radial-gradient(circle at 15% 50%, rgba(59, 130, 246, 0.15), transparent 25%),
@@ -404,13 +401,18 @@ def generate_interactive_webview(board: Board, output_path: str | Path) -> None:
 
         // Interaction Logic
         const inspectorContent = document.getElementById('inspector-content');
+        function esc(s) {
+            return String(s == null ? '' : s)
+                .replace(/&/g, '&amp;').replace(/</g, '&lt;')
+                .replace(/>/g, '&gt;').replace(/"/g, '&quot;');
+        }
 
         cy.on('tap', 'node', function(evt){
             const node = evt.target;
             const data = node.data();
             
             if(data.category === 'NetHub') {
-                inspectorContent.innerHTML = `<div class="empty-state">Bus/Net Hub:<br><br><span style="color:var(--accent-net)">${data.label}</span></div>`;
+                inspectorContent.innerHTML = `<div class="empty-state">Bus/Net Hub:<br><br><span style="color:var(--accent-net)">${esc(data.label)}</span></div>`;
                 return;
             }
             
@@ -420,16 +422,16 @@ def generate_interactive_webview(board: Board, output_path: str | Path) -> None:
 
             let html = `
                 <div class="prop-group">
-                    <div class="prop-row"><span class="prop-label">RefDes</span><span class="prop-val">${fullData.refdes || '?'}</span></div>
-                    <div class="prop-row"><span class="prop-label">Value</span><span class="prop-val">${fullData.value || 'N/A'}</span></div>
-                    <div class="prop-row"><span class="prop-label">Footprint</span><span class="prop-val" style="font-size: 0.75rem;">${fullData.footprint || 'Unassigned'}</span></div>
+                    <div class="prop-row"><span class="prop-label">RefDes</span><span class="prop-val">${esc(fullData.refdes || '?')}</span></div>
+                    <div class="prop-row"><span class="prop-label">Value</span><span class="prop-val">${esc(fullData.value || 'N/A')}</span></div>
+                    <div class="prop-row"><span class="prop-label">Footprint</span><span class="prop-val" style="font-size: 0.75rem;">${esc(fullData.footprint || 'Unassigned')}</span></div>
                 </div>
             `;
             
             if(Object.keys(fields).length > 0) {
                 html += `<div class="prop-group" style="margin-top: 15px;">`;
                 for(const [k, v] of Object.entries(fields)) {
-                    html += `<div class="prop-row"><span class="prop-label">${k}</span><span class="prop-val" style="font-size: 0.75rem;">${v}</span></div>`;
+                    html += `<div class="prop-row"><span class="prop-label">${esc(k)}</span><span class="prop-val" style="font-size: 0.75rem;">${esc(v)}</span></div>`;
                 }
                 html += `</div>`;
             }
@@ -439,10 +441,10 @@ def generate_interactive_webview(board: Board, output_path: str | Path) -> None:
                             <div class="prop-label" style="margin-bottom: 10px;">Pins & Nets</div>
                             <div class="pin-list">`;
                 pins.forEach(p => {
-                    let logic = p.logic_level ? ` (${p.logic_level}V)` : '';
+                    let logic = p.logic_level ? ` (${esc(p.logic_level)}V)` : '';
                     html += `<div class="pin-item">
-                                <span><strong>${p.number}</strong> - ${p.name}</span>
-                                <span style="color:var(--accent-glow)">${p.net}${logic}</span>
+                                <span><strong>${esc(p.number)}</strong> - ${esc(p.name)}</span>
+                                <span style="color:var(--accent-glow)">${esc(p.net)}${logic}</span>
                              </div>`;
                 });
                 html += `   </div>
@@ -457,9 +459,9 @@ def generate_interactive_webview(board: Board, output_path: str | Path) -> None:
             const data = edge.data();
             inspectorContent.innerHTML = `
                 <div class="prop-group">
-                    <div class="prop-row"><span class="prop-label">Net Name</span><span class="prop-val">${data.label}</span></div>
-                    <div class="prop-row"><span class="prop-label">Source</span><span class="prop-val">${data.source}</span></div>
-                    <div class="prop-row"><span class="prop-label">Target</span><span class="prop-val">${data.target}</span></div>
+                    <div class="prop-row"><span class="prop-label">Net Name</span><span class="prop-val">${esc(data.label)}</span></div>
+                    <div class="prop-row"><span class="prop-label">Source</span><span class="prop-val">${esc(data.source)}</span></div>
+                    <div class="prop-row"><span class="prop-label">Target</span><span class="prop-val">${esc(data.target)}</span></div>
                 </div>
             `;
         });

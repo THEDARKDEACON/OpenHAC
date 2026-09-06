@@ -28,8 +28,8 @@ jobs:
       - name: Ruff
         run: ruff check openhac tests
 
-      - name: Mypy (core + placement) FAB-050
-        run: mypy openhac/core openhac/compiler/pcb_placement.py openhac/compiler/layout_gen.py --ignore-missing-imports --follow-imports=silent --no-error-summary
+      - name: Mypy (core + placement + schematic IR + spice_gen + compile_pipeline) FAB-050
+        run: mypy openhac/core openhac/compiler/pcb_placement.py openhac/compiler/layout_gen.py openhac/schematic/ir.py openhac/compiler/spice_gen.py openhac/compiler/compile_pipeline.py --ignore-missing-imports --follow-imports=silent --no-error-summary
 
 
       - name: Verify package version vs pyproject (SW-004)

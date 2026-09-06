@@ -7,6 +7,30 @@ This is used when explicit pin definitions are not provided by the user.
 from openhac.core.part import Pin
 
 
+def _clone_pins(pins: list[Pin] | None) -> list[Pin] | None:
+    """Return new Pin instances so callers never share template objects.
+
+    Package templates are module-level lists. Returning them by identity made
+    every 0805 (and SOT-23, SOIC-8, …) part share the same Pin objects, so
+    wiring the second resistor mutated the first (PERF-001 auto-fills
+    ``package`` from names like ``R_10k_0805``, which hits this path).
+    """
+    if pins is None:
+        return None
+    return [
+        Pin(
+            p.number,
+            p.name,
+            p.pin_type,
+            logic_level=getattr(p, "logic_level", None),
+            voltage_rating=getattr(p, "voltage_rating", None),
+            current_limit=getattr(p, "current_limit", None),
+            unit=getattr(p, "unit", 1),
+        )
+        for p in pins
+    ]
+
+
 # Standard package pin definitions
 PACKAGE_TEMPLATES = {
     # Resistors, capacitors, inductors - 2 terminal
@@ -17,6 +41,7 @@ PACKAGE_TEMPLATES = {
     "1206": [Pin("1", "1", "passive"), Pin("2", "2", "passive")],
     "1210": [Pin("1", "1", "passive"), Pin("2", "2", "passive")],
     "2512": [Pin("1", "1", "passive"), Pin("2", "2", "passive")],
+    "2520": [Pin("1", "1", "passive"), Pin("2", "2", "passive")],
     
     # LEDs
     "LED_0603": [Pin("1", "K", "passive"), Pin("2", "A", "passive")],  # Cathode, Anode
@@ -126,33 +151,33 @@ def get_package_template(package: str, category: str = "") -> list[Pin] | None:
     """
     # Direct match
     if package in PACKAGE_TEMPLATES:
-        return PACKAGE_TEMPLATES[package]
-    
+        return _clone_pins(PACKAGE_TEMPLATES[package])
+
     # Normalized match (handle variations)
     normalized = package.upper().replace("-", "").replace("_", "")
-    
+
     # Try common variations
     if normalized in ["0201", "0402", "0603", "0805", "1206", "1210", "2512"]:
-        return PACKAGE_TEMPLATES.get(normalized)
-    
+        return _clone_pins(PACKAGE_TEMPLATES.get(normalized))
+
     # Handle SOT variants
     if normalized in ["SOT23", "SOT223"]:
-        return PACKAGE_TEMPLATES.get(normalized.replace("SOT", "SOT-"))
-    
+        return _clone_pins(PACKAGE_TEMPLATES.get(normalized.replace("SOT", "SOT-")))
+
     # Handle LED packages
     if category and "led" in category.lower():
         if "0603" in package:
-            return PACKAGE_TEMPLATES.get("LED_0603")
+            return _clone_pins(PACKAGE_TEMPLATES.get("LED_0603"))
         if "0805" in package:
-            return PACKAGE_TEMPLATES.get("LED_0805")
+            return _clone_pins(PACKAGE_TEMPLATES.get("LED_0805"))
         if "1206" in package:
-            return PACKAGE_TEMPLATES.get("LED_1206")
-    
+            return _clone_pins(PACKAGE_TEMPLATES.get("LED_1206"))
+
     # Handle crystal oscillators
     if category and "crystal" in category.lower():
         # Crystals typically have 2 or 4 pins
         return [Pin("1", "1", "passive"), Pin("2", "2", "passive")]
-    
+
     return None
 
 

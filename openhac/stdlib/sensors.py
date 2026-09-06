@@ -24,8 +24,7 @@ class IMU(Module, _ParametricMixin):
         name = f"IMU_{mpn or 'Generic'}"
         super().__init__(name)
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"IMU(" + \
                (f"mpn={mpn}" if mpn else "") + \
@@ -92,8 +91,7 @@ class TempSensor(Module, _ParametricMixin):
                  package: str = None, **kwargs):
         super().__init__(f"TEMP_{interface}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"TempSensor(interface={interface}, accuracy={accuracy}C)"
 
@@ -135,8 +133,7 @@ class PressureSensor(Module, _ParametricMixin):
 
     def __init__(self, interface: str = "I2C", **kwargs):
         super().__init__("PRESSURE")
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
         
         # Default to BMP280 as it is extremely common
         comp_data = db.get_component("BMP280")
@@ -204,8 +201,7 @@ class HumiditySensor(Module, _ParametricMixin):
 
     def __init__(self, interface: str = "I2C", **kwargs):
         super().__init__("HUMIDITY")
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
         comp_data = db.get_component("SHT30") # example
         self.ic = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
         self.ic.lib = "Sensor_Humidity"
@@ -234,8 +230,7 @@ class CurrentSensor(Module, _ParametricMixin):
                  interface: str = "Analog", **kwargs):
         super().__init__(f"CURR_{type.upper()}_{range_a}A")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"CurrentSensor(type={type}, range={range_a}A, interface={interface})"
 

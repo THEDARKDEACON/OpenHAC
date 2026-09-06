@@ -82,12 +82,13 @@ OPENHAC_NO_NETWORK=1 openhac compile board.py \
 openhac export fab dist/proj/proj.kicad_pcb -o dist/proj/fab --zip
 ```
 
-Optional human review (connectivity, not copper aesthetics):
+Optional human preview (KiCad SVG from the schematic, not ERC):
 
 ```bash
-openhac compile board.py --name proj -o dist/proj --webview --no-schematic
-# or: board.export_webview("dist/proj/proj.webview.html")
+openhac preview board.py --name proj -o dist/proj
 ```
+
+Cytoscape `--webview` / `Board.export_webview` is deprecated (**FAB-041**). Hardware IR JSON may remain as a machine dump.
 
 Headless logic-only CI (no pcbnew) remains valid with `--skip-layout` / `OPENHAC_SKIP_LAYOUT=1` and must **not** claim fabrication readiness.
 
@@ -339,9 +340,9 @@ flowchart LR
 | **Severity** | P1 |
 | **Problem** | Engineers need hierarchical connectivity review without relying on auto-drawn schematics. |
 | **Current state** | [`Board.export_webview`](../../openhac/core/board.py), [`openhac/webview/`](../../openhac/webview/), IR export, CLI `--webview`. |
-| **Target state** | Documented primary review path: IR/manifest + interactive webview. Golden smoke for webview export in CI (no KiCad required). |
-| **Acceptance criteria** | USER_GUIDE / SCOPE point to webview; `tests/test_webview_export.py` (or CI) covers export non-empty HTML. |
-| **Approach** | Docs + keep exporter maintained; optional `--webview` on fab recipe as review step. |
+| **Target state** | **Sep 2026 retarget:** deprecate Cytoscape `--webview` / `Board.export_webview`; Hardware IR JSON may remain as a machine dump; human preview is KiCad SVG (**SSO-012**); ERC stays `kicad-cli sch erc` (**SSO-040**). |
+| **Acceptance criteria** | SCOPE / USER_GUIDE no longer call Cytoscape primary review; preview path is KiCad SVG (**SSO-012**). IR JSON dump optional. |
+| **Approach** | Deprecate exporter; keep IR JSON if useful. Live contract: [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md#audit-follow-on-job-spec-sep-2026). |
 
 ### FAB-042 — Stable public API boundary
 

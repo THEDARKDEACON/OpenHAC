@@ -23,6 +23,7 @@ from openhac.compiler.spice_nodes import (
 from openhac.compiler.spice_physics import TNOM_C
 from openhac.core.base import OpenHaCError
 from openhac.util.sort_keys import natural_key
+from typing import Any
 
 logger = logging.getLogger("openhac.spice")
 
@@ -212,27 +213,36 @@ def _handoff_spice_id(part, spice_id: str) -> str:
     return spice_id
 
 
-def _circuit_and_parts():
+def _circuit_and_parts(*, signoff: bool = False):
+    from openhac.circuit import empty_native_circuit_is_error, legacy_skidl_enabled
+    from openhac.core.exceptions import OpenHaCError
+
     circuit = get_default_circuit()
     parts = list(getattr(circuit, "parts", []) or [])
     if parts:
         return circuit, parts
-    try:
-        import builtins
+    if empty_native_circuit_is_error(signoff=signoff):
+        raise OpenHaCError(
+            "FAB-004/SPS-007: native circuit has no parts; refusing silent "
+            "builtins.default_circuit fallback under sign-off or fabrication."
+        )
+    if legacy_skidl_enabled():
+        try:
+            import builtins
 
-        sk = getattr(builtins, "default_circuit", None)
-        if sk is not None:
-            sk_parts = list(getattr(sk, "parts", []) or [])
-            if sk_parts:
-                return sk, sk_parts
-    except Exception:
-        pass
+            sk = getattr(builtins, "default_circuit", None)
+            if sk is not None:
+                sk_parts = list(getattr(sk, "parts", []) or [])
+                if sk_parts:
+                    return sk, sk_parts
+        except Exception:
+            pass
     return circuit, parts
 
 
-def spice_circuit_parts():
-    """Parts used by :func:`generate_spice` (native circuit, with SKiDL fallback)."""
-    return _circuit_and_parts()
+def spice_circuit_parts(*, signoff: bool = False):
+    """Parts used by :func:`generate_spice` (native circuit; SKiDL only if opted in)."""
+    return _circuit_and_parts(signoff=signoff)
 
 
 def _collect_net_names(parts) -> list[str]:
@@ -247,7 +257,7 @@ def _collect_net_names(parts) -> list[str]:
     return names
 
 
-def _find_pin(part, entry) -> object | None:
+def _find_pin(part, entry) -> Any:
     for pin in _iter_pins(part):
         if entry.num and _pin_num(pin) == entry.num:
             return pin
@@ -311,7 +321,7 @@ def generate_spice(
     logger.info("Bypassing Physical Geometry.")
     logger.info("Generating Computational SPICE Simulation Netlist → %s", output_cir_path)
 
-    circuit, parts = _circuit_and_parts()
+    circuit, parts = _circuit_and_parts(signoff=signoff)
     parts = sorted(parts, key=lambda p: natural_key(str(getattr(p, "ref", "") or getattr(p, "refdes", ""))))
 
     gnames = ground_alias_set(ground_net_names)
@@ -396,6 +406,13 @@ def generate_spice(
                 if spice_id in emitted_refs:
                     continue
                 if _is_pwr_flag(part):
+                    continue
+
+                omit = spice_omit_reason(part, spice_id, island_names=island_names)
+                if omit:
+                    f.write(
+                        f"* skipped {spice_id}: {omit_reason_label(omit, island_names=island_names)}\n"
+                    )
                     continue
 
                 rec = resolved.get(id(part))

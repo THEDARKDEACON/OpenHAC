@@ -114,7 +114,9 @@ def check_rf_fab_gate(board) -> list[str]:
                     fp = fp or str(data.get("kicad_footprint") or "")
             except Exception:
                 continue
-            if "RF_Module" in fp or "WROOM" in fp.upper() or "ESP32" in fp.upper():
+            gn = str(getattr(comp, "generic_name", "") or "")
+            lib = fp.split(":")[0] if ":" in fp else ""
+            if lib == "RF_Module" or gn.startswith("RF_Module") or fp.startswith("RF_Module:"):
                 has_rf_mod = True
                 break
     keepouts = list(getattr(board, "_keepout_rect_intents", None) or [])

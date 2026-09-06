@@ -249,6 +249,14 @@ def fetch_and_map_part(query_params: dict) -> dict | None:
     Raises:
         OfflineCompilationError: If the network is unreachable.
     """
+    try:
+        from openhac.database.enrich import network_allowed
+
+        if not network_allowed():
+            return None
+    except Exception:
+        return None
+
     search_query = _build_search_query(query_params)
     if not search_query:
         return None

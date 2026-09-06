@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 import os
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Callable
@@ -17,6 +18,13 @@ if TYPE_CHECKING:
     from openhac.core.board import Board
 
 logger = logging.getLogger("openhac.compile_pipeline")
+
+
+def _stamp_board(board: object, name: str, value: object) -> None:
+    try:
+        setattr(board, name, value)
+    except Exception:
+        pass
 
 
 @dataclass
@@ -37,6 +45,12 @@ class CompileState:
     release_zip_path: str | os.PathLike[str] | None
     bbox_padding_mm: float = 0.5
     module_clearance_mm: float = 0.0
+    keep_kicad_artwork: bool = False
+    regenerate_artwork: bool = False
+    require_lock: bool = False
+    lock_file: str | os.PathLike[str] | None = None
+    placement_intent: bool = False
+    require_testpoints: bool = False
     skip_layout: bool = field(init=False)
     net_path: str = field(init=False)
     bom_path: str | None = field(init=False)
@@ -52,6 +66,13 @@ class CompileState:
     network_allowed_at_compile: bool | None = field(default=None, init=False)
     kicad_pcb_drc_report: str | None = field(default=None, init=False)
     schematic_signoff: bool = field(default=False, init=False)
+    compile_profile: str = field(default="", init=False)
+    lean_manifest: bool = field(default=False, init=False)
+    phase_ms: dict = field(default_factory=dict, init=False)
+    pcbnew_board: object | None = field(default=None, init=False)
+    _owned_defer_pours: bool = field(default=False, init=False)
+    _prev_defer_pours: str | None = field(default=None, init=False)
+    artwork_overlay: object | None = field(default=None, init=False)
 
     def __post_init__(self) -> None:
         self.skip_layout = os.environ.get("OPENHAC_SKIP_LAYOUT", "").lower() in ("1", "true", "yes")
@@ -66,6 +87,16 @@ class CompileState:
         if self.schematic_signoff:
             self.export_schematic = True
             self.kicad_sch_erc = True
+        if self.require_testpoints:
+            try:
+                self.board._require_testpoints = True
+            except Exception:
+                pass
+        if self.require_lock:
+            try:
+                self.board._require_lock = True
+            except Exception:
+                pass
         try:
             self.bbox_padding_mm = float(self.bbox_padding_mm or 0.0)  # STYLE-001: direct field access
         except Exception:
@@ -175,6 +206,15 @@ def phase_enrich_parts(state: CompileState) -> None:
             skipped,
             failed,
             bool(allow_net),
+        )
+
+    if state.compile_goal == "fabrication" and state.enrich_failures:
+        reasons = ", ".join(
+            f"{x.get('generic_name')}:{x.get('reason')}" for x in state.enrich_failures[:12]
+        )
+        raise RuntimeError(
+            "FAB-013: enrich lookup failed in fabrication mode "
+            f"({len(state.enrich_failures)} failure(s): {reasons})"
         )
 
 def phase_audit_database(state: CompileState) -> None:
@@ -324,7 +364,7 @@ def phase_groom_metadata(state: CompileState) -> None:
     
     # 1. Deterministic RefDes Assignment (Recursive Tree Order)
     seen_parts = set()
-    ref_counters = {} # prefix -> count
+    ref_counters: dict[str, int] = {}
     
     from openhac.core.base import Component
     from openhac.core.module import Module
@@ -443,9 +483,93 @@ def phase_kicad_pcb_drc(state: CompileState) -> None:
     if report is not None:
         state.kicad_pcb_drc_report = str(report)
         try:
-            state.board._last_kicad_pcb_drc_report = str(report)
+            _stamp_board(state.board, "_last_kicad_pcb_drc_report", str(report))
         except Exception:
             pass
+
+
+def phase_catalog_lock(state: CompileState) -> None:
+    """LOCK-001: fail-closed when a lock is present under fabrication / --require-lock."""
+    from openhac.database.catalog_lock import discover_lock_path, enforce_lock
+    from openhac.core.exceptions import CatalogLockError
+
+    require = bool(getattr(state, "require_lock", False)) or bool(
+        getattr(state.board, "_require_lock", False)
+    )
+    fab = str(getattr(state, "compile_goal", "") or "").strip().lower() in ("fabrication", "fab")
+    lock = discover_lock_path(
+        script_path=state.source_script_path,
+        output_dir=state.output_dir,
+        project_name=state.project_name,
+        explicit=getattr(state, "lock_file", None),
+    )
+    lock_exists = bool(lock) and Path(lock).is_file()
+    if require and not lock_exists:
+        raise CatalogLockError(
+            "LOCK-001: --require-lock / OPENHAC_REQUIRE_LOCK set but no openhac.lock "
+            f"(or {{project}}.openhac-lock.json) found for {state.project_name}"
+        )
+    if not lock_exists:
+        profile = str(getattr(state, "compile_profile", "") or "")
+        preview = profile in ("preview", "preview_pcb", "preview-pcb", "logic")
+        if preview or bool(getattr(state, "lean_manifest", False)):
+            return
+        logger.warning(
+            "LOCK-001: no catalog lockfile next to the board; handoff continues. "
+            "Pass --require-lock to fail closed, or run `openhac lock`."
+        )
+        try:
+            state.board._lock_missing_warning = True
+        except Exception:
+            pass
+        return
+    fail_closed = bool(require or fab)
+    msgs = enforce_lock(state.board, lock, fail_closed=fail_closed)
+    try:
+        state.board._lock_mismatch = list(msgs)
+        state.board._lock_path = str(lock)
+    except Exception:
+        pass
+
+
+def phase_placement_intent(state: CompileState) -> None:
+    """PLC-001: overlay pose vs outline / courtyard when freeze or --placement-intent."""
+    keep = bool(getattr(state, "keep_kicad_artwork", False))
+    intent = bool(getattr(state, "placement_intent", False)) or bool(
+        getattr(state.board, "_placement_intent", False)
+    )
+    if not (keep or intent):
+        return
+    overlay = getattr(state, "artwork_overlay", None) or getattr(state.board, "_kicad_artwork_overlay", None)
+    if overlay is None:
+        return
+    from openhac.compiler.placement_intent import check_overlay_placement
+
+    check_overlay_placement(overlay, state.board, fail=True)
+
+
+def phase_eco(state: CompileState) -> None:
+    """ECO-001: graph diff vs previous snapshot in the output dir."""
+    profile = str(getattr(state, "compile_profile", "") or "")
+    overlay = getattr(state, "artwork_overlay", None) or getattr(state.board, "_kicad_artwork_overlay", None)
+    preview = profile in ("preview", "preview_pcb", "preview-pcb")
+    if preview and (overlay is None or not getattr(overlay, "merged", False)):
+        return
+    from openhac.compiler.eco import write_eco_report
+
+    try:
+        path = write_eco_report(
+            state.output_dir,
+            state.project_name,
+            board=state.board,
+            overlay=overlay,
+        )
+        try:
+            state.board._last_eco_path = str(path)
+        except Exception:
+            pass
+    except Exception as e:
+        logger.warning("ECO-001: failed to write eco report: %s", e)
 
 
 def phase_erc_drc(state: CompileState) -> None:
@@ -545,6 +669,30 @@ def phase_footprint_pin_pad(state: CompileState) -> None:
     assert_footprint_pin_pad_or_raise(state.board)
 
 
+def _maybe_set_defer_copper_pours(state: CompileState) -> None:
+    """ABC-002 / CODE-001: defer pours for autoroute; restore in run_compile_phases."""
+    if state.skip_layout or not state.auto_route:
+        return
+    if (os.environ.get("OPENHAC_DEFER_COPPER_POURS") or "").strip():
+        return
+    if not state._owned_defer_pours:
+        state._prev_defer_pours = os.environ.get("OPENHAC_DEFER_COPPER_POURS")
+        os.environ["OPENHAC_DEFER_COPPER_POURS"] = "1"
+        state._owned_defer_pours = True
+
+
+def restore_owned_defer_pours(state: CompileState) -> None:
+    """CODE-001: put OPENHAC_DEFER_COPPER_POURS back after compile."""
+    if not getattr(state, "_owned_defer_pours", False):
+        return
+    prev = getattr(state, "_prev_defer_pours", None)
+    if prev is None:
+        os.environ.pop("OPENHAC_DEFER_COPPER_POURS", None)
+    else:
+        os.environ["OPENHAC_DEFER_COPPER_POURS"] = prev
+    state._owned_defer_pours = False
+
+
 def phase_layout(state: CompileState) -> None:
     if state.skip_layout:
         logger.warning(
@@ -552,9 +700,13 @@ def phase_layout(state: CompileState) -> None:
             "(headless CI / logic-only builds; SW-006)."
         )
         return
-    # ABC-002: when we will autoroute, defer pours so FreeRouting routes plane nets.
-    if state.auto_route and not (os.environ.get("OPENHAC_DEFER_COPPER_POURS") or "").strip():
-        os.environ["OPENHAC_DEFER_COPPER_POURS"] = "1"
+    try:
+        from openhac.compiler.placement_profile import apply_named_placement_profile
+
+        apply_named_placement_profile()
+    except Exception:
+        pass
+    _maybe_set_defer_copper_pours(state)
     if not bool(getattr(state.board, "_size_mm_unspecified", False)):
         logger.info(
             "Applying geometric layout constraints. Target: %sx%smm, %s layers",
@@ -626,7 +778,9 @@ def phase_layout(state: CompileState) -> None:
 
     from openhac.compiler.layout_gen import generate_layout
 
-    generate_layout(state.net_path, state.pcb_path, state.board)
+    generate_layout_result = generate_layout(state.net_path, state.pcb_path, state.board)
+    if generate_layout_result is not None:
+        state.pcbnew_board = generate_layout_result
 
     # Persist IPC netclasses into .kicad_pro even when schematic export is skipped.
     try:
@@ -653,7 +807,7 @@ def phase_layout(state: CompileState) -> None:
         omitted = drain_omitted_footprint_refs()
         state.omitted_footprint_refs = list(omitted)
         try:
-            state.board._last_omitted_footprint_refs = list(omitted)
+            _stamp_board(state.board, "_last_omitted_footprint_refs", list(omitted))
         except Exception:
             pass
         pad_w = getattr(state.board, "_last_pad_pin_warnings", None)
@@ -694,11 +848,21 @@ def phase_autoroute(state: CompileState) -> None:
             from openhac.compiler.pcb_physics import apply_physics_net_classes
             from openhac.compiler.pcb_postprocess import apply_high_current_polygons
 
-            board_obj = pcbnew.LoadBoard(str(state.pcb_path))
+            board_obj = getattr(state, "pcbnew_board", None)
+            if board_obj is None:
+                board_obj = pcbnew.LoadBoard(str(state.pcb_path))
             if board_obj is None:
                 raise RuntimeError(f"pcbnew failed to load board from {state.pcb_path}")
-                
-            apply_physics_net_classes(board_obj, state.board, pcbnew)
+
+            try:
+                apply_physics_net_classes(board_obj, state.board, pcbnew)
+            except Exception as e:
+                if state.compile_goal == "fabrication":
+                    raise
+                logger.warning("Failed to apply physics constraints: %s", e)
+            # CODE-001: pcbnew.SaveBoard SIGSEGV is not catchable in-process.
+            # Zone fill already runs in a child process; we reuse state.pcbnew_board
+            # (PERF-008) and restore OPENHAC_DEFER_COPPER_POURS in run_compile_phases.
 
             from openhac.compiler.fab_design_settings import (
                 apply_fab_design_settings,
@@ -776,6 +940,7 @@ def phase_autoroute(state: CompileState) -> None:
                 )
             except Exception as pro_e:
                 logger.debug("KiCad 9 net_settings rewrite after physics skipped: %s", pro_e)
+            state.pcbnew_board = board_obj
         except Exception as e:
             logger.warning("Failed to apply physics constraints: %s", e)
 
@@ -903,7 +1068,7 @@ def phase_routing_metrics(state: CompileState) -> None:
     metrics = compute_pcb_metrics(state.pcb_path)
     state.pcb_metrics = dict(metrics or {})
     try:
-        state.board._last_pcb_metrics = dict(state.pcb_metrics)
+        _stamp_board(state.board, "_last_pcb_metrics", dict(state.pcb_metrics))
     except Exception:
         pass
 
@@ -999,6 +1164,7 @@ def phase_schematic(state: CompileState) -> None:
         generated_symbol_lib_path=sym_path,
         embedded_lib_symbols=embed_syms,
         signoff=bool(state.schematic_signoff),
+        project_name=state.project_name,
     )
 
     if state.schematic_signoff:
@@ -1066,7 +1232,7 @@ def phase_manifest(state: CompileState) -> None:
             write_rf_emc_checklist,
         )
 
-        out_dir = state.output_dir or "."
+        out_dir = Path(state.output_dir or ".")
         write_fanout_constraints_json(state.board, out_dir, state.project_name)
         write_hs_netclass_handoff(state.board, out_dir, state.project_name)
         write_rf_emc_checklist(state.board, out_dir, state.project_name)
@@ -1084,12 +1250,15 @@ def phase_manifest(state: CompileState) -> None:
         logger.debug("Post-report generation failed (continuing): %s", e)
 
     try:
-        state.board._last_enrich_metrics = dict(state.enrich_metrics or {})
-        state.board._last_enrich_failures = list(state.enrich_failures or [])
-        state.board._last_omitted_footprint_refs = list(state.omitted_footprint_refs or [])
-        state.board._last_pad_pin_warnings = list(state.pad_pin_warnings or [])
-        state.board._last_network_allowed = state.network_allowed_at_compile
-        state.board._last_kicad_pcb_drc_report = state.kicad_pcb_drc_report
+        _stamp_board(state.board, "_last_enrich_metrics", dict(state.enrich_metrics or {}))
+        _stamp_board(state.board, "_last_enrich_failures", list(state.enrich_failures or []))
+        _stamp_board(state.board, "_last_omitted_footprint_refs", list(state.omitted_footprint_refs or []))
+        _stamp_board(state.board, "_last_pad_pin_warnings", list(state.pad_pin_warnings or []))
+        _stamp_board(state.board, "_last_network_allowed", state.network_allowed_at_compile)
+        _stamp_board(state.board, "_last_kicad_pcb_drc_report", state.kicad_pcb_drc_report)
+        _stamp_board(state.board, "_last_phase_ms", dict(state.phase_ms or {}))
+        _stamp_board(state.board, "_lean_manifest", bool(state.lean_manifest))
+        _stamp_board(state.board, "_compile_profile", str(getattr(state, "compile_profile", "") or ""))
     except Exception:
         pass
 
@@ -1123,7 +1292,7 @@ def phase_release_zip(state: CompileState) -> None:
     from openhac.compiler.release_bundle import zip_project_outputs
 
     base = Path(state.output_dir).resolve() if state.output_dir is not None else Path.cwd().resolve()
-    out = zip_project_outputs(base, state.project_name, state.release_zip_path)
+    out = zip_project_outputs(base, state.project_name, Path(state.release_zip_path))
     # Deterministic mode: avoid patching the manifest and rebuilding the zip.
     # The normal two-pass flow intentionally creates a self-reference mismatch (see mfg005_release_zip_sha256_note).
     if os.environ.get("OPENHAC_DETERMINISTIC", "").strip().lower() in ("1", "true", "yes", "on"):
@@ -1137,16 +1306,18 @@ def phase_release_zip(state: CompileState) -> None:
         out,
         write_sha256_sidecar=sidecar,
     )
-    zip_project_outputs(base, state.project_name, state.release_zip_path)
+    zip_project_outputs(base, state.project_name, Path(state.release_zip_path))
 
 
 DEFAULT_COMPILE_PHASES: tuple[Callable[[CompileState], None], ...] = (
     phase_audit_database,
     phase_warn_multilayer_stackup,
     phase_enrich_parts,
+    phase_catalog_lock,
     phase_propagate_currents,
     phase_groom_metadata,
     phase_fixup_power_flags,  # Must run after phase_groom_metadata so net types are set (CODE-005)
+    phase_placement_intent,
     phase_erc_drc,
     phase_pinout_coverage,
     phase_interface_validation,
@@ -1159,6 +1330,7 @@ DEFAULT_COMPILE_PHASES: tuple[Callable[[CompileState], None], ...] = (
     phase_routing_metrics,
     phase_kicad_pcb_drc,
     phase_schematic,
+    phase_eco,
     phase_manifest,
     phase_release_zip,
 )
@@ -1167,9 +1339,51 @@ DEFAULT_COMPILE_PHASES: tuple[Callable[[CompileState], None], ...] = (
 COMPILE_PIPELINE_PHASE_NAMES: tuple[str, ...] = tuple(fn.__name__ for fn in DEFAULT_COMPILE_PHASES)
 
 
+PREVIEW_COMPILE_PHASES: tuple[Callable[[CompileState], None], ...] = (
+    phase_groom_metadata,
+    phase_fixup_power_flags,
+    phase_placement_intent,
+    phase_schematic,
+    phase_eco,
+    phase_manifest,
+)
+
+# LIVE-007: schematic + place-only layout; no enrich, ERC, autoroute, or DRC stamp.
+PREVIEW_PCB_COMPILE_PHASES: tuple[Callable[[CompileState], None], ...] = (
+    phase_groom_metadata,
+    phase_fixup_power_flags,
+    phase_placement_intent,
+    phase_netlist_bom,
+    phase_layout,
+    phase_schematic,
+    phase_eco,
+    phase_manifest,
+)
+
+
+def phases_for_profile(profile: str) -> tuple[Callable[[CompileState], None], ...]:
+    """PERF-006: preview skips enrich/layout/route/ERC; logic uses skip-layout default phases.
+
+    LIVE-007 ``preview_pcb``: schematic + layout, skip autoroute and ERC.
+    """
+    p = (profile or "").strip().lower()
+    if p == "preview":
+        return PREVIEW_COMPILE_PHASES
+    if p in ("preview_pcb", "preview-pcb"):
+        return PREVIEW_PCB_COMPILE_PHASES
+    return DEFAULT_COMPILE_PHASES
+
+
 def run_compile_phases(state: CompileState, phases: tuple[Callable[[CompileState], None], ...]) -> None:
-    for fn in phases:
-        fn(state)
+    try:
+        for fn in phases:
+            t0 = time.perf_counter()
+            try:
+                fn(state)
+            finally:
+                state.phase_ms[fn.__name__] = int((time.perf_counter() - t0) * 1000)
+    finally:
+        restore_owned_defer_pours(state)
 
 
 def run_compile_loop(
@@ -1265,9 +1479,8 @@ def _repair_after_failure(state: CompileState, err: Exception) -> None:
         if isinstance(err, DRCViolationError) and (
             "footprint bboxes overlap" in msg or "overlaps keepout" in msg.lower()
         ):
-            # ABC-007: nudge FP gap; prefer re-autosize over locking a too-small outline
-            # (locking size_mm + raising pack inflate caused Z3 UNSAT on WROOM boards).
-            # Also handles keepout_rect collisions (fixed-coordinate RF keepouts).
+            # ABC-007: nudge FP gap; prefer re-autosize over locking a too-small outline.
+            # Keep pack inflate stable — growing it while freezing size_mm is counterproductive.
             try:
                 gap = float(os.environ.get("OPENHAC_PLACEMENT_FP_GAP_MM", "4") or 4)
                 os.environ["OPENHAC_PLACEMENT_FP_GAP_MM"] = str(gap + 1.0)
@@ -1279,7 +1492,7 @@ def _repair_after_failure(state: CompileState, err: Exception) -> None:
                 pass
             try:
                 # Re-enable autosize so the next attempt can grow the outline.
-                state.board._size_mm_unspecified = True
+                _stamp_board(state.board, "_size_mm_unspecified", True)
                 state.board.size_mm = (1.0, 1.0)
                 expand = 0.0
             except Exception:
@@ -1308,8 +1521,8 @@ def _repair_after_failure(state: CompileState, err: Exception) -> None:
             w, h = getattr(state.board, "size_mm", (0.0, 0.0))
             state.board.size_mm = (float(w) + expand, float(h) + expand)
             try:
-                state.board._size_mm_unspecified = False
-                state.board._repair_expand_mm_total = already + expand
+                _stamp_board(state.board, "_size_mm_unspecified", False)
+                _stamp_board(state.board, "_repair_expand_mm_total", already + expand)
             except Exception:
                 pass
             # Nudge placement gaps for retry

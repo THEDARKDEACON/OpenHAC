@@ -2,6 +2,17 @@
 
 OpenHaC provides an automated pipeline to ensure every component in your design has a physical footprint and a 3D model, even if they aren't present in your local KiCad libraries or the baseline SQLite catalog.
 
+Normative catalog-depth IDs (**3D-001…005**, **CAT-***): treat STEP/WRL as a first-class catalog field (path, hash, licence, source), prefer KiCad library models for JEDEC passives, prefetch into `~/.kiro/openhac/` **before** `--production`, and keep binaries out of git. See [internal/CATALOG_DEPTH_SPEC.md](internal/CATALOG_DEPTH_SPEC.md). This page remains the operator how-to for EasyEDA JIT.
+
+**Git policy (3D-005):** this repo does not commit `.step` / `.wrl` (`**/*.step` and `**/*.wrl` in `.gitignore`). Overlays store **paths and hashes**, not file bytes. Missing 3D is a `openhac catalog coverage` row (**3D-004**); OpenHaC does not silently bind a fake cube.
+
+Prefetch before fabrication (network; forbidden under `OPENHAC_NO_NETWORK` / `--production`):
+
+```bash
+openhac catalog prefetch-3d board.py
+openhac catalog prefetch-3d --skus C123,C456
+```
+
 ## Overview
 
 The automation pipeline bridges the gap between declarative code and physical manufacturing by fetching assets from the **EasyEDA/LCSC ecosystem**. When a part is identified by a JLC SKU (e.g., `C6396158`), OpenHaC can JIT-generate the necessary KiCad files.

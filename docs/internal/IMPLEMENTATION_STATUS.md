@@ -1,6 +1,458 @@
 # Implementation status (OpenHaC)
 
-Track record of fixes applied against [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md) (Phase-1), [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md) (Phase-2), [SCHEMATIC_SIGN_OFF_SPEC.md](./SCHEMATIC_SIGN_OFF_SPEC.md) (**SSO-***), and [SPICE_SIGN_OFF_SPEC.md](./SPICE_SIGN_OFF_SPEC.md) (**SPS-***). Update this file when you close spec items.
+Track record of fixes applied against [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md) (Phase-1), [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md) (Phase-2), [SCHEMATIC_SIGN_OFF_SPEC.md](./SCHEMATIC_SIGN_OFF_SPEC.md) (**SSO-***), [SPICE_SIGN_OFF_SPEC.md](./SPICE_SIGN_OFF_SPEC.md) (**SPS-***), [LIVE_KICAD_SPEC.md](./LIVE_KICAD_SPEC.md) (**LIVE-***), [CATALOG_DEPTH_SPEC.md](./CATALOG_DEPTH_SPEC.md) (**CAT-*** / **3D-*** / **SPS-05x**), and [WORKFLOW_GATES_SPEC.md](./WORKFLOW_GATES_SPEC.md) (**ECO-*** / **LOCK-*** / **MFG-010** / **PWR-010** / **PIN-001** / **VAR-001** / **LIVE-010** / **PLC-001** / **TST-001** / **GLD-001**). Live follow-on work is the [Sep 2026 job spec](#audit-follow-on-job-spec-sep-2026) at the top of this file. Update this file when you close spec items.
+
+## Audit follow-on job spec (Sep 2026)
+
+Normative executable backlog from the Sep 2026 code, overfitting, live-schematic, and performance audits. Historical Phase-1/2/SSO/SPS tables below stay as shipped history; IDs that those tables mark **Done** but the audit reopened were listed here as **Open** and are **Done** in this batch.
+
+**Claim:** Python remains the HDL. KiCad remains the drawing renderer and ERC stamp (`kicad-cli sch erc` under `--schematic-signoff`). Do **not** rewrite the package for speed. Do **not** replace KiCad ERC with a webview or a second symbol renderer.
+
+**Execution order:** P0 fail-closed (A) → PERF-001/002 → FAB-041 + SSO-012 → claim/overfitting (C) → remaining PERF + hygiene (E).
+
+**Out of scope:** language rewrite; custom ERC instead of `kicad-cli sch erc`; `--require-all` implying HS/RF/EMC; HTTP fetch of vendor SPICE `.lib`.
+
+### Summary
+
+| Spec ID | Pri | Status | One-line target |
+|---------|-----|--------|-----------------|
+| **FAB-004** / **SPS-007** | P0 | Done | Gate SKiDL fallbacks; no silent `builtins.default_circuit` |
+| **FAB-023** | P0 | Done | Physics net-class apply fails closed under fabrication |
+| **FAB-013** | P0 | Done | Enrich `lookup_failed` aborts under fab; CI asserts `gates_passed` |
+| **FAB-010** / **ABC-016** | P0 | Done | `network_allowed()` on parametric JIT / `fetch_and_map_part` |
+| **CODE-001** | P0 | Done | Restore `OPENHAC_DEFER_COPPER_POURS`; SaveBoard stays in-process |
+| **FAB-041** | P1 | Done | Deprecate Cytoscape webview; IR JSON may remain |
+| **SSO-012** | P1 | Done | `openhac preview` = schematic + KiCad SVG; never ERC |
+| **SSO-041** | P1 | Done | CI golden is `sso041_signoff_node.py`, not RS-485 |
+| **FAB-051** | P1 | Done | Honest `--require-all` class (2R only, or add a multi-IC) |
+| **ABC-008** | P1 | Done | Document route subset ≠ all complex boards |
+| **LIB-007** | P1 | Done | Bundled reference BOM is opt-in overlay, not every lookup |
+| **ABC-046** | P1 | Done | RF policy from class / `RF_Module:` prefix, not ESP32 substring |
+| **SCH-006** | P1 | Done | Schematic columns from sheet tags, not `ldo`/`rs485` names |
+| **CODE-003** | P1 | Done | Stdlib pin maps / RF fallback: catalog or fail |
+| **CODE-004** | P1 | Done | Named placement profile; ABC-007 stays generic |
+| **SPS-045** | P1 | Done | Tracked analog-island CI fixture, or Fundi stays out of the compiler |
+| **PERF-001** | P1 | Done | Catalog indexes + dedupe (`SCAN` → indexed lookup) |
+| **PERF-002** | P1 | Done | One SQLite connection; stdlib must not `DatabaseManager()` per part |
+| **PERF-003** | P1 | Done | Parametric value/package columns or FTS; no leading `LIKE '%…%'` |
+| **PERF-004** | P2 | Done | `Component.__init__`: one get + one alternates query |
+| **PERF-005** | P2 | Done | Cache `schematic_lib_symbol_sexp` like pinpos |
+| **PERF-006** | P1 | Done | Compile profiles preview / logic / fab; lazy manifest |
+| **PERF-007** | P2 | Done | Phase wall-clock ms in the manifest |
+| **PERF-008** | P2 | Done | Stretch partial: reuse pcbnew `BOARD` place→autoroute |
+| **CODE-002** | P2 | Done | Isolate all `OPENHAC_*` in pytest; no dotenv for unit tests |
+| **CODE-005** | P2 | Done | Escape or delete webview HTML until FAB-041 lands |
+| **FAB-050** | P2 | Done | Grow mypy island: schematic IR, spice_gen, compile_pipeline |
+| **CODE-006** | P2 | Done | Invented `Pin_N` count in CLI/manifest (handoff) |
+
+**Open in this batch:** **0**. Closed 4 Sep 2026 (`pytest tests/`: 640 passed, 6 skipped; mypy island exit 0). **CODE-001:** env restore shipped; `pcbnew.SaveBoard` remains in-process (SIGSEGV is not catchable). **PERF-008:** stretch partial — `generate_layout` board reused into autoroute, not through zone fill.
+
+Follow-on (not a reopen of FAB/PERF): live KiCad artwork overlay — [LIVE_KICAD_SPEC.md](./LIVE_KICAD_SPEC.md) (**LIVE-001…008**). Catalog depth, 3D pointers, and SPICE operator follow-on — [CATALOG_DEPTH_SPEC.md](./CATALOG_DEPTH_SPEC.md) (**CAT-001…015**, **3D-001…005**, **SPS-050…057**). Operator workflow gates — [WORKFLOW_GATES_SPEC.md](./WORKFLOW_GATES_SPEC.md) (**ECO-001**, **LOCK-001**, **MFG-010**, **PWR-010**, **PIN-001**, **VAR-001**, **LIVE-010**, **PLC-001**, **TST-001**, **GLD-001**). Does not reopen **SPS-010…044**. HTTP fetch of vendor SPICE `.lib` stays out of scope (**SPS-019** reserved unused).
+
+---
+
+## Live KiCad artwork overlay (LIVE-*)
+
+Python remains the electrical source of truth. Saved `.kicad_sch` / `.kicad_pcb` are an artwork overlay (pose + user copper/wires), merged on emit. Not a second HDL: KiCad connectivity that disagrees with the graph fails compile. Preview still never runs `kicad-cli sch erc`.
+
+| Spec ID | Pri | Status | One-line target |
+|---------|-----|--------|-----------------|
+| **LIVE-001** | P1 | Done | Overlay schema; key by symbol UUID then refdes (KiCad 9 `R?`) |
+| **LIVE-002** | P1 | Done | Keep schematic symbol `(at x y rot)` / unit on merge; KiCad 9 instances |
+| **LIVE-003** | P1 | Done | Keep PCB footprint xy/rot; skip Z3 for fully overlaid boards |
+| **LIVE-004** | P1 | Done | Re-apply tracks/vias/zones; drop copper whose net vanished |
+| **LIVE-005** | P1 | Done | Keep sch wires/labels/graphics for nets still in the graph |
+| **LIVE-006** | P1 | Done | `--keep-kicad-artwork` / `--regenerate-artwork`; parity fail-closed |
+| **LIVE-007** | P2 | Done | `preview --pcb` place-only merge on watch; no route/ERC |
+| **LIVE-008** | P2 | Done | `--watch` localhost SVG viewer of KiCad export; `--no-browser` |
+
+Pointer (not a reopen): KiCad 10 PCB IPC revert is **LIVE-010** in [WORKFLOW_GATES_SPEC.md](./WORKFLOW_GATES_SPEC.md).
+
+---
+
+## Catalog depth, 3D pointers, SPICE operator follow-on (CAT-* / 3D-* / SPS-05x)
+
+Packed catalog is **depth** (named pin table + real footprint + 3D pointer), not SKU count. `--production` stays offline. Git does not ship proprietary `.lib`. Spec: [CATALOG_DEPTH_SPEC.md](./CATALOG_DEPTH_SPEC.md). Closed 6 Sep 2026 with focused pytest (`tests/test_catalog_depth.py`, `tests/test_catalog_sync_widen.py`, `tests/test_spice_operator.py`, plus related catalog/SPICE suites). HTTP fetch of vendor SPICE `.lib` stays out of scope (**SPS-019** reserved unused).
+
+| Spec ID | Pri | Status | One-line target |
+|---------|-----|--------|-----------------|
+| **CAT-001** | P0 | Done | Completeness grades: `compile_ready` vs `warehouse` |
+| **CAT-002** | P0 | Done | Widen jlcsearch typed categories (probe first) |
+| **CAT-003** | P1 | Done | `--include-extended` on sync, capped; default stays Basic |
+| **CAT-004** | P0 | Done | Pin policy: 2-pin passives; never numeric-only IC pinouts |
+| **CAT-005** | P0 | Done | `database enrich --missing-pinouts`; not called from `--production` |
+| **CAT-006** | P0 | Done | `openhac catalog coverage` JSON; no fetch |
+| **CAT-007** | P0 | Done | `import_lcsc_csv` is warehouse, not success |
+| **CAT-008** | P1 | Done | Overlay keys for 3D hash/licence and spice pointers |
+| **CAT-009** | P1 | Done | Persist `catalog_tier` verified vs warehouse |
+| **CAT-010** | P1 | Done | Optional Nexar/Octopart behind keys; fail closed; not default CI |
+| **CAT-011** | P2 | Done | Second PCBA catalog as `part_offers`, not a second SoT |
+| **CAT-012** | P2 | Done | SnapEDA/UL/SamacSys licence-gated; no silent redistrib |
+| **CAT-013** | P1 | Done | KiCad symbol lib as pin-name oracle (not `Device:IC`) |
+| **CAT-014** | P2 | Done | Maintainer snapshot job; not `--production` |
+| **CAT-015** | P2 | Done | Parametric twins via `part_alternates` / `part_offers` |
+| **3D-001** | P0 | Done | `model_3d_sha256` / license / source provenance |
+| **3D-002** | P0 | Done | Prefer KiCad library 3D for JEDEC passives |
+| **3D-003** | P0 | Done | `catalog prefetch-3d`; forbidden under fab / no-network |
+| **3D-004** | P0 | Done | Missing 3D is a coverage row; no fake cube |
+| **3D-005** | P0 | Done | No STEP/WRL in git; cache under `~/.kiro/openhac/` |
+| **SPS-050** | P0 | Done | `openhac spice coverage BOARD.py` without ngspice |
+| **SPS-051** | P1 | Done | Vendor-record template; `download_page` ignored by loader |
+| **SPS-052** | P0 | Done | `openhac spice verify-vendor-dir` hash + arity; no network |
+| **SPS-053** | P0 | Done | More Apache physics decks (diode / opto / in-amp); not vendor twins |
+| **SPS-054** | P1 | Done | Refuse encrypted / LTspice `.asc`; ngspice only |
+| **SPS-055** | P1 | Done | Stamp `spice_include` / `spice_subckt` from registry on `get_component` |
+| **SPS-056** | P0 | Done | USER_GUIDE: vendor dir → overlay → verify → `--spice-signoff` |
+| **SPS-057** | P0 | Done | Non-goals restatement; **SPS-019** remains reserved |
+
+---
+
+## Workflow gates (ECO / LOCK / MFG / PWR / PIN / VAR / LIVE-010 / PLC / TST / GLD)
+
+Python remains the HDL. Native graph is electrical SoT. KiCad is the artwork overlay (**LIVE**). `--production` stays offline (**FAB-010**). `--require-all` stays the 2R golden (**FAB-051**). Spec: [WORKFLOW_GATES_SPEC.md](./WORKFLOW_GATES_SPEC.md). HTTP fetch of vendor SPICE `.lib` stays out of scope.
+
+| Spec ID | Pri | Status | One-line target |
+|---------|-----|--------|-----------------|
+| **ECO-001** | P0 | Done | `{project}.openhac-eco.json` graph diff vs previous snapshot |
+| **LOCK-001** | P0 | Done | `openhac.lock`; fab fail-closed when present or `--require-lock` |
+| **MFG-010** | P0 | Done | `openhac export jlc` JLC BOM/CPL; no invented SKUs |
+| **PWR-010** | P0 | Done | `declare_rail` + `draws_from`; over-current fails ERC |
+| **PIN-001** | P0 | Done | `openhac pinout init`; refuse numeric-only IC tables |
+| **VAR-001** | P0 | Done | Board variants / DNP on BOM, not netted or placed |
+| **LIVE-010** | P1 | Done | Best-effort KiCad 10 PCB IPC revert; no schematic fake |
+| **PLC-001** | P1 | Done | Overlay pose vs outline / courtyard on freeze/intent |
+| **TST-001** | P1 | Done | `declare_testpoint`; `--require-testpoints` / fab fail-closed |
+| **GLD-001** | P1 | Done | SPICE-island golden uses bundled Apache physics; 2R `--require-all` unchanged |
+
+---
+
+### A — Fail-closed (P0)
+
+#### FAB-004 / SPS-007 — Ungated SKiDL circuit fallback
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P0 |
+| **Problem** | If the native circuit looks empty, SPICE and schematic harvest silently use `builtins.default_circuit`. ERC can pass one graph while ngspice or `.kicad_sch` uses another. `OPENHAC_LEGACY_SKIDL` already gates `get_default_circuit()`. |
+| **Current state** | `openhac/compiler/spice_gen.py` `_circuit_and_parts` (~215–230): SKiDL fallback, `except Exception: pass`. `openhac/schematic/collect.py` (~64–80): same pattern. Status table still marks FAB-004 Done. |
+| **Target state** | Fallback only when `OPENHAC_LEGACY_SKIDL=1`. Under spice-signoff / fabrication / schematic-signoff: raise if native parts are empty. Never silent cross-circuit fallback. |
+| **Acceptance criteria** | Tests: empty native + populated SKiDL does not emit SPICE/schematic from SKiDL unless the env flag is set. Sign-off raises. Dual-scan in ERC stays gated the same way. |
+| **Approach** | Share `_legacy_skidl_enabled()` from `openhac/circuit.py`. Fail closed in `spice_gen` and `collect`. |
+
+#### FAB-023 — Physics apply swallowed under fabrication
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P0 |
+| **Problem** | IPC-2152 / physics net-classes can fail and the compile still exits 0. |
+| **Current state** | `openhac/compiler/compile_pipeline.py` `phase_autoroute` (~692–780) wraps `apply_physics_net_classes` in `try/except` → `logger.warning` and continue. Same class of swallow in `layout_gen.py`. Status table marks FAB-023 Done. |
+| **Target state** | Re-raise when `compile_goal=fabrication`. Empty current-set is an explicit skip recorded on `fab_audit`, not an exception swallow. |
+| **Acceptance criteria** | Test: fabrication compile with `apply_physics_net_classes` raising exits non-zero. Handoff may warn. |
+| **Approach** | Helper `or_raise_if_fab(goal, err)` on physics apply. |
+
+#### FAB-013 — Enrich failures abort; `gates_passed` is a gate
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P0 |
+| **Problem** | `lookup_failed` is copied into the manifest (`gates_passed: false`) and compile still exits 0. CI does not read that bit. |
+| **Current state** | Failures appended in `compile_pipeline.py` (~147–153). `gates_passed` computed in `compile_manifest.py` (~1487) as JSON only. `scripts/ci_validate_fab_gates.py` / `ci_validate_production.py` check omitted footprints / compile_goal, not `gates_passed`. |
+| **Target state** | Fabrication aborts after enrich when `enrich_failures` is non-empty. Validators assert `fab_audit.gates_passed is True` and empty `enrich_failures`. |
+| **Acceptance criteria** | Negative fixture: enrich fail + `--production` → non-zero. Golden CI fails if the audit lies. |
+| **Approach** | Raise in `phase_enrich_parts` under fabrication; extend `_assert_fab_audit`. |
+
+#### FAB-010 / ABC-016 — JIT ignores `OPENHAC_NO_NETWORK`
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P0 |
+| **Problem** | `--production` sets `OPENHAC_NO_NETWORK`, but `Resistor()` / parametric Phase 4 can still HTTP-fetch jlcsearch. |
+| **Current state** | `network_allowed()` used by enrich, `Component._live_lookup` (`base.py` ~340–345), CLI enrich. **Not** used in `db_manager.py` Phase 4 (~700–727) or `api_fallback.fetch_and_map_part` (~240–268). ABC-016 marked Done for `_live_lookup` only. |
+| **Target state** | `network_allowed()` at the start of `fetch_and_map_part` and parametric Phase 4. Fail closed under no-network / fabrication. |
+| **Acceptance criteria** | Test: `OPENHAC_NO_NETWORK=1`, empty local row, `parametric_search` does not call HTTP (mock). `--production` cannot phone home from stdlib constructors. |
+| **Approach** | One check in `fetch_and_map_part`; Phase 4 respects it. Do not fail-open if `enrich` import fails. |
+
+#### CODE-001 — `SaveBoard` / `DEFER_COPPER_POURS` process poison
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P0 |
+| **Problem** | `pcbnew.SaveBoard` can SIGSEGV (`except Exception` does not catch it). Pipeline sets `OPENHAC_DEFER_COPPER_POURS=1` and never restores it, so later pytest cases in-process see a different pour schedule. |
+| **Current state** | Env save/restore in `run_compile_phases` `finally`. SaveBoard stays in-process; comment documents SIGSEGV. Zone fill remains a child process. Test: compile does not leave `OPENHAC_DEFER_COPPER_POURS` set. |
+| **Target state** | Save/restore the env in `try/finally`. Prefer out-of-process SaveBoard. Isolate pcbnew tests. |
+| **Acceptance criteria** | Test: compile with autoroute does not leave `DEFER_COPPER_POURS` set for the next test. Document SaveBoard isolation. |
+| **Approach** | `try/finally` around layout/autoroute; subprocess pattern from zone fill. |
+
+---
+
+### B — Review path (P1)
+
+#### FAB-041 — Deprecate webview as human review
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | FAB-041 called Cytoscape HTML “primary human review.” That fights schematic sign-off and is a topology cartoon, not a sheet. |
+| **Current state** | `Board.export_webview`, `openhac/webview/exporter.py`, CLI `--webview`. `tests/test_webview_export.py` writes HTML under a temp dir. USER_GUIDE / RELEASE_CHECKLIST / this file’s old FAB-041 row. |
+| **Target state** | `--webview` / `export_webview` deprecated (warning, then removal). Hardware IR JSON may remain as a machine dump. Human preview is **SSO-012**. EE stamp remains **SSO-040**. |
+| **Acceptance criteria** | CLI warns. Test does not write under `docs/`. SCOPE / USER_GUIDE / RELEASE_CHECKLIST / this FAB-041 row match the retarget. |
+| **Approach** | Deprecation warning; docs; stop the test side-effect. Prefer delete of CDN HTML over XSS hardening if SSO-012 ships in the same batch (**CODE-005**). |
+
+#### SSO-012 — Live KiCad sheet preview (not ERC)
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | Authoring has no KiCad-symbol live view. The webview is the wrong picture. |
+| **Current state** | `generate_schematic` + `embed_used_lib_symbols` + pinpos already exist. No watch, no `kicad-cli sch export svg`, no `openhac preview`. |
+| **Target state** | `openhac preview board.py`: skip layout/autoroute/enrich-as-needed, `generate_schematic`, `kicad-cli sch export svg`, show/watch the SVG. Banner: not ERC-stamped. **Must not** call `kicad-cli sch erc`. Stamp stays `--schematic-signoff` (**SSO-040**). Reuse `emit_kicad` / `kicad_sym_pinpos`; no second symbol renderer. |
+| **Acceptance criteria** | CLI smoke: preview writes SVG (or skips with a clear “kicad-cli missing” error). Preview path does not invoke sch erc. Sign-off tests still require ERC. |
+| **Approach** | Compile profile **PERF-006** `preview` + `kicad-cli sch export svg`. File-watch re-exec with `reset_default_circuit()`. |
+
+#### SSO-041 — Golden is `sso041_signoff_node.py`
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | Spec target is a multi-module Device R/C/LED node. CI still compiles `complex_rs485_node.py` under `--schematic-signoff`. |
+| **Current state** | `SCHEMATIC_SIGN_OFF_SPEC.md` SSO-041 vs `scripts/ci_kicad_sch_erc_golden.py` ~146–177. Status table marked Done. |
+| **Target state** | `kicad-schematic-erc` compiles `examples/sso041_signoff_node.py`. Two-resistor smoke remains. RS-485 / ESP32-C3 stay fabrication goldens until MCU/connector ERC is an explicit contract. |
+| **Acceptance criteria** | Script path assertion; job uses that example. |
+| **Approach** | Change the golden script; keep RS-485 on the fab matrix only. |
+
+---
+
+### C — Claim / overfitting honesty (P1)
+
+#### FAB-051 — Honest production-validation class
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | `--require-all` is proved only on two 0805 resistors (`tests/fixtures/fab_golden_board.py`). README still says “supported golden board class.” |
+| **Current state** | `scripts/ci_validate_production.py` `_GOLDEN` line 31. |
+| **Target state** | Either the claim says **minimal 2-pin passive class**, or the validator adds a multi-IC board to `--require-all`. |
+| **Acceptance criteria** | README + PRODUCTION_VALIDATION.md + this row agree. No silent expansion of the claim. |
+| **Approach** | Docs first unless a second golden is explicitly added. |
+
+#### ABC-008 — Route subset is not the complex-board claim
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | `--route` defaults to `esp32c3_usb` and `rs485_node`. WROOM / mesh / AMR stay place-only; CI job is `continue-on-error`. |
+| **Current state** | `scripts/ci_validate_complex_boards.py` ~507–529. ABC-008/009 marked Done. |
+| **Target state** | Docs and `--help` state the default subset. Do not imply route+DRC for RF_Module WROOM boards. |
+| **Acceptance criteria** | PRODUCTION_VALIDATION.md / ABC notes / CLI help match the subset. |
+| **Approach** | Documentation; optional explicit `--route-subset` required in CI YAML comments. |
+
+#### LIB-007 — Bundled reference BOM is opt-in
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | `00_reference_bom.json` (ICM-42688, BMP388, QMC5883L, W25Q128, LDL1117, …) merges into every `get_component()` unless `OPENHAC_NO_BUNDLED_CATALOG_OVERLAYS=1`. Demo BOMs mutate the global catalog. |
+| **Current state** | `openhac/database/catalog_overlay.py`; `package_catalog_overlays/00_reference_bom.json`. |
+| **Target state** | No board-BOM merge by default. Examples pass `--catalog-overlay`. Bundled overlays for *fixups* stay documented separately if any remain. |
+| **Acceptance criteria** | Test: `get_component` without overlay env does not apply IMU/LDO pinouts from `00_reference_bom.json`. |
+| **Approach** | Stop auto-loading that file; move it to `examples/` or require the flag. |
+
+#### ABC-046 — RF detection without Espressif archaeology
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | `"WROOM"` / `"ESP32"` in the footprint string triggers RF keepout/pour rules. Other RF modules slip through; named ESP32 bricks are forced in. |
+| **Current state** | `openhac/compiler/advanced_board_policy.py` ~117–125. |
+| **Target state** | Declared `board_class=rf` and/or `RF_Module:` library prefix only. |
+| **Acceptance criteria** | Test: footprint containing `ESP32` without `RF_Module:` and without `board_class=rf` does not emit ABC-046/047. `RF_Module:` does. |
+| **Approach** | Drop substring checks; keep lib-prefix + class. |
+
+#### SCH-006 — Schematic flow columns from intent, not names
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | `_flow_column` keys on tokens `ldo`, `rs485`, `usb`, … in module/interface names. Rename `PowerTree` → `PSU1` and the sheet shuffles. |
+| **Current state** | `openhac/schematic/layout.py` ~208–228. |
+| **Target state** | Explicit sheet/zone tags or interface types already on `Module`. |
+| **Acceptance criteria** | Test: modules named without those tokens still group by declared tag. No token list required for a passing layout. |
+| **Approach** | Prefer `sheet_field` / interface kinds; keep tokens only as a deprecated hint behind an env flag if needed. |
+
+#### CODE-003 — Stdlib must not invent Espressif / TPS pin maps
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | `SwitchingRegulator` hardcodes `TPS54302` / `AP3211` maps and 4.7 µH vs 10 µH. `RF_Module()` falls back to `ESP32-WROOM-32`. |
+| **Current state** | `openhac/stdlib/power.py` ~440–506; `openhac/stdlib/interface.py` ~239–244. |
+| **Target state** | Pinout from catalog `pinout_json` or fail. Inductor/cap values from author params or a model. `RF_Module()` raises if parametric miss. |
+| **Acceptance criteria** | Tests: missing pinout does not mock 8 pins; RF miss does not resolve WROOM. |
+| **Approach** | Delete `FAMILY_PIN_MAP` / WROOM fallback; fail closed. |
+
+#### CODE-004 — Placement profile vs silent CI env
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | Complex validator `_placement_env` setdefaults clearance 12 mm, inflate 2.2, margin 15 mm so CI stays green. ABC-007 comments cite WROOM UNSAT. Default `Board.compile()` is not those knobs. |
+| **Current state** | `scripts/ci_validate_complex_boards.py` ~157–185; `compile_pipeline.py` ~1268–1277. |
+| **Target state** | Named placement profile (env or `Board` field). ABC-007 repair stays generic (gap + autosize), not a WROOM contract. |
+| **Acceptance criteria** | Profile documented; complex CI sets it explicitly. Repair tests do not require Espressif names. |
+| **Approach** | `OPENHAC_PLACEMENT_PROFILE=complex_ci` or equivalent; validator applies it by name. |
+
+#### SPS-045 — Analog island in CI or not in the compiler story
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | `examples/fundi_mig_*` is untracked. `declare_spice_ground` / island work can fork from main. |
+| **Current state** | Working tree only; no Fundi strings under `openhac/`. |
+| **Target state** | Either a **tracked** minimal island fixture in CI (offline overlay, `--spice-signoff --spice-island`), or Fundi stays out of compiler motivation until it is tracked. |
+| **Acceptance criteria** | CI job or an explicit “not in tree” note in SPS table. No half-landed APIs without a test. |
+| **Approach** | Small resistor/LDO island golden preferred over shipping the full MIG board first. |
+
+---
+
+### D — Speed (PERF-*)
+
+Measured 4 Sep 2026 on this tree: `openhac.db` 29 974 rows, **zero** indexes on `components`, `get_component` ≈ 10 ms (`SCAN`); index on a copy ≈ 0.01 ms. `parametric_search` `LIKE '%10k%'` ≈ 33 ms. Golden skip-layout ≈ 1 s (manifest ≈ 350 ms). Cold schematic ≈ 1.6 s (`Device.kicad_sym` 2.22 MB). FreeRouting/Z3/pcbnew dominate fab wall-clock; **do not rewrite OpenHaC** to move those.
+
+#### PERF-001 — Catalog indexes and dedupe
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | Live DB has `PRAGMA index_list(components) = []`. `generic_name UNIQUE` in `schema.sql` never landed via ADD COLUMN migrations. Duplicates: `MOSFET_N_SOT-23` × 2873, `C_0pF_0603` × 1218. `get_component` `ORDER BY length(pinout_json)` scans clones. |
+| **Current state** | `openhac/database/schema.sql`; `db_manager.get_component` ~203–224. |
+| **Target state** | `INDEX` on `generic_name`, `category`, `supplier_sku`, `mpn`. Deduplicate keeping the longest pinout. Migration is idempotent on existing files. |
+| **Acceptance criteria** | `EXPLAIN QUERY PLAN` for `generic_name = ?` is `SEARCH … INDEX`. Test: lookup 100× under 50 ms on a 30k-row fixture. Duplicate count for a known clone name drops to 1 after migrate. |
+| **Approach** | `_migrate_v10_indexes` (or next schema version) in `DatabaseManager._init_db`. |
+
+#### PERF-002 — One SQLite connection
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | Every stdlib `Resistor()` does `DatabaseManager()` (schema + nine PRAGMA migrations). Every `get_component` opens a new connection. |
+| **Current state** | `stdlib/passives.py` ~53–54 and the same pattern across stdlib. `db_manager.py` `with sqlite3.connect` per method. |
+| **Target state** | Process-wide (or compile-scoped) connection, WAL. Stdlib uses `Component.db` / a shared manager, not `DatabaseManager()` per ctor. |
+| **Acceptance criteria** | Test: N `Resistor()` constructions do not open N connections (mock/count). WAL pragma on the shared conn. |
+| **Approach** | Lazy singleton connection on `DatabaseManager`; stdlib delete local `DatabaseManager()`. |
+
+#### PERF-003 — Parametric without leading wildcard LIKE
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | `LIKE '%10k%'` / `'%0805%'` cannot use a btree (~33 ms/search on 30k rows). |
+| **Current state** | `db_manager.parametric_search` ~593–611. |
+| **Target state** | Stored normalized `value` / `package` columns (or FTS5) as the primary match. LIKE is fallback only, documented as slow. |
+| **Acceptance criteria** | Indexed equality/prefix query for `value=10k` `package=0805`. Benchmark vs current LIKE in a test or script note. |
+| **Approach** | Columns filled at insert/sync; search uses them first. |
+
+#### PERF-004 — Fewer catalog round-trips in `Component.__init__`
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P2 |
+| **Problem** | Lookup, second `get_component`, `refresh_from_db`, `list_part_alternates` twice (`base.py` ~209–299). |
+| **Target state** | One `get_component`, one alternates query. |
+| **Acceptance criteria** | Unit test or spy: construction of a known generic_name hits get once. |
+| **Approach** | Reuse `_comp_data`; call `list_part_alternates` once. |
+
+#### PERF-005 — Cache embedded library symbol sexp
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P2 |
+| **Problem** | `schematic_lib_symbol_sexp` re-reads `.kicad_sym` (Device.kicad_sym 2.22 MB). Pinpos has `lru_cache(64)` keyed by mtime; sexp does not. Cold `phase_schematic` ≈ 1.6 s on the 2R golden. |
+| **Current state** | `kicad_sym_pinpos.py` `schematic_lib_symbol_sexp` ~175–210 vs `_cached_pin_map` ~380–393. |
+| **Target state** | Same cache key `(path, symbol, mtime_ns)` for sexp. |
+| **Acceptance criteria** | Second `generate_schematic` in-process does not re-read the full Device library (mock/stat). |
+| **Approach** | Mirror `_cached_pin_map`. |
+
+#### PERF-006 — Compile profiles and lazy manifest
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | Iterate/preview pays enrich, fat manifest (~350 ms: three `git` calls + `kicad-cli --version`), and fab-oriented phases. |
+| **Current state** | `DEFAULT_COMPILE_PHASES`; `compile_manifest.py` subprocesses ~87–150. |
+| **Target state** | Profiles: **preview** (schematic + SVG; skip enrich/layout/route/ERC/fat manifest) vs **logic** vs **fabrication**. Lazy manifest: skip git/kicad-cli version unless production / `--full-manifest`. |
+| **Acceptance criteria** | `openhac preview` / profile flag skips those phases. Production still writes full STR-002 manifest. |
+| **Approach** | Phase subsets on `CompileState`; gate git/kicad version collection. Pairs with **SSO-012**. |
+
+#### PERF-007 — Phase timings in the manifest
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P2 |
+| **Problem** | No recorded phase durations; “maybe rewrite” is guesswork. |
+| **Current state** | `run_compile_phases` loops with no timer (`compile_pipeline.py` ~1170–1172). |
+| **Target state** | `compile_pipeline_phase_ms` map in the manifest (and preview log). |
+| **Acceptance criteria** | Golden compile manifest contains per-phase milliseconds for phases that ran. |
+| **Approach** | `perf_counter` around each `fn(state)`. |
+
+#### PERF-008 — Stretch: one pcbnew board in memory
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P2 (stretch) |
+| **Current state** | `generate_layout` returns the pcbnew board; `phase_autoroute` reuses `state.pcbnew_board`. Zone fill still LoadBoard. Stretch not fully place→DSN. |
+| **Target state** | Keep one `pcbnew.BOARD` through place→physics→DSN when in-process is safe. SaveBoard isolation still **CODE-001**. |
+| **Acceptance criteria** | Fewer LoadBoard calls on a skip-FreeRouting place-only compile (count via hook/test). |
+| **Approach** | Pass board object through phases; subprocess only at crash boundaries. |
+
+---
+
+### E — Hygiene (P2)
+
+#### CODE-002 — Pytest env isolation
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P2 |
+| **Problem** | `load_repo_dotenv()` in `conftest.py` leaks machine `.env`. Only five `OPENHAC_*` keys are deleted. |
+| **Current state** | `tests/conftest.py` ~16–34. |
+| **Target state** | Snapshot/restore all `OPENHAC_*`. Dotenv only for opt-in KiCad path fixtures, not unit tests. |
+| **Acceptance criteria** | Test: `OPENHAC_DETERMINISTIC` / `NO_NETWORK` / `DEFER_COPPER_POURS` in the environment do not change an unmarked test. |
+| **Approach** | Expand `_TEST_ISOLATE_ENV` or clear the prefix. |
+
+#### CODE-005 — Webview XSS / CDN until deleted
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P2 |
+| **Problem** | Inspector `innerHTML` interpolates catalog fields; HTML pulls Google Fonts / cdnjs / jsDelivr. |
+| **Current state** | `openhac/webview/exporter.py` ~104–116, ~421–452. |
+| **Target state** | Prefer **FAB-041** delete. If the exporter remains: `html.escape` / `textContent`, vendored JS, no test write to `docs/`. |
+| **Acceptance criteria** | Either no exporter, or a test that a `</script>` in a field does not appear raw in HTML. |
+| **Approach** | Delete with FAB-041, or escape in the same PR as deprecation. |
+
+#### FAB-050 — Grow the mypy island
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P2 |
+| **Problem** | CI mypy is `openhac/core`, `pcb_placement.py`, `layout_gen.py` with `--follow-imports=silent`. |
+| **Current state** | `.github/workflows/ci.yml` ~31–32. Status table marks FAB-050 Done. |
+| **Target state** | Add `openhac/schematic/ir.py`, `openhac/compiler/spice_gen.py`, then `compile_pipeline.py`. |
+| **Acceptance criteria** | CI command lists those paths; they typecheck. |
+| **Approach** | Incremental; do not require repo-wide mypy in this batch. |
+
+#### CODE-006 — Invented pins visible in handoff
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P2 |
+| **Problem** | Handoff still invents `Pin_N` (FAB-001 refuses only in fabrication). Easy to miss a log line. |
+| **Current state** | `pin_resolution.py` ~119–136; `_IMPLICIT_PIN_EVENTS`. |
+| **Target state** | Count in CLI summary and manifest under handoff. Fab still fails closed. |
+| **Acceptance criteria** | Compile of a missing-pinout part in handoff prints/records `invented_pin_parts > 0`. |
+| **Approach** | Surface `_IMPLICIT_PIN_EVENTS` on `fab_audit` / CLI. |
+
+---
 
 ### SPICE Sign-Off (SPS-* IDs)
 
@@ -38,7 +490,7 @@ Normative spec: [SPICE_SIGN_OFF_SPEC.md](./SPICE_SIGN_OFF_SPEC.md). Additive fai
 | **SPS-043** | Done | `declare_spice_island` / `--spice-island` subgraph sign-off; MCU omit. |
 | **SPS-044** | Done | Audit `coverage[]`; failed sign-off still writes JSON with `passed: false`. |
 
-**SPS open:** **0** v1 IDs (SPS-007…009 / 019 / 035…039 reserved stretch). SPS-043/044 closed analog-island coverage.
+**SPS open (v1):** **0** in the table above. **Sep 2026 reopen:** **SPS-007** (SKiDL fallback, paired with FAB-004) and **SPS-045** (island CI vs Fundi) — see [Audit follow-on job spec](#audit-follow-on-job-spec-sep-2026). Stretch reserved: SPS-008…009 / 019 / 035…039.
 
 ### Schematic Sign-Off (SSO-* IDs)
 
@@ -59,11 +511,11 @@ Normative spec: [SCHEMATIC_SIGN_OFF_SPEC.md](./SCHEMATIC_SIGN_OFF_SPEC.md). Addi
 | **SSO-030** | Done | Multi-sheet hierarchy; hier pin type from net pin types. |
 | **SSO-031** | Done | Schematic IR then emit; title block has no “Fabrication Ready” slogan. |
 | **SSO-040** | Done | `--schematic-signoff` forces schematic + `kicad-cli sch erc`. |
-| **SSO-041** | Done | `scripts/ci_kicad_sch_erc_golden.py` smoke + `examples/sso041_signoff_node.py` (multi-module, `--schematic-signoff`). |
+| **SSO-041** | Done | Shipped smoke exists. **Sep 2026 reopen:** CI still compiles `complex_rs485_node.py`; target remains `examples/sso041_signoff_node.py` — see job spec above. |
 | **SSO-042** | Done | Grep gate for `_resistor_graphic` / `_detect_symbol_type`. |
 | **SSO-050** | Done | SCOPE / FAB-040 / README / this table. |
 
-**SSO open:** **0 / 16** (v1 IDs; SSO-012…019 / 023…029 / 032…039 reserved stretch).
+**SSO open (v1 table):** **0 / 16** closed IDs. **Sep 2026 reopen:** **SSO-012** (preview SVG) and **SSO-041** (CI golden path) — see [Audit follow-on job spec](#audit-follow-on-job-spec-sep-2026). Stretch reserved: SSO-013…019 / 023…029 / 032…039.
 
 ### Phase-2 Fabrication Readiness (FAB-* IDs)
 
@@ -74,26 +526,26 @@ Normative spec: [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md)
 | **FAB-001** | Done | `pin_resolution.get_pins_from_data` refuses invented/corrupt pinouts under fabrication; `Component._get_pins_from_data` delegates. Tests in `tests/test_fab_phase2_gates.py`. |
 | **FAB-002** | Done | Pad mismatches logged at warning; `assert_footprint_pin_pad_or_raise` auto-strict when `compile_goal=fabrication`. |
 | **FAB-003** | Done | Omitted footprint refs recorded; fab place/zip refuse; export respects `OPENHAC_OMITTED_FOOTPRINT_REFS`. |
-| **FAB-004** | Done | Native `openhac.core.circuit` is SoT via `get_default_circuit()`; SKiDL `builtins.default_circuit` only when `OPENHAC_LEGACY_SKIDL=1`. Dual-scan gated the same way. |
-| **FAB-010** | Done | `network_allowed()` denies under fabrication unless `OPENHAC_ALLOW_NETWORK`. |
+| **FAB-004** | Done | Native SoT via `get_default_circuit()`. **Sep 2026 reopen:** unguarded SKiDL fallback in `spice_gen` / `schematic.collect` — **SPS-007** in job spec. |
+| **FAB-010** | Done | `network_allowed()` used by enrich and `_live_lookup`. **Sep 2026 reopen:** parametric JIT / `fetch_and_map_part` still HTTP — job spec FAB-010 / ABC-016. |
 | **FAB-011** | Done | Fabrication auto-enables verified-parts gate; synthetic watermarks rejected in DRC. |
 | **FAB-012** | Done | `api_cache.db` gitignored/untracked; default cache under `~/.cache/openhac/` (`OPENHAC_API_CACHE_PATH`). |
-| **FAB-013** | Done | Enrich import/per-part failures recorded on `CompileState` / manifest; fab raises on import failure. |
+| **FAB-013** | Done | Enrich failures recorded on `CompileState` / manifest. **Sep 2026 reopen:** `lookup_failed` does not abort; CI does not assert `gates_passed`. |
 | **FAB-020** | Done | `pcb_metrics.footprint_count` + fab_audit; place parity enforced via FAB-002/003 gates. |
 | **FAB-021** | Done | `unrouted_net_count` in metrics; fab routing phase fails if unrouted > 0 unless `allow_unrouted_nets`. |
 | **FAB-022** | Done | `phase_kicad_pcb_drc` already required in fabrication; report path stored for fab_audit. |
-| **FAB-023** | Done | Enrich/layout paths log exceptions; fab raises on omitted footprints / pad / enrich import (incremental). |
+| **FAB-023** | Done | Incremental: fab raises on omitted footprints / pad / enrich import. **Sep 2026 reopen:** physics net-class apply still swallowed under fabrication. |
 | **FAB-030** | Done | `--production` sets fab goal, pad strict, verified parts, `OPENHAC_NO_NETWORK`, schematic off by default. |
 | **FAB-031** | Done | `scripts/ci_fab_golden.py` + `kicad-fab-golden` CI job runs `export fab --zip` when `kicad-cli` present. |
 | **FAB-032** | Done | Manifest `fab_audit` / `openhac.fab_audit.v1`. |
 | **FAB-040** | Done | `--production` defaults schematic off; fab may omit drawing. EE stamp path is SSO (`--schematic-signoff`), not fabrication. |
-| **FAB-041** | Done | Webview/IR documented as primary review in SCOPE / USER_GUIDE / RELEASE_CHECKLIST; CLI `--webview`. |
+| **FAB-041** | Done | CLI `--webview` shipped. **Sep 2026 retarget:** deprecate Cytoscape as review path; preview is SSO-012; IR JSON may remain. |
 | **FAB-042** | Done | API stability section in `docs/API_REFERENCE.md`. |
-| **FAB-050** | Done | CI: `OPENHAC_NO_NETWORK=1`; mypy hard gate on `openhac/core` + placement/layout (`--follow-imports=silent`); layout/fab golden validators blocking. |
-| **FAB-051** | Done | Blocking `kicad-fab-golden` + `kicad-production-validation` (`ci_validate_production.py --require-all --fetch-freerouting`); matrix in PRODUCTION_VALIDATION.md (V0–V7 ERC→DRC→Gerbers). Complex multi-IC: 5 fab boards place+Gerbers via `ci_validate_complex_boards.py --place`; LCSC live API via `--api` (`complex_lcsc_api_mixed_node.py`). Autoroute/PCB DRC not a guarantee for RF-module footprints. |
+| **FAB-050** | Done | CI `OPENHAC_NO_NETWORK=1`; mypy island on core + placement/layout. **Sep 2026 reopen:** grow mypy to schematic IR, spice_gen, compile_pipeline. |
+| **FAB-051** | Done | Blocking fab golden + `--require-all` on the 2R fixture. **Sep 2026 reopen:** claim honesty — 2-pin class only, or add a multi-IC board. |
 
 
-**Phase-2 open:** **0 / 20**.
+**Phase-2 historical table:** **0 / 20** unmarked. **Sep 2026 reopen** (see job spec): **FAB-004, FAB-010, FAB-013, FAB-023, FAB-041, FAB-050, FAB-051**.
 
 ### Advanced Board Capabilities (ABC-* IDs)
 
@@ -108,9 +560,9 @@ Normative spec: [ADVANCED_BOARD_CAPABILITIES_SPEC.md](./ADVANCED_BOARD_CAPABILIT
 | **ABC-005** | Done | Pre-route FP min-drill audit; duplicate pad-number net sync (RF thermals); relax board min-hole to stock FP drills. |
 | **ABC-006** | Done | `unrouted_net_count` hardens on connectivity API failure. |
 | **ABC-007** | Done | Repair retry expands board / placement gap on route/DRC failure. |
-| **ABC-008** | Done | Complex validator `--route-subset` for green multi-IC boards. |
+| **ABC-008** | Done | `--route-subset` exists. **Sep 2026 reopen:** default subset is C3/RS-485 only — document that it is not the full complex-board route claim. |
 | **ABC-009** | Done | WROOM thermal-via ceiling documented; route subset prefers C3/RS-485. |
-| **ABC-016** | Done | `_live_lookup` gated by `network_allowed()`. |
+| **ABC-016** | Done | `_live_lookup` gated by `network_allowed()`. **Sep 2026 reopen:** parametric JIT is not — paired with FAB-010. |
 | **ABC-017** | Done | Stock KiCad FP map preferred over `Device:Q`; EasyEDA fallback. |
 | **ABC-018** | Done | `voltage_rating` / `power_watts` populated from live/enrich attributes. |
 | **ABC-019** | Done | `footprint_source` recorded on live/enrich rows. |
@@ -125,13 +577,13 @@ Normative spec: [ADVANCED_BOARD_CAPABILITIES_SPEC.md](./ADVANCED_BOARD_CAPABILIT
 | **ABC-038** | Done | HS nets excluded from FreeRouting unless waived. |
 | **ABC-039** | Done | Netclass/rules handoff file beside PCB. |
 | **ABC-040** | Done | Length-match intent recording. |
-| **ABC-046** | Done | `rf` profile: RF_Module without keepout → fab error. |
+| **ABC-046** | Done | `rf` profile keepout check. **Sep 2026 reopen:** detection uses `ESP32`/`WROOM` substrings; require class / `RF_Module:` prefix. |
 | **ABC-047** | Done | Ground-pour intent check under `rf`. |
 | **ABC-048** | Done | RF/EMC checklist in fab handoff. |
 | **ABC-049** | Done | RF courtyard keepout helper. |
 | **ABC-050** | Done | SCOPE honesty preserved (no EMC performance claim). |
 
-**ABC open (stretch placeholders ABC-010…015, 021…025, 031…035, 041…045):** tracked as Open in the normative spec; not blocking Phase-1–4 policy Done.
+**ABC open (stretch placeholders ABC-010…015, 021…025, 031…035, 041…045):** tracked as Open in the normative spec; not blocking Phase-1–4 policy Done. **Sep 2026 reopen:** **ABC-008**, **ABC-016**, **ABC-046** — see [Audit follow-on job spec](#audit-follow-on-job-spec-sep-2026).
 
 ### Phase-1 completion (all 48 spec IDs)
 
@@ -440,20 +892,21 @@ Extra rows (**Layout stub**, **Z3 overlap**, **Board DRC**, etc.) are **not** co
 
 ## How many tickets are left?
 
-**Phase-1:** **Zero** open **Partial** rows for the **48** numbered spec IDs: all are **Done**. Optional Phase-1 **stretch** work is tracked in per-ID Notes and in [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md).
+**Phase-1:** **Zero** open **Partial** rows for the **48** numbered spec IDs: historical table rows stay **Done**. Optional Phase-1 **stretch** work is tracked in per-ID Notes and in [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md).
 
-**Phase-2:** **0** open `FAB-*` IDs — see [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md) and the Phase-2 table above.
+**Phase-2 historical table:** still lists **20 / 20 Done**. The Sep 2026 reopen of **FAB-004, FAB-010, FAB-013, FAB-023, FAB-041, FAB-050, FAB-051** (and paired **SPS-007** / **ABC-016**) is **closed** in the [Audit follow-on job spec](#audit-follow-on-job-spec-sep-2026).
 
 | Bucket | Count | Meaning |
 |--------|--------|--------|
-| **Done** (all 48 Phase-1 spec IDs) | **48** | Phase-1 acceptance (see production spec). |
+| **Done** (all 48 Phase-1 spec IDs) | **48** | Phase-1 acceptance (see production spec). Historical rows unchanged. |
 | **Done (extra rows)** | **5** | Layout stub, Z3 overlap, Board DRC, interface validation, ERC net-level (supporting work, not a single spec ID). |
-| **Done (Phase-2 FAB-*)** | **20** | Fabrication readiness contract. |
-| **Open (Phase-2 FAB-*)** | **0** | — |
+| **Done (Phase-2 FAB-* historical)** | **20** | Shipped slice as of the Phase-2 close. |
+| **Open (Phase-2 FAB-* reopened)** | **0** | Closed in the Sep 2026 batch. |
+| **Open (Sep 2026 follow-on)** | **0** | 28-row batch Done (4 Sep 2026). CODE-001 SaveBoard still in-process; PERF-008 stretch partial. |
 
 ### Stretch backlog (follow-on batches)
 
-Phase-2 fabrication gates (**FAB-***) are the primary follow-on backlog. Additional Phase-1 stretch notes (not Phase-2 IDs):
+The [Sep 2026 job spec](#audit-follow-on-job-spec-sep-2026) is **closed**. Remaining stretch (not that batch):
 
 - **SCH-002**: richer hierarchical export (sheet pins, per-module wiring) beyond the current multi-sheet split — subordinate to **FAB-040** (schematic demotion).
 - **PCB-007 / SIG-002**: emit netclass/rule constraints into KiCad project/board files (not just handoff JSON/markdown).

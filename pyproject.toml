@@ -55,6 +55,8 @@ include = ["openhac*"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["."]
+# Quadrants registers a global pytest11 plugin; it is not an OpenHaC dependency.
+addopts = ["-p", "no:quadrants"]
 filterwarnings = [
     "ignore::DeprecationWarning:skidl.*",
 ]

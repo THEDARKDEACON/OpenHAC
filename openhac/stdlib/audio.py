@@ -22,8 +22,7 @@ class AudioAmp(Module, _ParametricMixin):
                  package: str = "MSOP-8", **kwargs):
         super().__init__(f"AudioAmp_{power_watts}W")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"AudioAmp(power={power_watts}W, v_cc={v_cc}V)"
 
@@ -70,8 +69,7 @@ class Microphone(Module, _ParametricMixin):
     def __init__(self, type: str = "analog", package: str = None, **kwargs):
         super().__init__(f"MIC_{type.upper()}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"Microphone(type={type})"
 

@@ -23,8 +23,7 @@ class FlashMemory(Module, _ParametricMixin):
                  v_cc: float = 3.3, package: str = "SOIC-8", **kwargs):
         super().__init__(f"FLASH_{size_mb}M")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"FlashMemory(size={size_mb}Mbit, interface={interface})"
 
@@ -74,8 +73,7 @@ class EEPROM(Module, _ParametricMixin):
     def __init__(self, size_kb: int = 256, interface: str = "I2C", **kwargs):
         super().__init__(f"EEPROM_{size_kb}K")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"EEPROM(size={size_kb}kbit, interface={interface})"
 
@@ -121,8 +119,7 @@ class RAM(Module, _ParametricMixin):
     def __init__(self, size_mb: int = 8, interface: str = "SPI", **kwargs):
         super().__init__(f"RAM_{size_mb}M")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"RAM(size={size_mb}Mbit, interface={interface})"
 
@@ -160,8 +157,7 @@ class EEPROM_I2C(Module, _ParametricMixin):
     def __init__(self, size_kb: int = 256, v_min: float = 3.3, **kwargs):
         super().__init__(f"EEPROM_{size_kb}K")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"EEPROM(size={size_kb}Kb, v_min={v_min}V)"
 

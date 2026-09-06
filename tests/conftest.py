@@ -11,27 +11,45 @@ import tempfile
 
 import pytest
 
-from openhac.core.dotenv_load import apply_kicad_env_aliases, load_repo_dotenv
+from openhac.core.dotenv_load import apply_kicad_env_aliases
 
-# Match CLI: load repo .env and mirror KICAD9_* before any test imports SKiDL.
-load_repo_dotenv(quiet=True)
 apply_kicad_env_aliases()
-
-# Machine `.env` force-overrides OPENHAC_FREEROUTING_* (and may set pad-strict).
-# Those knobs must not change unit-test gate semantics; tests that need them setenv.
-_TEST_ISOLATE_ENV = (
-    "OPENHAC_FREEROUTING_GUI",
-    "OPENHAC_STRICT_FOOTPRINT_PIN_PAD",
-    "OPENHAC_COMPILE_GOAL",
-    "OPENHAC_LEGACY_SKIDL",
-    "OPENHAC_SPICE_SIGNOFF",
-)
-
 
 @pytest.fixture(autouse=True)
 def _isolate_machine_openhac_env(monkeypatch):
-    for key in _TEST_ISOLATE_ENV:
-        monkeypatch.delenv(key, raising=False)
+    """CODE-002: unit tests do not inherit machine OPENHAC_* or repo .env."""
+    for key in list(os.environ):
+        if key.startswith("OPENHAC_"):
+            monkeypatch.delenv(key, raising=False)
+    yield
+    from openhac.core.base import Component, _SharedCatalogDb
+
+    Component.db = _SharedCatalogDb()
+
+
+_LEGACY_SKIDL_SHEET_TESTS = {
+    "test_schematic_gen.py",
+    "test_schematic_layout.py",
+    "test_kicad_sym_pinpos.py",
+    "test_architecture_roadmap.py",
+    "test_sch001_golden_connectivity_graph.py",
+    "test_sch002_multisheet_export.py",
+    "test_generated_symbol_lib.py",
+    "test_spice_gen.py",
+    "test_sso_schematic.py",
+    "test_schematic_hierarchy_pins.py",
+    "test_audit_gates.py",
+    "test_sso_no_hardcoded_graphics.py",
+    "test_sps_spice_signoff.py",
+}
+
+
+@pytest.fixture(autouse=True)
+def _legacy_skidl_for_skidl_sheet_tests(request, monkeypatch):
+    """SKiDL Part/Net sheet tests opt into OPENHAC_LEGACY_SKIDL (FAB-004)."""
+    fn = os.path.basename(str(getattr(request, "fspath", "") or ""))
+    if fn in _LEGACY_SKIDL_SHEET_TESTS:
+        monkeypatch.setenv("OPENHAC_LEGACY_SKIDL", "1")
 
 
 @pytest.fixture()

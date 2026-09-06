@@ -48,7 +48,8 @@ def test_export_webview_html():
         
         with tempfile.TemporaryDirectory() as tmpdir:
             html_path = os.path.join(tmpdir, "graph_explorer.html")
-            board.export_webview(html_path)
+            with pytest.warns(DeprecationWarning, match="FAB-041"):
+                board.export_webview(html_path)
             
             assert os.path.exists(html_path)
             with open(html_path, "r") as f:
@@ -62,11 +63,6 @@ def test_export_webview_html():
             assert "U1" in content
             assert "R1" in content
             assert "DATA_BUS" in content
-            
-        # Write to docs for persistence
-        docs_dir = os.path.join(os.path.dirname(__file__), "..", "docs")
-        os.makedirs(docs_dir, exist_ok=True)
-        board.export_webview(os.path.join(docs_dir, "graph_explorer.html"))
             
     finally:
         compile_context_reset(tok)

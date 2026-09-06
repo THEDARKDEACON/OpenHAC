@@ -50,6 +50,7 @@ class Net:
         self.code: Optional[int] = None  # Assigned by Circuit
         self.current_a: float = 0.0  # Current in Amperes for IPC-2152 trace width
         self.guard_net: Optional[Net] = None
+        self._openhac_net_type: str | None = None
         self._initialized = True
         
         # Auto-register with default circuit if possible
@@ -79,6 +80,15 @@ class Net:
         if pin not in self.pins:
             self.pins.append(pin)
             pin.net = self
+
+    def remove_pin(self, pin: Pin) -> None:
+        """Disconnect a pin (VAR-001 DNP)."""
+        try:
+            self.pins.remove(pin)
+        except ValueError:
+            pass
+        if getattr(pin, "net", None) is self:
+            pin.net = None
             
     def get_pins(self) -> list[Pin]:
         """Compatibility alias for SKiDL-like APIs."""

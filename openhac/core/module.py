@@ -9,7 +9,7 @@ import logging
 import math
 import os
 import re
-from typing import TYPE_CHECKING
+from typing import Any, TYPE_CHECKING
 
 from openhac.core.exceptions import InterfaceNotFoundError
 from openhac.core.interface import Interface
@@ -23,10 +23,10 @@ logger = logging.getLogger("openhac.core")
 class Module:
     """A logical block (power, compute, sensors, …) that owns components."""
 
-    def __init__(self, name=None, *, schematic_sheet: str | None = None):
+    def __init__(self, name=None, *, schematic_sheet: str | None = None, schematic_flow: str | None = None):
         self.name = name or self.__class__.__name__
         self.components: list = []
-        self.components_by_name: dict[str, any] = {}
+        self.components_by_name: dict[str, Any] = {}
         self.required_interfaces: dict[str, Interface] = {}
         self.optional_interfaces: dict[str, Interface] = {}
         self.width = 10.0
@@ -39,6 +39,8 @@ class Module:
         self.schematic_sheet: str | None = (
             str(schematic_sheet).strip() if schematic_sheet else None
         )
+        flow = str(schematic_flow).strip().lower() if schematic_flow else None
+        self.schematic_flow: str | None = flow or None
 
         # Physics / ERC / DRC properties
         self.max_current_draw_ma = 0.0
@@ -48,11 +50,13 @@ class Module:
         self.layout_zone = None
 
         # Placement clustering (see ``openhac.compiler.cluster_affinity``)
-        self._cluster_parent = None
-        self._cluster_max_mm = None
+        self._cluster_parent: Module | None = None
+        self._cluster_max_mm: float | None = None
         self._z3_skip = False
         self._placement_anchor = None
         self._placement_offset_mm = (0.0, 0.0)
+        self._variants: tuple[str, ...] = ()
+        self._dnp_in_variants: tuple[str, ...] = ()
 
     def assign_to(self, zone) -> Module:
         """Assign this module to a specific LayoutZone."""
@@ -70,6 +74,47 @@ class Module:
         self._cluster_parent = parent
         self._cluster_max_mm = max_center_mm
         return self
+
+    def keep_together(self, *others: "Module") -> "Module":
+        """PLC-001: cluster *others* with this module (existing placement affinity)."""
+        for o in others:
+            o.cluster_with(self)
+        return self
+
+    def include_in_variants(self, *names: str) -> "Module":
+        """VAR-001: this module is populated only for the named variants (others DNP)."""
+        self._variants = tuple(str(n).strip() for n in names if str(n).strip())
+        return self
+
+    def dnp_in_variants(self, *names: str) -> "Module":
+        """VAR-001: mark this module's parts DNP for the named variants."""
+        self._dnp_in_variants = tuple(str(n).strip() for n in names if str(n).strip())
+        return self
+
+    def draws_from(self, rail: str, amp: float | None = None, *, ma: float | None = None) -> "Module":
+        """PWR-010: declare current draw on a named rail (amps or milliamps)."""
+        if amp is not None:
+            draw_ma = float(amp) * 1000.0
+        elif ma is not None:
+            draw_ma = float(ma)
+        else:
+            raise ValueError("draws_from requires amp= or ma=")
+        key = str(rail).strip()
+        if not key:
+            raise ValueError("draws_from requires a rail name")
+        cur = self.max_current_draw_ma
+        if not isinstance(cur, dict):
+            self.max_current_draw_ma = {}
+            cur = self.max_current_draw_ma
+        cur[key] = float(cur.get(key, 0.0) or 0.0) + draw_ma
+        return self
+
+    def add_testpoint(self, net, *, footprint: str = "TestPoint:TestPoint_Pad_D1.5mm"):
+        """TST-001: add a TP on *net* via the host board when available."""
+        board = getattr(self, "_openhac_host_board", None)
+        if board is not None and hasattr(board, "declare_testpoint"):
+            return board.declare_testpoint(net, footprint=footprint)
+        raise RuntimeError("Module.add_testpoint requires the module to be on a Board")
 
     def set_schematic_sheet(self, sheet_name: str | None) -> Module:
         """Set schematic hierarchy sheet name (``OpenHaC_SchSheet`` on child parts)."""

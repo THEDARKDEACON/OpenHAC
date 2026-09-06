@@ -24,9 +24,8 @@ class Relay(Module, _ParametricMixin):
                  configuration: str = "SPDT", **kwargs):
         super().__init__(f"RELAY_{configuration}")
 
-        from openhac.database.db_manager import DatabaseManager
         from openhac.stdlib.discretes import Diode
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"Relay(coil={coil_v}V, contact={contact_a}A)"
 
@@ -79,8 +78,7 @@ class Buzzer(Module, _ParametricMixin):
     def __init__(self, type: str = "piezo", v_rated: float = 5.0, **kwargs):
         super().__init__(f"BUZZER_{type.upper()}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"Buzzer(type={type}, voltage={v_rated}V)"
 
@@ -124,8 +122,7 @@ class MotorDriver(Module, _ParametricMixin):
                  channels: int = 2, **kwargs):
         super().__init__(f"Driver_{channels}CH")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"MotorDriver(v_motor={v_motor}V, i_peak={i_peak}A)"
 

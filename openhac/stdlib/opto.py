@@ -20,8 +20,7 @@ class PhotoInterrupter(Module, _ParametricMixin):
     def __init__(self, gap_mm: float = 5.0, type: str = "transmissive", **kwargs):
         super().__init__(f"OPTO_SLOT_{gap_mm}mm")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"PhotoInterrupter(gap={gap_mm}mm, type={type})"
 
@@ -61,8 +60,7 @@ class LED_Driver(Module, _ParametricMixin):
                  interface: str = "PWM", **kwargs):
         super().__init__(f"LED_DRV_{channels}CH")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"LED_Driver(channels={channels}, current={current_ma}mA)"
 
@@ -103,8 +101,7 @@ class Opto_Relay(Module, _ParametricMixin):
                  type: str = "DC", **kwargs):
         super().__init__(f"SSR_{load_v}V_{load_a}A")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"OptoRelay(v={load_v}V, i={load_a}A, type={type})"
 
@@ -143,8 +140,7 @@ class Infrared_TX_RX(Module, _ParametricMixin):
     def __init__(self, type: str = "RX", wavelength_nm: int = 940, **kwargs):
         super().__init__(f"IR_{type.upper()}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"Infrared(type={type}, wavelength={wavelength_nm}nm)"
 

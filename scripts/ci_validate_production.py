@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """End-to-end production validation: code → ERC → DRC → place → route → Gerbers.
 
-Proves the *software* fabrication-readiness claim for the supported golden board
-(see docs/internal/PRODUCTION_VALIDATION.md). Does not claim physical or HS/RF sign-off.
+Proves the *software* fabrication-readiness claim for the **2×0805 resistor golden**
+(`tests/fixtures/fab_golden_board.py`). See docs/internal/PRODUCTION_VALIDATION.md.
+Does not claim multi-IC, physical, or HS/RF sign-off.
 
 Exit codes:
   0 — all requested stages passed
@@ -258,6 +259,12 @@ def _assert_fab_audit(man: Path) -> bool:
     if audit.get("omitted_footprint_refs"):
         print(f"FAIL: omitted footprints {audit.get('omitted_footprint_refs')}", file=sys.stderr)
         return False
+    if audit.get("gates_passed") is not True:
+        print(f"FAIL: fab_audit.gates_passed={audit.get('gates_passed')!r}", file=sys.stderr)
+        return False
+    if audit.get("enrich_failures"):
+        print(f"FAIL: enrich_failures {audit.get('enrich_failures')}", file=sys.stderr)
+        return False
     if audit.get("compile_goal") != "fabrication":
         print(f"FAIL: compile_goal={audit.get('compile_goal')!r}", file=sys.stderr)
         return False
@@ -399,6 +406,29 @@ def stage_v5_v6_v7_pcb(*, require_route: bool, jar: Path | None) -> bool:
     return True
 
 
+def stage_gld001_spice_island() -> bool:
+    """GLD-001: bundled Apache physics on the SPICE-island golden. Not --require-all."""
+    script = _REPO / "examples" / "spice_island_golden.py"
+    overlay = _REPO / "openhac" / "database" / "spice_model_overlays" / "bundled_openhac.json"
+    if not script.is_file():
+        print("FAIL: GLD-001 missing examples/spice_island_golden.py", file=sys.stderr)
+        return False
+    text = script.read_text(encoding="utf-8")
+    for token in ("D_1N4007", "OPTO_PC817", "AD620"):
+        if token not in text:
+            print(f"FAIL: GLD-001 golden missing {token}", file=sys.stderr)
+            return False
+    if "fundi_mig" in text.lower():
+        print("FAIL: GLD-001 golden must not be Fundi MIG", file=sys.stderr)
+        return False
+    names = {m.get("generic_name") for m in json.loads(overlay.read_text(encoding="utf-8")).get("models") or []}
+    if not {"D_1N4007", "OPTO_PC817", "AD620"} <= names:
+        print("FAIL: GLD-001 bundled overlay missing physics decks", file=sys.stderr)
+        return False
+    print("OK: GLD-001 spice-island golden uses bundled Apache physics (not --require-all)")
+    return True
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument(
@@ -409,7 +439,7 @@ def main() -> int:
     ap.add_argument(
         "--require-all",
         action="store_true",
-        help="Full production claim: V0–V7 including FreeRouting + PCB DRC",
+        help="Full claim on the 2R golden only (FAB-051): V0–V7 including FreeRouting + PCB DRC",
     )
     ap.add_argument(
         "--require-layout",
@@ -430,6 +460,12 @@ def main() -> int:
         "--fetch-freerouting",
         action="store_true",
         help=f"Download pinned FreeRouting {_FREEROUTING_VERSION} jar into ~/.cache/openhac/",
+    )
+    ap.add_argument(
+        "--spice-island-golden",
+        action="store_true",
+        help="GLD-001: check examples/spice_island_golden.py uses bundled Apache physics. "
+        "Not implied by --require-all (FAB-051 remains 2R).",
     )
     args = ap.parse_args()
 
@@ -457,6 +493,10 @@ def main() -> int:
     if not stage_v3_negatives(require_layout=require_layout and not logic_only):
         ok = False
 
+    if getattr(args, "spice_island_golden", False):
+        if not stage_gld001_spice_island():
+            ok = False
+
     if not logic_only:
         if not args.skip_schematic_erc:
             if not stage_v4_schematic_erc():
@@ -472,7 +512,7 @@ def main() -> int:
         if require_all:
             print(
                 "\nPRODUCTION VALIDATION PASSED "
-                "(software fabrication-ready for supported golden board class)."
+                "(software fabrication-ready for the 2×0805 resistor golden only)."
             )
         else:
             print("\nProduction validation checks passed (requested subset).")

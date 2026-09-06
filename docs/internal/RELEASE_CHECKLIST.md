@@ -37,7 +37,7 @@ OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_production.py --require-all --f
 
 Fixture: [`tests/fixtures/fab_golden_board.py`](../../tests/fixtures/fab_golden_board.py) (also [`examples/fab_golden_resistor_bridge.py`](../../examples/fab_golden_resistor_bridge.py)).
 
-Until Phase-2 FAB gates landed, prefer explicit `--compile-goal fabrication`, `--strict-footprint-pads`, and `--require-verified-parts` with `--production`. Prefer `--no-schematic` for fab packages; review connectivity via webview/IR (**FAB-040**, **FAB-041**). Full software claim: `python3 scripts/ci_validate_production.py --require-all --fetch-freerouting` (see [PRODUCTION_VALIDATION.md](./PRODUCTION_VALIDATION.md)).
+Until Phase-2 FAB gates landed, prefer explicit `--compile-goal fabrication`, `--strict-footprint-pads`, and `--require-verified-parts` with `--production`. Prefer `--no-schematic` for fab packages; preview connectivity with `openhac preview` (KiCad SVG, **SSO-012**) or Hardware IR JSON. Cytoscape webview is deprecated (**FAB-041**). Full software claim is the **2R golden** only: `python3 scripts/ci_validate_production.py --require-all --fetch-freerouting` (see [PRODUCTION_VALIDATION.md](./PRODUCTION_VALIDATION.md), **FAB-051**).
 
 Advanced board capabilities (**ABC-***): see [ADVANCED_BOARD_CAPABILITIES_SPEC.md](./ADVANCED_BOARD_CAPABILITIES_SPEC.md). Complex multi-IC route subset: `ci_validate_complex_boards.py --place --route --route-subset esp32c3_usb,rs485_node`.
 
@@ -48,7 +48,7 @@ Advanced board capabilities (**ABC-***): see [ADVANCED_BOARD_CAPABILITIES_SPEC.m
 - **Notes**: `--skip-layout` avoids `pcbnew`; `--deterministic` enables byte-stable artifacts suitable for golden comparisons; `--db-path` keeps CI isolated from developer machines. Add `--require-verified-parts` and `OPENHAC_NO_NETWORK=1`. Logic-only compiles do **not** satisfy the fabrication claim.
 
 4. **Manifest** — Confirm `*.openhac-manifest.json` lists expected outputs and hashes. When present, review **fab_audit** (**FAB-032**): omitted footprints, enrich failures, pad warnings, unrouted nets, PCB DRC, network policy. Archive with `--zip-release`.
-5. **Schematic ERC** — Optional. Only if you exported a schematic: `openhac compile … --kicad-erc` (optional `--kicad-erc-json`). Prefer native ERC + webview for connectivity review.
+5. **Schematic ERC** — Optional unless `--schematic-signoff`. Preview (`openhac preview`) never runs `kicad-cli sch erc`. Prefer native ERC + KiCad SVG preview for connectivity; stamp with `--schematic-signoff`.
 6. **PCB DRC** — For fabrication: ensure KiCad PCB DRC ran clean (**FAB-022**). Do not ship with unrouted nets unless explicitly waived and recorded.
 7. **Fab** — `openhac export fab dist/proj/proj.kicad_pcb -o dist/proj/fab --zip` (optional `--ipc2581`). Attach stackup notes from [examples/fab_stackup_table.md](../../examples/fab_stackup_table.md) / [fab_stackup_jlc_example.json](./fab_stackup_jlc_example.json). Refuse export if omitted footprints remain (**FAB-003**).
 8. **Review** — SI/PI/EMC remain manual per [SCOPE.md](./SCOPE.md). Autoroute is assistive only (**PCB-007**).

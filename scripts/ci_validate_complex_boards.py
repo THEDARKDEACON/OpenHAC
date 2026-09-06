@@ -4,6 +4,9 @@
 Covers offline fab-place boards and an optional LCSC live-API mixed board.
 Does **not** claim every board class is in scope (see docs/internal/SCOPE.md).
 
+``--route`` (without ``--route-subset``) autoroutes only ``esp32c3_usb`` and
+``rs485_node`` (ABC-008). Other fab boards stay place-only.
+
 Usage:
   OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_complex_boards.py
   OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_complex_boards.py --place
@@ -156,33 +159,10 @@ def _count_components(script: Path, *, env_extra: dict[str, str] | None = None) 
 
 def _placement_env(env: dict[str, str], *, for_route: bool = False) -> dict[str, str]:
     env = dict(env)
-    if for_route:
-        # ABC-004/008: use the proven place packing (sparse enough for PCB-fit) and
-        # rely on FreeRouting + ABC-007 expand/gap nudge for unrouted retries.
-        # Aggressive "dense" inflate caused within-module FP overlaps that fail fab fit.
-        env.setdefault("OPENHAC_MODULE_CLEARANCE_MM", "12.0")
-        env.setdefault("OPENHAC_PLACEMENT_FP_GAP_MM", "4.0")
-        env.setdefault("OPENHAC_MODULE_PACK_INFLATE", "2.2")
-        env.setdefault("OPENHAC_PLACEMENT_GRID_COLS", "2")
-        env.setdefault("OPENHAC_AUTO_BOARD_MARGIN_FACTOR", "2.2")
-        env.setdefault("OPENHAC_AUTO_BOARD_MIN_EDGE_MARGIN_MM", "15.0")
-        env.setdefault("OPENHAC_FP_OVERLAP_CLEARANCE_MM", "0.2")
-        env["OPENHAC_DEOVERLAP_PASSES"] = "3"
-        env["OPENHAC_ROUTABILITY_MODE"] = "dense"  # mild setdefaults only if unset above
-        env.setdefault("OPENHAC_ZONE_FILL", "safe")
-        env.setdefault("OPENHAC_POUR_PAD_CONNECTION", "solid")
-        env["OPENHAC_DEFER_COPPER_POURS"] = "1"
-        return env
-    env.setdefault("OPENHAC_MODULE_CLEARANCE_MM", "12.0")
-    env.setdefault("OPENHAC_PLACEMENT_FP_GAP_MM", "4.0")
-    env.setdefault("OPENHAC_MODULE_PACK_INFLATE", "2.2")
-    env.setdefault("OPENHAC_PLACEMENT_GRID_COLS", "2")
-    env.setdefault("OPENHAC_AUTO_BOARD_MARGIN_FACTOR", "2.2")
-    env.setdefault("OPENHAC_AUTO_BOARD_MIN_EDGE_MARGIN_MM", "15.0")
-    env.setdefault("OPENHAC_FP_OVERLAP_CLEARANCE_MM", "0.2")
-    env.setdefault("OPENHAC_ZONE_FILL", "safe")
-    env.setdefault("OPENHAC_POUR_PAD_CONNECTION", "solid")
-    return env
+    env.setdefault("OPENHAC_PLACEMENT_PROFILE", "complex_ci")
+    from openhac.compiler.placement_profile import apply_named_placement_profile
+
+    return apply_named_placement_profile(env, for_route=for_route)
 
 
 def _compile_fab(
@@ -507,7 +487,8 @@ def main() -> int:
         "--route-subset",
         type=str,
         default="",
-        help="ABC-008: comma-separated fab board ids for --route (default: esp32c3_usb,rs485_node)",
+        help="ABC-008: comma-separated fab board ids for --route. "
+        "Default when --route is set: esp32c3_usb,rs485_node (not all complex boards).",
     )
     ap.add_argument(
         "--api",

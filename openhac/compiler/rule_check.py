@@ -187,6 +187,13 @@ def jlc_class_line_counts_from_circuit() -> dict[str, int]:
     def _count_part(part):
         if id(part) in seen_ids:
             return
+        try:
+            from openhac.schematic.util import is_pwr_flag_part
+
+            if is_pwr_flag_part(part):
+                return
+        except Exception:
+            pass
         seen_ids.add(id(part))
         raw = part.fields.get("JLC_Class", "") if hasattr(part, "fields") else ""
         key = str(raw or "").strip().lower() or "unset"
@@ -550,6 +557,31 @@ def _run_power_budget(board) -> None:
             logger.info("ERC Status: No power sources defined. Skipping budget checks.")
 
 
+def _run_power_tree(board) -> None:
+    """PWR-010: declared rails vs Module.draws_from. No efficiency claim."""
+    tree = getattr(board, "_power_tree", None)
+    if tree is None:
+        return
+    rails = getattr(tree, "rails", None) or {}
+    if not rails:
+        return
+    draw_by_rail, _scalar = _collect_draw_by_rail_and_scalar(board)
+    for name, rail in rails.items():
+        cap = getattr(rail, "max_amp", None)
+        if cap is None:
+            continue
+        cap_ma = float(cap) * 1000.0
+        draw = 0.0
+        for k, v in draw_by_rail.items():
+            if str(k).strip().lower() == str(name).strip().lower():
+                draw += float(v)
+        if draw > cap_ma + 1e-6:
+            raise ERCPowerBudgetError(
+                f"PWR-010: rail {name!r} declared draw {draw}mA exceeds max_amp "
+                f"{cap}A ({cap_ma}mA). Converter efficiency is not claimed."
+            )
+
+
 def _net_is_anonymous(name: str) -> bool:
     """True for auto-named nets (``_1``, ``N$…``, ``Net-…``) that the unconnected-pin check covers."""
     nn = str(name or "").strip()
@@ -667,7 +699,11 @@ def _check_net_level(board):
             continue
 
     # 2. Unconnected-pin check
+    from openhac.core.dnp import part_is_dnp
+
     for part in parts:
+        if part_is_dnp(part):
+            continue
         part_label = str(getattr(part, "value", "") or getattr(part, "name", "") or "").upper()
         if part_label == "PWR_FLAG":
             continue
@@ -772,6 +808,10 @@ def run_erc(board):
     _run_erc_plugin_hooks(board)
 
     _run_power_budget(board)
+    from openhac.core.power_tree import sync_spice_rails_from_power_tree
+
+    sync_spice_rails_from_power_tree(board)
+    _run_power_tree(board)
 
 
 def _check_pin_type_compatibility(board) -> None:
@@ -1437,6 +1477,20 @@ def run_drc(board):
             violations.append(
                 f"Testability (REL-003): net {nk!r} requires at least {need_i} test point(s), found {got}."
             )
+
+    declared_tp = list(getattr(board, "_declared_testpoints", None) or [])
+    if declared_tp:
+        require_tp = bool(getattr(board, "_require_testpoints", False))
+        try:
+            tp_goal = str(board.effective_compile_goal()).strip().lower()
+        except Exception:
+            tp_goal = str(getattr(board, "compile_goal", "") or "").strip().lower()
+        if require_tp or tp_goal in ("fabrication", "fab"):
+            for nm in declared_tp:
+                if not _test_point_touches_net_name_ci(board, str(nm).strip().lower()):
+                    violations.append(
+                        f"TST-001: declared testpoint on net {nm!r} is missing from the graph/PCB."
+                    )
 
     if any(c.get("type") == "diff_pair" for c in getattr(board, "constraints", ())):
         logger.warning(

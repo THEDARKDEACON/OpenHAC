@@ -182,10 +182,8 @@ class TestSyncCatalog:
     def test_sync_skips_unknown_category(self, mock_fetch, MockDB):
         mock_dm = MagicMock()
         MockDB.return_value = mock_dm
-        # Unknown categories are skipped, but since no category succeeded,
-        # the all-failed guard raises RuntimeError.
-        with pytest.raises(RuntimeError, match="All category fetches failed"):
-            sync_catalog(categories=["nonexistent_xyz"], verbose=False)
+        # Unknown categories are skipped; no fetch is attempted (not a crash).
+        assert sync_catalog(categories=["nonexistent_xyz"], verbose=False) == 0
         mock_fetch.assert_not_called()
 
     @patch("openhac.database.sync_jlc.DatabaseManager")

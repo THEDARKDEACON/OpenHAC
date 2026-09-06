@@ -23,8 +23,7 @@ class IndicatorLED(Module, _ParametricMixin):
                  v_supply: float = 3.3, package: str = "0603", **kwargs):
         super().__init__(f"LED_{color.upper()}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"IndicatorLED(color={color}, current={current_ma}mA, v_supply={v_supply}V)"
 
@@ -91,8 +90,7 @@ class Button(Module, _ParametricMixin):
     def __init__(self, type: str = "tactile", package: str = None, **kwargs):
         super().__init__(f"BTN_{type.upper()}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"Button(type={type})"
 

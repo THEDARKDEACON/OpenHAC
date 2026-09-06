@@ -23,8 +23,7 @@ class LevelShifter(Module, _ParametricMixin):
                  channels: int = 4, bidirectional: bool = True, **kwargs):
         super().__init__(f"LevelShifter_{channels}CH")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"LevelShifter(v_a={v_a}V, v_b={v_b}V, channels={channels})"
 

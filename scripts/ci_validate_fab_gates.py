@@ -174,6 +174,13 @@ def _assert_fab_audit(man: Path) -> bool:
     if omitted:
         print(f"FAIL: omitted footprints {omitted}", file=sys.stderr)
         return False
+    if audit.get("gates_passed") is not True:
+        print(f"FAIL: fab_audit.gates_passed={audit.get('gates_passed')!r}", file=sys.stderr)
+        return False
+    enrich_fail = audit.get("enrich_failures") or []
+    if enrich_fail:
+        print(f"FAIL: enrich_failures {enrich_fail}", file=sys.stderr)
+        return False
     if audit.get("compile_goal") != "fabrication":
         print(f"FAIL: fab_audit.compile_goal={audit.get('compile_goal')!r}", file=sys.stderr)
         return False

@@ -1,0 +1,8 @@
+* OpenHaC simple in-amp macromodel (kind=physics, Apache-2.0).
+* Not a vendor part (not Analog Devices AD620). Unity-gain difference amp + REF.
+.subckt AD620 RG1 INN INP VSM REF OUT VSP RG2
+EOUT OUT REF VALUE={V(INP)-V(INN)}
+RRG RG1 RG2 1G
+RVP VSP 0 1G
+RVM VSM 0 1G
+.ends AD620

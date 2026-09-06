@@ -351,6 +351,10 @@ def _local_pinout_for_row(row: dict[str, Any]) -> list[dict] | None:
     ks = str(row.get("kicad_symbol") or "").strip()
     if not ks:
         return None
+    from openhac.database.pin_policy import kicad_symbol_is_pin_name_oracle
+
+    if not kicad_symbol_is_pin_name_oracle(ks):
+        return None
     from openhac.compiler.kicad_sym_pinpos import pinout_from_kicad_symbol_id
 
     raw = pinout_from_kicad_symbol_id(ks)
@@ -509,6 +513,7 @@ def _persist_pinout_only(
                 {
                     "pinout_json": json.dumps(pinout),
                     "pinout_source": pinout_source,
+                    "catalog_tier": "verified",
                     "enriched_at_utc": datetime.now(timezone.utc).isoformat(),
                 },
             )
@@ -618,8 +623,22 @@ def enrich_component_in_db(
         chosen = str(row.get("kicad_footprint") or "").strip()
         resolved = row.get("footprint_resolved")
         current_m3d = row.get("model_3d_local")
-        m3d_exists = current_m3d and os.path.isfile(current_m3d)
-        
+        m3d_exists = current_m3d and (
+            os.path.isfile(current_m3d) or str(current_m3d).startswith("${KICAD")
+        )
+
+        from openhac.database.kicad_3d import library_3d_fields_for_row, should_skip_easyeda_3d
+
+        if should_skip_easyeda_3d(row):
+            lib3d = library_3d_fields_for_row(row)
+            if lib3d and not (row.get("model_3d_source") == "kicad_lib"):
+                try:
+                    db.update_component_fields(gn, lib3d)
+                    row = db.get_component(gn) or row
+                except Exception:
+                    pass
+            m3d_exists = True
+
         # [Professional Grade] Always attempt to fetch 3D model from API if missing, even if we have a footprint override
         if not m3d_exists or not resolved or "easyeda_generated" not in str(chosen):
             mpn_eff = str(mpn or row.get("mpn") or "").strip() or None
@@ -644,6 +663,15 @@ def enrich_component_in_db(
                     
                     if model_path:
                         row_update_jlc["model_3d_local"] = str(model_path)
+                        try:
+                            from openhac.database.catalog_coverage import sha256_file
+
+                            if os.path.isfile(str(model_path)):
+                                row_update_jlc["model_3d_sha256"] = sha256_file(model_path)
+                                row_update_jlc["model_3d_source"] = "easyeda"
+                                row_update_jlc["model_3d_license"] = "EasyEDA"
+                        except Exception:
+                            row_update_jlc["model_3d_source"] = "easyeda"
                     
                     if row_update_jlc:
                         db.update_component_fields(gn, row_update_jlc)
@@ -843,6 +871,116 @@ def enrich_component_in_db(
         vendor=getattr(part, "source_vendor", None),
         reason="ok" if updated else "no_change",
     )
+
+
+def list_missing_named_pinout_rows(db, *, limit: int = 0) -> list[dict[str, Any]]:
+    """CAT-005: catalog rows lacking a named pin table (warehouse IC holes)."""
+    from openhac.database.catalog_coverage import iter_component_rows
+    from openhac.database.pin_policy import pinout_is_named
+
+    out: list[dict[str, Any]] = []
+    for row in iter_component_rows(db):
+        if pinout_is_named(
+            row.get("pinout_json"),
+            category=row.get("category"),
+            generic_name=row.get("generic_name"),
+        ):
+            continue
+        rec = {"generic_name": row.get("generic_name")}
+        if row.get("mpn"):
+            rec["mpn"] = row["mpn"]
+        if row.get("supplier_sku"):
+            rec["supplier_sku"] = row["supplier_sku"]
+        out.append(rec)
+        if limit and len(out) >= int(limit):
+            break
+    return out
+
+
+def enrich_missing_pinouts_from_db(
+    db,
+    *,
+    vendor: str = "auto",
+    limit: int = 0,
+    quiet: bool = False,
+) -> tuple[int, int]:
+    """Walk warehouse pinout holes via existing vendor APIs. Honors ``network_allowed()``."""
+    if not network_allowed():
+        logger.error("CAT-005: network denied; refusing --missing-pinouts")
+        return 0, 0
+    targets = list_missing_named_pinout_rows(db, limit=limit)
+    return batch_enrich_targets(targets, db=db, vendor=vendor, limit=limit, quiet=quiet)
+
+
+def prefetch_3d_for_skus(
+    skus: list[str],
+    *,
+    db=None,
+) -> tuple[int, int]:
+    """Download EasyEDA 3D into ``~/.kiro/openhac/`` (3D-003). Requires network."""
+    if not network_allowed():
+        raise RuntimeError("3D-003: prefetch-3d requires network (OPENHAC_NO_NETWORK / fabrication denied)")
+    from openhac.database.easyeda_integration import generate_footprint_from_lcsc
+    from openhac.database.catalog_coverage import sha256_file
+    from openhac.database.kicad_3d import should_skip_easyeda_3d
+
+    attempted = 0
+    updated = 0
+    for sku in skus:
+        s = str(sku or "").strip()
+        if not s.startswith("C"):
+            continue
+        attempted += 1
+        row = None
+        if db is not None:
+            try:
+                row = db.get_component_by_supplier_sku(s)
+            except Exception:
+                row = None
+        if row and should_skip_easyeda_3d(row):
+            continue
+        fp, model_path = generate_footprint_from_lcsc(s)
+        if not model_path:
+            continue
+        updated += 1
+        if db is not None and row:
+            fields = {
+                "model_3d_local": str(model_path),
+                "model_3d_source": "easyeda",
+                "model_3d_license": "EasyEDA",
+            }
+            if os.path.isfile(str(model_path)):
+                fields["model_3d_sha256"] = sha256_file(model_path)
+            if fp:
+                fields.setdefault("kicad_footprint", fp)
+            try:
+                db.update_component_fields(row["generic_name"], fields)
+            except Exception:
+                pass
+    return attempted, updated
+
+
+def prefetch_3d_from_board(board, *, db=None) -> tuple[int, int]:
+    skus: list[str] = []
+    seen: set[str] = set()
+    try:
+        modules = board._get_all_modules()
+    except Exception:
+        modules = getattr(board, "modules", []) or []
+    for mod in modules:
+        for comp in getattr(mod, "components", []) or []:
+            sku = str(getattr(comp, "supplier_sku", "") or "")
+            cd = getattr(comp, "_comp_data", None) or {}
+            sku = sku or str(cd.get("supplier_sku") or "")
+            if sku and sku not in seen:
+                seen.add(sku)
+                skus.append(sku)
+    return prefetch_3d_for_skus(skus, db=db)
+
+
+def fill_pin_names_from_kicad_symbol(row: dict[str, Any]) -> list[dict] | None:
+    """CAT-013: fill pin names from a real KiCad lib id. No HTTP."""
+    return _local_pinout_for_row(row)
 
 
 def discover_enrich_targets_from_board(board: Any) -> list[dict[str, Any]]:

@@ -24,8 +24,7 @@ class Fuse(Module, _ParametricMixin):
         name = f"{type}_{hold_current}A"
         super().__init__(name)
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"Fuse(hold_current={hold_current}A, voltage={voltage}V, type={type})"
 
@@ -73,8 +72,7 @@ class ESDSafeSignal(Module, _ParametricMixin):
         name = f"TVS_{voltage}V"
         super().__init__(name)
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"ESDSafeSignal(voltage={voltage}V, bidirectional={bidirectional})"
 
@@ -121,9 +119,8 @@ class IdealDiodeController(Module, _ParametricMixin):
                  package: str = "SOT-23-6", **kwargs):
         super().__init__(f"IdealDiode_{current}A")
 
-        from openhac.database.db_manager import DatabaseManager
         from openhac.stdlib.discretes import MOSFET
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"IdealDiodeController(voltage={voltage}V, current={current}A)"
 
@@ -178,8 +175,7 @@ class Varistor(Module, _ParametricMixin):
     def __init__(self, v_clamping: float, package: str = "0603", **kwargs):
         super().__init__(f"MOV_{v_clamping}V")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"Varistor(v_clamping={v_clamping}V)"
 
@@ -221,8 +217,7 @@ class GDT(Module, _ParametricMixin):
     def __init__(self, v_sparkover: float, package: str = None, **kwargs):
         super().__init__(f"GDT_{v_sparkover}V")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"GDT(v_sparkover={v_sparkover}V)"
 
@@ -264,8 +259,7 @@ class ThermalSwitch(Module, _ParametricMixin):
     def __init__(self, temp_threshold: float, type: str = "IC", **kwargs):
         super().__init__(f"Thermal_{temp_threshold}C")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"ThermalSwitch(temp={temp_threshold}C, type={type})"
 

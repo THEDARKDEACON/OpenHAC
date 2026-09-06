@@ -6,7 +6,7 @@
 
 **Status:** Normative. Progress tracked in [IMPLEMENTATION_STATUS.md](./IMPLEMENTATION_STATUS.md) (SPS table).
 
-**Relationship:** Phase-1 **SIM-001…003** remain **closed**. This document uses the **`SPS-*`** prefix. It does **not** reopen SIM acceptance. Handoff `openhac simulate` may still write a generic `.cir`; **SPS** is an additive `spice_signoff` gate set. Analogous to [SCHEMATIC_SIGN_OFF_SPEC.md](./SCHEMATIC_SIGN_OFF_SPEC.md) (**SSO-***).
+**Relationship:** Phase-1 **SIM-001…003** remain **closed**. This document uses the **`SPS-*`** prefix. It does **not** reopen SIM acceptance. Handoff `openhac simulate` may still write a generic `.cir`; **SPS** is an additive `spice_signoff` gate set. Analogous to [SCHEMATIC_SIGN_OFF_SPEC.md](./SCHEMATIC_SIGN_OFF_SPEC.md) (**SSO-***). Catalog depth, 3D pointers, and SPICE **operator** follow-on (**SPS-050…057**, coverage / vendor-dir verify / extra physics decks — still **no** HTTP fetch of vendor `.lib`; **SPS-019** stays reserved) live in [CATALOG_DEPTH_SPEC.md](./CATALOG_DEPTH_SPEC.md). That document does **not** reopen **SPS-010…044**.
 
 **Product scope:** [SCOPE.md](./SCOPE.md).
 

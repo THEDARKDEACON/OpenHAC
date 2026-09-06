@@ -24,6 +24,8 @@ def test_parametric_switching_regulator(tmp_db, monkeypatch):
         "manufacturer": "Texas Instruments",
         "mpn": "TPS54302DDCR",
         "package": "SOT-23-6",
+        "kicad_symbol": "Regulator_Switching:TPS54302",
+        "kicad_footprint": "Package_TO_SOT_SMD:SOT-23-6",
         # Pin mapping keys for TPS54302
         "pinout_json": '[{"num": "1", "name": "GND"}, {"num": "2", "name": "VIN"}, {"num": "3", "name": "SW"}, {"num": "4", "name": "FB"}, {"num": "5", "name": "EN"}, {"num": "6", "name": "BOOT"}]'
     }, ignore_duplicate=True)
@@ -34,7 +36,14 @@ def test_parametric_switching_regulator(tmp_db, monkeypatch):
     
     try:
         # Create an abstract parametric regulator, forcing it to find our mock by filtering for mpn
-        reg = SwitchingRegulator("Main_Power", v_in_nominal=12.0, v_out=5.0, current_min=3.0, mpn="TPS54302DDCR")
+        reg = SwitchingRegulator(
+            "Main_Power",
+            v_in_nominal=12.0,
+            v_out=5.0,
+            current_min=3.0,
+            mpn="TPS54302DDCR",
+            l_value="4.7uH",
+        )
         board.add_module(reg)
         
         # It should not have inner components yet (aside from its interface nets)

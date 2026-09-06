@@ -681,6 +681,10 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
         fabrication = False
 
     for part in circuit.parts:  # type: Any
+        from openhac.core.dnp import part_is_dnp
+
+        if part_is_dnp(part):
+            continue
         fpid = parse_footprint_id(getattr(part, "footprint", None))
         if fpid is None:
             ref = getattr(part, "ref", "?")
@@ -812,34 +816,54 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
             fallback_i += 1
             logger.debug("Part %s: no module anchor; using fallback grid (%.1f, %.1f) mm", part.ref, x_mm, y_mm)
 
-        # Pack cells are courtyard AABB top-left; KiCad origins are often pad-center.
-        try:
-            bb = _footprint_pack_bbox(fp)
-            x_mm -= float(pcbnew_mod.ToMM(int(bb.GetLeft())))
-            y_mm -= float(pcbnew_mod.ToMM(int(bb.GetTop())))
-        except Exception:
-            pass
-        fp.SetPosition(_to_board_vec(pcbnew_mod, x_mm, y_mm))
-
-        # Optional rotation hint (degrees) carried on SKiDL part fields.
-        try:
-            fields = getattr(part, "fields", None)
-            rot = None
-            if isinstance(fields, dict) and fields.get("OpenHaC_Rotation_Deg") is not None:
-                rot = float(str(fields.get("OpenHaC_Rotation_Deg")))
-            if rot is not None:
-                # KiCad pcbnew uses tenths of degrees in older APIs; in newer it is degrees.
-                # Try common setters; ignore if unavailable.
+        overlay = getattr(board, "_kicad_artwork_overlay", None)
+        ov_fp = None
+        if overlay is not None:
+            ov_fp = getattr(overlay, "footprints", {}).get(str(getattr(part, "ref", "") or ""))
+        if ov_fp is not None:
+            # LIVE-003: overlay (at) is already the KiCad footprint origin.
+            x_mm, y_mm = float(ov_fp.x), float(ov_fp.y)
+            fp.SetPosition(_to_board_vec(pcbnew_mod, x_mm, y_mm))
+            rot = float(ov_fp.rot or 0.0)
+            try:
                 if hasattr(fp, "SetOrientationDegrees"):
                     fp.SetOrientationDegrees(rot)
                 elif hasattr(fp, "SetOrientation"):
                     try:
                         fp.SetOrientation(int(rot * 10))
-                    except Exception as e:
-                        logger.debug("SetOrientation tenths failed for %s: %s", part.ref, e)
+                    except Exception:
                         fp.SetOrientation(rot)
-        except Exception as e:
-            logger.debug("Rotation apply skipped for %s: %s", getattr(part, "ref", "?"), e)
+            except Exception as e:
+                logger.debug("LIVE-003 rotation skipped for %s: %s", part.ref, e)
+        else:
+            # Pack cells are courtyard AABB top-left; KiCad origins are often pad-center.
+            try:
+                bb = _footprint_pack_bbox(fp)
+                x_mm -= float(pcbnew_mod.ToMM(int(bb.GetLeft())))
+                y_mm -= float(pcbnew_mod.ToMM(int(bb.GetTop())))
+            except Exception:
+                pass
+            fp.SetPosition(_to_board_vec(pcbnew_mod, x_mm, y_mm))
+
+            # Optional rotation hint (degrees) carried on SKiDL part fields.
+            try:
+                fields = getattr(part, "fields", None)
+                rot = None
+                if isinstance(fields, dict) and fields.get("OpenHaC_Rotation_Deg") is not None:
+                    rot = float(str(fields.get("OpenHaC_Rotation_Deg")))
+                if rot is not None:
+                    # KiCad pcbnew uses tenths of degrees in older APIs; in newer it is degrees.
+                    # Try common setters; ignore if unavailable.
+                    if hasattr(fp, "SetOrientationDegrees"):
+                        fp.SetOrientationDegrees(rot)
+                    elif hasattr(fp, "SetOrientation"):
+                        try:
+                            fp.SetOrientation(int(rot * 10))
+                        except Exception as e:
+                            logger.debug("SetOrientation tenths failed for %s: %s", part.ref, e)
+                            fp.SetOrientation(rot)
+            except Exception as e:
+                logger.debug("Rotation apply skipped for %s: %s", getattr(part, "ref", "?"), e)
 
         for pin in _iter_unique_pins(part):
             try:

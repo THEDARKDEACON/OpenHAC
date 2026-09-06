@@ -811,6 +811,7 @@ def legalize_placed_footprints(
     gap_mm: float = 0.5,
     margin_mm: float = 1.0,
     rounds: int = 400,
+    frozen_refs: set[str] | None = None,
 ) -> dict:
     """Separate overlapping footprints with min-displacement, then shrink-wrap.
 
@@ -856,7 +857,15 @@ def legalize_placed_footprints(
         rounds=int(rounds),
     )
     moved = 0
+    frozen = {str(r) for r in (frozen_refs or ()) if str(r)}
     for fp, x0, y0, _w, _h in items:
+        if frozen:
+            try:
+                ref = str(fp.GetReference())
+            except Exception:
+                ref = ""
+            if ref in frozen:
+                continue
         xy = pos.get(id(fp))
         if xy is None:
             continue

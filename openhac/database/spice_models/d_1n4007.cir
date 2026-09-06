@@ -1,0 +1,5 @@
+* OpenHaC in-repo silicon diode (kind=physics, Apache-2.0). Not a vendor part.
+.subckt D1N4007 A K
+D1 A K D1N4007_MOD
+.model D1N4007_MOD D (IS=1.0e-9 RS=0.05 N=1.5 BV=1000 IBV=5e-8)
+.ends D1N4007

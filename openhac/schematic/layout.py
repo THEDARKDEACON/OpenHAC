@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+
 from openhac.schematic.ir import (
     BusEntry,
     BusSeg,
@@ -205,36 +207,69 @@ def _separate_colliding_nets(ir: SchematicIR) -> None:
             lb.x, lb.y = nx, ny
 
 
+def _flow_from_tag(tag: str) -> int | None:
+    t = str(tag or "").strip().lower()
+    if t in ("0", "power", "pwr", "left"):
+        return 0
+    if t in ("2", "io", "right"):
+        return 2
+    if t in ("1", "compute", "mid", "middle"):
+        return 1
+    return None
+
+
 def _flow_column(mod_name: str, board) -> int:
-    """0=power/left, 1=compute/mid, 2=IO/right — from module/interface names, not part types."""
-    keys = [str(mod_name or "").lower()]
+    """0=power/left, 1=compute/mid, 2=IO/right — from module tags / interface kinds."""
     if board is not None:
         for m in getattr(board, "modules", []) or []:
-            if str(getattr(m, "name", "")) == mod_name:
-                for d in (
-                    getattr(m, "required_interfaces", {}) or {},
-                    getattr(m, "optional_interfaces", {}) or {},
-                ):
-                    keys.extend(str(k).lower() for k in d.keys())
-                break
-    blob = " ".join(keys)
-    left = any(
-        t in blob
-        for t in ("pwr", "power", "vcc", "3v3", "gnd", "vbus", "vin", "ldo", "reg", "supply", "batt")
-    )
-    right = any(
-        t in blob
-        for t in ("uart", "spi", "i2c", "can", "rs485", "usb", "gpio", "jtag", "header", "conn", "eth", "io")
-    )
-    if left and not right:
-        return 0
-    if right and not left:
-        return 2
+            if str(getattr(m, "name", "")) != mod_name:
+                continue
+            tagged = _flow_from_tag(getattr(m, "schematic_flow", None) or "")
+            if tagged is not None:
+                return tagged
+            kinds = []
+            for d in (
+                getattr(m, "required_interfaces", {}) or {},
+                getattr(m, "optional_interfaces", {}) or {},
+            ):
+                for iface in d.values():
+                    kinds.append(str(getattr(iface, "kind", "") or getattr(iface, "name", "") or "").lower())
+            blob = " ".join(kinds)
+            left = any(t in blob for t in ("pwr", "power", "supply", "vin", "vbat"))
+            right = any(t in blob for t in ("uart", "spi", "i2c", "can", "usb", "gpio", "io"))
+            if left and not right:
+                return 0
+            if right and not left:
+                return 2
+            break
+    if os.environ.get("OPENHAC_SCHEMATIC_FLOW_NAME_TOKENS", "").strip().lower() in (
+        "1",
+        "true",
+        "yes",
+        "on",
+    ):
+        keys = [str(mod_name or "").lower()]
+        blob = " ".join(keys)
+        left = any(
+            t in blob
+            for t in ("pwr", "power", "vcc", "3v3", "gnd", "vbus", "vin", "ldo", "reg", "supply", "batt")
+        )
+        right = any(
+            t in blob
+            for t in ("uart", "spi", "i2c", "can", "rs485", "usb", "gpio", "jtag", "header", "conn", "eth", "io")
+        )
+        if left and not right:
+            return 0
+        if right and not left:
+            return 2
     return 1
 
 
-def _assign_positions(parts, resolver, board=None) -> dict:
-    """Module-grouped left-to-right flow columns; 50 mil snap. No NetworkX."""
+def _assign_positions(parts, resolver, board=None, overlay=None) -> dict:
+    """Module-grouped left-to-right flow columns; 50 mil snap. No NetworkX.
+
+    LIVE-002: overlay symbol ``(at x y rot)`` wins for surviving refdes.
+    """
     groups: dict[str, list] = {}
     for p in parts:
         groups.setdefault(module_field(p), []).append(p)
@@ -265,6 +300,12 @@ def _assign_positions(parts, resolver, board=None) -> dict:
                 rotations[p] = rot
                 cur_y += cell_h + _PART_GAP_MM
             cur_mod_y += cur_y + _MOD_GAP_MM
+    if overlay is None and board is not None:
+        overlay = getattr(board, "_kicad_artwork_overlay", None)
+    if overlay is not None:
+        from openhac.compiler.kicad_artwork import apply_symbol_overlay
+
+        apply_symbol_overlay(positions, rotations, parts, overlay)
     return positions, rotations
 
 
@@ -443,7 +484,10 @@ def build_ir(
     if resolver is None:
         resolver = make_pin_resolver(generated_sym_path=generated_sym_path)
 
-    positions, rotations = _assign_positions(parts, resolver, board)
+    overlay = getattr(board, "_kicad_artwork_overlay", None)
+    positions, rotations = _assign_positions(parts, resolver, board, overlay=overlay)
+    overlaid_refs = set(getattr(overlay, "symbols", None) or {})
+    overlaid_uuids = set(getattr(overlay, "symbols_by_uuid", None) or {})
     title = str(getattr(board, "project_name", None) or "OpenHaC")
     rev = str(getattr(board, "release_tag", None) or "v1.0")
     company = str(getattr(board, "company", None) or getattr(board, "manufacturer", None) or "")
@@ -455,9 +499,13 @@ def build_ir(
 
     for part in parts:
         resolved = resolve_part_symbol(part, signoff=signoff)
-        x, y = snap(positions[part][0]), snap(positions[part][1])
-        rot = rotations[part]
         ref = part_ref(part)
+        uid = symbol_instance_uuid(part, 1)
+        if overlay is not None and (ref in overlaid_refs or uid in overlaid_uuids):
+            x, y = positions[part][0], positions[part][1]
+        else:
+            x, y = snap(positions[part][0]), snap(positions[part][1])
+        rot = rotations[part]
         recs = pinout_records(part)
         units = sorted({max(1, int(r.get("unit") or 1)) for r in recs if str(r.get("num") or "").strip()}) or [1]
         if len(units) <= 1:
@@ -466,8 +514,13 @@ def build_ir(
         mpn = part_mpn(part)
         mfr = part_manufacturer(part)
         for ui, unit in enumerate(units):
-            ux = snap(x + ui * 38.1)
-            uy = y
+            overlaid = overlay is not None and (ref in overlaid_refs or uid in overlaid_uuids)
+            if overlaid:
+                ux = x if ui == 0 else x + ui * 38.1
+                uy = y
+            else:
+                ux = snap(x + ui * 38.1)
+                uy = y
             unit_pins = [pn for pn in iter_pins(part) if pin_unit(pn) == unit] if len(units) > 1 else list(iter_pins(part))
             inst = SymbolInstance(
                 part=part,

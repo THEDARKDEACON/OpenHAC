@@ -1,0 +1,6 @@
+* OpenHaC TRIAC off-state stub (kind=physics, Apache-2.0).
+* Not a vendor part (not an NXP/WeEn BT137 twin). Gate ignored; A1-A2 leak only.
+.subckt BT137 A1 A2 G
+RLEAK A2 A1 10MEG
+RG G 0 1G
+.ends BT137

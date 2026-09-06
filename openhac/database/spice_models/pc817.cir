@@ -1,0 +1,9 @@
+* OpenHaC optocoupler LED-side + CTR stub (kind=physics, Apache-2.0).
+* Not a vendor part (not a Toshiba/Sharp PC817 twin).
+.subckt PC817 A K E C
+DLED A nled DLED_MOD
+VSENSE nled K DC 0
+FCTR C E VSENSE 1.0
+RLEAK C E 10MEG
+.model DLED_MOD D (IS=1e-18 RS=8 N=1.9)
+.ends PC817

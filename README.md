@@ -13,11 +13,11 @@ Python compiler that turns declarative hardware code into **netlists**, **BOMs**
 - `.dsn` — Specctra for FreeRouting. Compile writes one; after KiCad placement edits use `openhac export dsn` so IPC widths are not flattened to 0.2 mm
 
 **Docs:** [USER_GUIDE.md](docs/USER_GUIDE.md), [API_REFERENCE.md](docs/API_REFERENCE.md), [3D_MODELS_AND_FOOTPRINTS.md](docs/3D_MODELS_AND_FOOTPRINTS.md).
-**Internal/Spec:** [SCOPE.md](docs/internal/SCOPE.md), [IMPLEMENTATION_STATUS.md](docs/internal/IMPLEMENTATION_STATUS.md), [FABRICATION_READINESS_SPEC.md](docs/internal/FABRICATION_READINESS_SPEC.md) (Phase-2 code→fab gates), [SCHEMATIC_SIGN_OFF_SPEC.md](docs/internal/SCHEMATIC_SIGN_OFF_SPEC.md) (EE-stamped `.kicad_sch`), [SPICE_SIGN_OFF_SPEC.md](docs/internal/SPICE_SIGN_OFF_SPEC.md) (physics-correct analog simulate), [PRODUCTION_VALIDATION.md](docs/internal/PRODUCTION_VALIDATION.md) (ERC→DRC→Gerbers matrix).
+**Internal/Spec:** [SCOPE.md](docs/internal/SCOPE.md), [IMPLEMENTATION_STATUS.md](docs/internal/IMPLEMENTATION_STATUS.md), [FABRICATION_READINESS_SPEC.md](docs/internal/FABRICATION_READINESS_SPEC.md) (Phase-2 code→fab gates), [SCHEMATIC_SIGN_OFF_SPEC.md](docs/internal/SCHEMATIC_SIGN_OFF_SPEC.md) (EE-stamped `.kicad_sch`), [SPICE_SIGN_OFF_SPEC.md](docs/internal/SPICE_SIGN_OFF_SPEC.md) (physics-correct analog simulate), [CATALOG_DEPTH_SPEC.md](docs/internal/CATALOG_DEPTH_SPEC.md) (catalog depth / 3D pointers / SPICE operator), [PRODUCTION_VALIDATION.md](docs/internal/PRODUCTION_VALIDATION.md) (ERC→DRC→Gerbers matrix).
 
 Autorouting is **assistive** (not a substitute for HS/EMC review). See SCOPE for **PCB-007** / differential-pair notes. Phase-2 defines fail-closed fabrication gates — track status in IMPLEMENTATION_STATUS.
 
-**Software production claim:** For the supported golden board class, a green `scripts/ci_validate_production.py --require-all` run proves code → native ERC/DRC → place → FreeRouting → KiCad PCB DRC → Gerbers with audited pin/pad parity. That is **fabrication-ready software output**, not physical bring-up or RF/HS sign-off.
+**Software production claim:** `--require-all` is proved on the **minimal 2-pin 0805 resistor class** only (`tests/fixtures/fab_golden_board.py` — two resistors). A green `scripts/ci_validate_production.py --require-all` run proves code → native ERC/DRC → place → FreeRouting → KiCad PCB DRC → Gerbers with audited pin/pad parity for **that fixture**, not for multi-IC / HS / RF boards. That is **fabrication-ready software output** for the 2R golden, not physical bring-up or RF/HS sign-off.
 The active circuit is the **native** OpenHaC circuit (`openhac.core.circuit`). Legacy SKiDL `builtins.default_circuit` is opt-in via `OPENHAC_LEGACY_SKIDL=1` for migration / schematic tooling only.
 
 ---
@@ -154,7 +154,7 @@ See the “Complex multi-IC boards” section in PRODUCTION_VALIDATION.md.
 Use this when your design uses LCSC/JLC parts and you want the catalog, enrich, and optional pad checks to line up.
 
 1. **Footprints** — Set `KICAD*_FOOTPRINT_DIR` so every `*.kicad_mod` your BOM references can be found (see Requirements above).
-2. **Catalog in SQLite** — Refresh occasionally: `python3 -m openhac.database.sync_jlc`, or add `--sync-jlc-before` on `openhac compile` so sync runs automatically before the board loads.
+2. **Catalog in SQLite** — Refresh occasionally: `python3 -m openhac.database.sync_jlc`, or add `--sync-jlc-before` on `openhac compile` so sync runs automatically before the board loads. Depth report: `openhac catalog coverage` (`compile_ready` vs `warehouse`). An LCSC CSV dump (`import_lcsc_csv`) is warehouse, not a packed catalog. Maintainer snapshot (not `--production`, not user CI): `python scripts/catalog_snapshot.py`.
 3. **Fill gaps after load** — Add `--auto-enrich-board` so OpenHaC can discover missing DB rows and enrich symbol/pinout data for the parts on your board.
 4. **Stricter fab check (optional)** — When you are ready to fail on bad pin↔pad pairing: `--strict-footprint-pads` (or `OPENHAC_STRICT_FOOTPRINT_PIN_PAD=1`). For stricter merge rules during enrich, set `OPENHAC_ENRICH_STRICT_PINOUT_PADS=1`.
 5. **Catalog overlays** — Bundled JSON fixes live under `openhac/database/package_catalog_overlays/` and merge automatically unless `OPENHAC_NO_BUNDLED_CATALOG_OVERLAYS=1`. For **extra** project-specific overrides, use `--catalog-overlay /path/to/dir-or-file` or `OPENHAC_CATALOG_OVERLAY`. Details: `openhac/database/package_catalog_overlays/README.md`.
@@ -169,6 +169,7 @@ openhac compile my_design.py -o build --sync-jlc-before --auto-enrich-board
 
 OpenHaC can automatically download 3D models and generate footprints for LCSC parts that lack them in the local database.
 
+- **Prefetch (before `--production`)**: `openhac catalog prefetch-3d board.py` (forbidden under `OPENHAC_NO_NETWORK`). STEP/WRL stay out of git; cache is `~/.kiro/openhac/`.
 - **Trigger**: Run with `--auto-enrich-board`. If a part has a JLC SKU (e.g., `C6396158`) but no verified footprint or missing 3D model, OpenHaC will:
     1.  Fetch the footprint and 3D model from EasyEDA.
     2.  Convert them to KiCad formats (`.kicad_mod`, `.step`).
@@ -321,7 +322,7 @@ ngspice -b -o out.log build/myboard.cir    # batch
 ngspice build/myboard.cir                  # interactive
 ```
 
-Vendor macromodels stay on disk under `OPENHAC_SPICE_VENDOR_DIR` (or `--spice-vendor-dir`); git does not ship proprietary `.lib` files.
+Vendor macromodels stay on disk under `OPENHAC_SPICE_VENDOR_DIR` (or `--spice-vendor-dir`); git does not ship proprietary `.lib` files. Operator path: drop the `.lib` in that directory → overlay JSON with sha256/`pin_map` → `openhac spice verify-vendor-dir` → `--spice-signoff`. Coverage without ngspice: `openhac spice coverage board.py`. Analog island: `examples/spice_island_golden.py`. Do not curl a `.lib` from the compiler.
 
 ---
 
@@ -358,8 +359,9 @@ Long-form write-up: `docs/internal/report/`. Build PDF: `python3 scripts/build_l
 ```bash
 pip install -e ".[dev]"
 ruff check openhac tests
-# Hard gate (FAB-050): core + PCB placement/layout only
+# Hard gate (FAB-050): core + placement/layout + schematic IR + spice_gen + compile_pipeline
 mypy openhac/core openhac/compiler/pcb_placement.py openhac/compiler/layout_gen.py \
+  openhac/schematic/ir.py openhac/compiler/spice_gen.py openhac/compiler/compile_pipeline.py \
   --ignore-missing-imports --follow-imports=silent
 OPENHAC_NO_NETWORK=1 pytest tests/ -q
 OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_fab_gates.py   # optional locally; required in kicad-fab-golden job

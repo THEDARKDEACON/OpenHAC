@@ -36,6 +36,7 @@ def test_parametric_search_db_write_failure_warns_non_strict(monkeypatch, tmp_pa
 def test_parametric_search_db_write_failure_raises_in_strict(monkeypatch, tmp_path):
     db = DatabaseManager(db_path=str(tmp_path / "t.db"))
     monkeypatch.setenv("OPENHAC_COMPILE_GOAL", "fabrication")
+    monkeypatch.setenv("OPENHAC_ALLOW_NETWORK", "1")
 
     monkeypatch.setattr(
         "openhac.database.api_fallback.fetch_and_map_part",

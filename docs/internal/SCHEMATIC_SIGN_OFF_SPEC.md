@@ -312,7 +312,7 @@ Stretch: auto page size beyond A4, collision-free label placement solver.
 |-------|---------|
 | **Severity** | P1 |
 | **Problem** | CI golden is two resistors. |
-| **Target state** | `scripts/ci_kicad_sch_erc_golden.py` compiles `examples/sso041_signoff_node.py` (multi-module Device R/C/LED, named 3V3/GND) with `--schematic-signoff --skip-layout --no-route` and asserts KiCad ERC `error_count == 0`. Two-resistor case remains as a smoke. RS-485 / ESP32-C3 nodes stay fabrication goldens until MCU/connector ERC is clean. |
+| **Target state** | `scripts/ci_kicad_sch_erc_golden.py` compiles `examples/sso041_signoff_node.py` (multi-module Device R/C/LED, named 3V3/GND) with `--schematic-signoff --skip-layout --no-route` and asserts KiCad ERC `error_count == 0`. Two-resistor case remains as a smoke. RS-485 / ESP32-C3 nodes stay fabrication goldens until MCU/connector ERC is clean. **Sep 2026:** CI must use `examples/sso041_signoff_node.py`, not `complex_rs485_node.py`. |
 | **Acceptance criteria** | Job `kicad-schematic-erc` runs the script; warnings allowed, errors not. |
 | **Approach** | Extend the existing golden script + workflow. |
 

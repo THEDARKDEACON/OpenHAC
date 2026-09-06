@@ -53,7 +53,8 @@ def _shrink_board_to_placed_aabb(board) -> None:
     for rule in getattr(board, "constraints", None) or []:
         if rule.get("type") != "edge":
             continue
-        args = rule.get("args") or ()
+        raw = rule.get("args")
+        args = list(raw) if isinstance(raw, (list, tuple)) else []
         if len(args) >= 2 and str(args[1]).upper() in ("RIGHT", "BOTTOM"):
             return
     max_r = max(float(m.placed_x) + float(getattr(m, "width", 0) or 0) for m in placed)
@@ -512,42 +513,55 @@ def generate_layout(netlist_path: str, output_pcb_path: str, board):
 
     assert_footprint_pin_pad_or_raise(board)
 
-    placed = False
+    overlay = getattr(board, "_kicad_artwork_overlay", None)
+    skip_z3 = False
     try:
-        placed = bool(solve_placement_with_relaxation(board, max_relaxations=2))
-    except LayoutGenerationError as e:
-        enlarge = (os.environ.get("OPENHAC_LAYOUT_ENLARGE_ON_UNSAT") or "1").strip().lower() not in (
-            "0",
-            "false",
-            "no",
-            "off",
-        )
-        if enlarge:
-            try:
-                factor = float(os.environ.get("OPENHAC_LAYOUT_ENLARGE_FACTOR") or "1.25")
-            except Exception:
-                factor = 1.25
-            factor = min(max(factor, 1.05), 2.0)
-            _enlarge_board_once(board, factor=factor)
-            size_mm = board.size_mm
-            try:
-                placed = bool(solve_placement_with_relaxation(board, max_relaxations=1))
-            except LayoutGenerationError as e2:
-                e = e2
-                placed = False
-        if not placed:
-            if _hard_fail_unsat(board):
-                raise LayoutGenerationError(
-                    f"{e} (hard-fail after enlarge; set OPENHAC_LAYOUT_HARD_FAIL_UNSAT=0 for grid fallback)"
-                ) from e
-            logger.warning(
-                "Layout UNSAT after enlarge; using grid fallback (never pile at 5,5). Original: %s",
-                e,
-            )
-            from openhac.compiler.cluster_affinity import apply_grid_fallback_placement
+        from openhac.compiler.kicad_artwork import overlay_covers_all_footprints
 
-            apply_grid_fallback_placement(board)
-            placed = True
+        skip_z3 = overlay_covers_all_footprints(overlay, board)
+    except Exception:
+        skip_z3 = False
+
+    placed = False
+    if skip_z3:
+        logger.info("LIVE-003: skipping Z3; all footprints have overlay coordinates.")
+        placed = True
+    else:
+        try:
+            placed = bool(solve_placement_with_relaxation(board, max_relaxations=2))
+        except LayoutGenerationError as e:
+            enlarge = (os.environ.get("OPENHAC_LAYOUT_ENLARGE_ON_UNSAT") or "1").strip().lower() not in (
+                "0",
+                "false",
+                "no",
+                "off",
+            )
+            if enlarge:
+                try:
+                    factor = float(os.environ.get("OPENHAC_LAYOUT_ENLARGE_FACTOR") or "1.25")
+                except Exception:
+                    factor = 1.25
+                factor = min(max(factor, 1.05), 2.0)
+                _enlarge_board_once(board, factor=factor)
+                size_mm = board.size_mm
+                try:
+                    placed = bool(solve_placement_with_relaxation(board, max_relaxations=1))
+                except LayoutGenerationError as e2:
+                    e = e2
+                    placed = False
+            if not placed:
+                if _hard_fail_unsat(board):
+                    raise LayoutGenerationError(
+                        f"{e} (hard-fail after enlarge; set OPENHAC_LAYOUT_HARD_FAIL_UNSAT=0 for grid fallback)"
+                    ) from e
+                logger.warning(
+                    "Layout UNSAT after enlarge; using grid fallback (never pile at 5,5). Original: %s",
+                    e,
+                )
+                from openhac.compiler.cluster_affinity import apply_grid_fallback_placement
+
+                apply_grid_fallback_placement(board)
+                placed = True
 
     if not placed:
         logger.warning("Z3 unavailable or empty; using grid fallback placement.")
@@ -594,6 +608,18 @@ def generate_layout(netlist_path: str, output_pcb_path: str, board):
 
         # Stretch: emit copper pours + mounting holes when declared on the Board.
         try:
+            from openhac.compiler.pcb_physics import apply_physics_net_classes
+
+            try:
+                apply_physics_net_classes(pcb, board, pcbnew)
+            except Exception as e:
+                try:
+                    goal = str(getattr(board, "effective_compile_goal", lambda: "")()).strip().lower()
+                except Exception:
+                    goal = (os.environ.get("OPENHAC_COMPILE_GOAL") or "").strip().lower()
+                if goal in ("fabrication", "fab"):
+                    raise
+                logger.warning("apply_physics_net_classes failed (continuing): %s", e)
             from openhac.compiler.pcb_postprocess import (
                 apply_copper_pour_intents,
                 apply_keepout_rect_intents,
@@ -602,9 +628,6 @@ def generate_layout(netlist_path: str, output_pcb_path: str, board):
                 legalize_placed_footprints,
                 sync_duplicate_pad_nets,
             )
-            from openhac.compiler.pcb_physics import apply_physics_net_classes
-
-            apply_physics_net_classes(pcb, board, pcbnew)
             sync_duplicate_pad_nets(pcb, pcbnew)
             apply_keepout_rect_intents(pcb, board, pcbnew)
             apply_net_tie_intents(pcb, board, pcbnew)
@@ -625,6 +648,7 @@ def generate_layout(netlist_path: str, output_pcb_path: str, board):
                 board,
                 gap_mm=max(0.4, gap_mm),
                 margin_mm=max(margin_mm, min(edge_margin, 4.0)),
+                frozen_refs=set((getattr(overlay, "footprints", None) or {})),
             )
             apply_mounting_hole_intents(pcb, board, pcbnew)
             # ABC-002: defer pours until after FreeRouting when requested so plane nets
@@ -646,6 +670,12 @@ def generate_layout(netlist_path: str, output_pcb_path: str, board):
 
         pcbnew.SaveBoard(output_pcb_path, pcb)
         try:
+            from openhac.compiler.kicad_artwork import graph_net_names_from_board, splice_pcb_artwork_file
+
+            splice_pcb_artwork_file(output_pcb_path, overlay, graph_net_names_from_board(board))
+        except Exception as e:
+            logger.warning("LIVE-004: PCB copper overlay splice failed (continuing): %s", e)
+        try:
             from openhac.compiler.fab_design_settings import fill_copper_zones_file
 
             fill_copper_zones_file(str(output_pcb_path))
@@ -658,6 +688,7 @@ def generate_layout(netlist_path: str, output_pcb_path: str, board):
             logger.warning("Failed to inject physical stackup (PCB-003): %s", e)
             
         logger.info("Board outline and footprints generated successfully.")
+        return pcb
     except Exception as e:
         logger.error(f"KiCad PCBNew API failed or unavailable: {e}")
         raise LayoutGenerationError(

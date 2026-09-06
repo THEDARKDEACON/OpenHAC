@@ -1,0 +1,5 @@
+* OpenHaC in-repo Schottky diode (kind=physics, Apache-2.0). Not a vendor part.
+.subckt D1N5819 A K
+D1 A K D1N5819_MOD
+.model D1N5819_MOD D (IS=1.0e-7 RS=0.05 N=1.2 BV=40 IBV=1e-5)
+.ends D1N5819

@@ -1,0 +1,9 @@
+* OpenHaC opto-triac LED + off-state stub (kind=physics, Apache-2.0).
+* Not a vendor part (not a Fairchild/onsemi MOC3021 twin).
+.subckt MOC3021M A K NC3 MT1 NC5 MT2
+DLED A K DLED_MOD
+RNC3 NC3 0 1G
+RNC5 NC5 0 1G
+RMT MT2 MT1 10MEG
+.model DLED_MOD D (IS=1e-18 RS=8 N=1.9)
+.ends MOC3021M

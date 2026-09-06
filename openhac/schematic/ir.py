@@ -126,3 +126,4 @@ class SchematicIR:
     # Parent-sheet only (hierarchical pin stubs / global labels).
     root_wires: list[WireSeg] = field(default_factory=list)
     root_labels: list[NetLabel] = field(default_factory=list)
+    overlay_sexp: list[str] = field(default_factory=list)

@@ -1190,6 +1190,8 @@ def write_compile_manifest(
     add_if_exists(f"{project_name}.openhac-autoroute-policy.md")
     add_if_exists(f"{project_name}.openhac-evidence.md")
     add_if_exists(f"{project_name}.openhac-attestation.json")
+    add_if_exists(f"{project_name}.openhac-eco.json")
+    add_if_exists(f"{project_name}.openhac-graph.json")
     add_if_exists(f"{project_name}.net")
     add_if_exists(f"{project_name}.kicad_pcb")
     if generate_bom:
@@ -1201,10 +1203,16 @@ def write_compile_manifest(
     for rel in extra_outputs or []:
         add_if_exists(rel)
 
-    gh = _try_git_head(cwd)
-    gbr = _try_git_branch(cwd)
-    gdesc = _try_git_describe(cwd)
-    dirty = _try_git_worktree_dirty(cwd)
+    gh = gbr = gdesc = dirty = None
+    lean = bool(getattr(board, "_lean_manifest", False)) or _truthy_env("OPENHAC_LEAN_MANIFEST")
+    full = _truthy_env("OPENHAC_FULL_MANIFEST")
+    # PERF-006: skip git/kicad version probes on preview/logic lean manifests.
+    # Default handoff and fabrication still write STR-002 git fields.
+    if full or not lean:
+        gh = _try_git_head(cwd)
+        gbr = _try_git_branch(cwd)
+        gdesc = _try_git_describe(cwd)
+        dirty = _try_git_worktree_dirty(cwd)
     manifest: dict = {
         "manifest_schema_version": "1.0",
         "openhac_version": get_version(),
@@ -1420,7 +1428,9 @@ def write_compile_manifest(
             )
         )
     }
-    _kcv = _try_kicad_cli_version()
+    _kcv = None
+    if full or not lean:
+        _kcv = _try_kicad_cli_version()
     if _kcv:
         manifest["kicad_cli_version"] = _kcv
     manifest["openhac_env_keys_present"] = _openhac_env_keys_present()
@@ -1486,6 +1496,30 @@ def write_compile_manifest(
         "kicad_pcb_drc_report": _drc_rep,
         "gates_passed": bool(_goal != "fabrication" or (not _omitted and not _enrich_fail)),
     }
+    try:
+        from openhac.core.base import _IMPLICIT_PIN_EVENTS
+
+        invented = [
+            e for e in (_IMPLICIT_PIN_EVENTS or []) if e.get("invented")
+        ]
+        n_inv = len({str(e.get("generic_name") or "") for e in invented if e.get("generic_name")})
+        manifest["fab_audit"]["invented_pin_parts"] = n_inv
+        manifest["invented_pin_parts"] = n_inv
+    except Exception:
+        manifest["invented_pin_parts"] = 0
+    _pms = getattr(board, "_last_phase_ms", None)
+    if isinstance(_pms, dict) and _pms and not _truthy_env("OPENHAC_DETERMINISTIC"):
+        manifest["compile_pipeline_phase_ms"] = dict(_pms)
+    if getattr(board, "_compile_profile", None):
+        manifest["compile_profile"] = str(board._compile_profile)
+    if getattr(board, "variant", None):
+        manifest["variant"] = str(board.variant)
+        manifest["var001_dnp"] = "DNP parts remain on the BOM; they are not netted or placed"
+    live = getattr(board, "_live_kicad_artwork", None)
+    if isinstance(live, dict) and live and (
+        live.get("merged") or live.get("keep") or live.get("regenerate")
+    ):
+        manifest["live_kicad_artwork"] = dict(live)
     manifest["fab032_fab_audit_schema"] = "openhac.fab_audit.v1"
     pm = getattr(board, "_last_pcb_metrics", None)
     if isinstance(pm, dict) and pm:

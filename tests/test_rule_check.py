@@ -1,5 +1,7 @@
 """Tests for openhac.compiler.rule_check — ERC and DRC checks."""
 
+import logging
+
 import pytest
 from unittest.mock import patch, MagicMock
 
@@ -305,7 +307,7 @@ class TestDRC:
         board = Board(size_mm=(60, 40))
         run_drc(board)
 
-    def test_mixed_signal_ground_roles_without_merge_hint_warns_when_not_strict(self, capsys):
+    def test_mixed_signal_ground_roles_without_merge_hint_warns_when_not_strict(self, capsys, caplog):
         class _Net:
             def __init__(self, name: str):
                 self.name = name
@@ -314,10 +316,11 @@ class TestDRC:
         board.declare_net_role(_Net("AGND"), "analog_ground")
         board.declare_net_role(_Net("DGND"), "digital_ground")
 
-        run_drc(board)
-        err = capsys.readouterr().err
-        assert "SIG-006" in err
-        assert "declare_net_merge_hint" in err
+        with caplog.at_level(logging.WARNING, logger="openhac.rules"):
+            run_drc(board)
+        text = capsys.readouterr().err + caplog.text
+        assert "SIG-006" in text
+        assert "declare_net_merge_hint" in text
 
     def test_mixed_signal_ground_roles_without_merge_hint_fails_when_strict(self):
         class _Net:
@@ -2970,7 +2973,7 @@ class TestLIB005JlcExtendedLimit:
         board.max_jlc_extended_parts = 2
         run_drc(board)
 
-    def test_drc_warns_when_extended_lines_and_warn_flag(self, tmp_db, monkeypatch, capsys):
+    def test_drc_warns_when_extended_lines_and_warn_flag(self, tmp_db, monkeypatch, capsys, caplog):
         import openhac.core  # noqa: F401
         from skidl import Net, Part
 
@@ -2996,9 +2999,10 @@ class TestLIB005JlcExtendedLimit:
         r1["2"] += gnd
 
         board = Board(size_mm=(10, 10), warn_jlc_extended_parts=True)
-        run_drc(board)
-        err = capsys.readouterr().err
-        assert "LIB-005" in err and "JLC_Class" in err
+        with caplog.at_level(logging.WARNING, logger="openhac.rules"):
+            run_drc(board)
+        text = capsys.readouterr().err + caplog.text
+        assert "LIB-005" in text and "JLC_Class" in text
 
 
 class TestLIB005JlcPerClassLimits:

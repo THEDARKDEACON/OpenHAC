@@ -40,8 +40,9 @@ API_BASE = "https://jlcsearch.tscircuit.com"
 HEADERS = {"User-Agent": user_agent(), "Accept": "application/json"}
 
 # Each entry: category -> (endpoint_path, response_key)
+# Typed jlcsearch routes. Probe-first extras (CAT-002) are listed here but
+# probed at sync time; HTTP 404 / empty list is skipped, not a crash.
 CATEGORY_ENDPOINTS = {
-    # Only these endpoints are confirmed to work at jlcsearch.tscircuit.com
     "resistors":          ("/resistors/list.json?in_stock=true&is_basic=true",          "resistors"),
     "capacitors":         ("/capacitors/list.json?in_stock=true&is_basic=true",         "capacitors"),
     "leds":               ("/leds/list.json?in_stock=true&is_basic=true",               "leds"),
@@ -51,7 +52,33 @@ CATEGORY_ENDPOINTS = {
     "diodes":             ("/diodes/list.json?in_stock=true&is_basic=true",             "diodes"),
     "switches":           ("/switches/list.json?in_stock=true&is_basic=true",           "switches"),
     "accelerometers":     ("/accelerometers/list.json?in_stock=true",                   "accelerometers"),
+    "inductors":          ("/inductors/list.json?in_stock=true&is_basic=true",          "inductors"),
+    "crystals":           ("/crystals/list.json?in_stock=true&is_basic=true",           "crystals"),
+    "connectors":         ("/connectors/list.json?in_stock=true",                       "connectors"),
+    "fuses":              ("/fuses/list.json?in_stock=true&is_basic=true",              "fuses"),
+    "beads":              ("/beads/list.json?in_stock=true&is_basic=true",              "beads"),
+    "bjts":               ("/bjts/list.json?in_stock=true&is_basic=true",               "bjts"),
 }
+
+PROBE_FIRST_CATEGORIES = frozenset(
+    {"inductors", "crystals", "connectors", "fuses", "beads", "bjts"}
+)
+
+PASSIVE_BASIC_CATEGORIES = frozenset(
+    {
+        "resistors",
+        "capacitors",
+        "leds",
+        "diodes",
+        "switches",
+        "inductors",
+        "crystals",
+        "fuses",
+        "beads",
+        "mosfets",
+        "bjts",
+    }
+)
 
 KICAD_SYMBOL_MAP = {
     "resistors":          "Device:R",
@@ -63,6 +90,12 @@ KICAD_SYMBOL_MAP = {
     # diodes: per-item via _diode_kicad_symbol()
     "switches":           "Switch:SW_Push",
     "accelerometers":     "Sensor_Motion:Generic_Accelerometer",
+    "inductors":          "Device:L",
+    "crystals":           "Device:Crystal",
+    "connectors":         "Connector_Generic:Conn_01x02",
+    "fuses":              "Device:Fuse",
+    "beads":              "Device:L",
+    "bjts":               "Transistor_BJT:BC847",
 }
 
 
@@ -91,6 +124,19 @@ def _format_capacitance(c: float) -> str:
         return f"{v:.0f}nF" if v == int(v) else f"{v:.1f}nF"
     v = c * 1e12
     return f"{v:.0f}pF" if v == int(v) else f"{v:.1f}pF"
+
+
+def _format_inductance(l: float) -> str:
+    if l >= 1:
+        return f"{int(l)}H" if l == int(l) else f"{l}H"
+    if l >= 1e-3:
+        v = l * 1e3
+        return f"{int(v)}mH" if v == int(v) else f"{v:.1f}mH"
+    if l >= 1e-6:
+        v = l * 1e6
+        return f"{int(v)}uH" if v == int(v) else f"{v:.1f}uH"
+    v = l * 1e9
+    return f"{int(v)}nH" if v == int(v) else f"{v:.1f}nH"
 
 
 import json
@@ -146,6 +192,14 @@ def _package_to_footprint(category: str, package: str, lcsc: str = "") -> str:
         candidate = f"LED_SMD:LED_{pkg}"
     elif category == "mosfets":
         candidate = f"Package_TO_SOT_SMD:{pkg}"
+    elif category == "bjts":
+        candidate = f"Package_TO_SOT_SMD:{pkg}"
+    elif category == "inductors":
+        candidate = f"Inductor_SMD:L_{pkg}"
+    elif category == "fuses":
+        candidate = f"Fuse:Fuse_{pkg}"
+    elif category in ("beads", "ferrite_beads"):
+        candidate = f"RF_Inductor:L_{pkg}"
     elif category == "voltage_regulators":
         candidate = f"Package_TO_SOT_SMD:{pkg}"
     elif category == "diodes":
@@ -295,6 +349,38 @@ def _derive_generic_name(category: str, item: dict) -> str | None:
             pkg = item.get("package", "")
             return f"ACCEL_{axes}AXIS_{pkg}"
 
+        if category == "inductors":
+            lval = item.get("inductance") or item.get("value") or 0
+            pkg = item.get("package", "")
+            return f"L_{_format_inductance(float(lval))}_{pkg}"
+
+        if category == "crystals":
+            freq = item.get("frequency") or item.get("freq") or ""
+            pkg = item.get("package", "")
+            if freq:
+                return f"XTAL_{freq}_{pkg}"
+            lcsc = item.get("lcsc", "")
+            return f"XTAL_{pkg}_C{lcsc}" if lcsc else f"XTAL_{pkg}"
+
+        if category == "connectors":
+            pkg = (item.get("package") or "CONN").replace(" ", "_")
+            lcsc = item.get("lcsc", "")
+            return f"CONN_{pkg}_C{lcsc}" if lcsc else f"CONN_{pkg}"
+
+        if category == "fuses":
+            pkg = item.get("package", "")
+            return f"FUSE_{pkg}"
+
+        if category == "beads":
+            pkg = item.get("package", "")
+            return f"BEAD_{pkg}"
+
+        if category == "bjts":
+            desc = item.get("description") or ""
+            pol = "PNP" if "PNP" in desc.upper() else "NPN"
+            pkg = item.get("package", "")
+            return f"BJT_{pol}_{pkg}"
+
     except (TypeError, ValueError, KeyError):
         return None
 
@@ -304,6 +390,106 @@ def _derive_generic_name(category: str, item: dict) -> str | None:
 # Maximum components to fetch per category in a single sync run.
 # Set high to populate a comprehensive local database.
 SYNC_LIMIT = 5000
+
+
+def _strip_is_basic(endpoint_path: str) -> str:
+    import re
+
+    out = re.sub(r"[&?]is_basic=true", "", endpoint_path)
+    out = out.replace("?&", "?").replace("&&", "&")
+    if out.endswith("?") or out.endswith("&"):
+        out = out[:-1]
+    return out
+
+
+def endpoint_path_for_sync(category: str, *, include_extended: bool = False) -> tuple[str, str]:
+    """Return (path, response_key). CAT-003: ``include_extended`` drops ``is_basic=true``."""
+    path, key = CATEGORY_ENDPOINTS[category]
+    if include_extended:
+        path = _strip_is_basic(path)
+    return path, key
+
+
+def probe_typed_category(category: str, *, opener=None) -> bool:
+    """Probe ``/{cat}/list.json`` before adding (CAT-002). 404 / empty → False, no crash."""
+    import urllib.error
+
+    opener = opener or urllib.request.urlopen
+    url = f"{API_BASE}/{category}/list.json?in_stock=true&limit=1"
+    req = urllib.request.Request(url, headers=HEADERS)
+    try:
+        with opener(req, timeout=15) as resp:
+            code = int(getattr(resp, "status", None) or getattr(resp, "code", 200) or 200)
+            if code != 200:
+                logger.warning("Skipping category %s: HTTP %s (no typed schema)", category, code)
+                return False
+            raw = resp.read().decode()
+            data = json.loads(raw) if raw else {}
+    except urllib.error.HTTPError as e:
+        logger.warning("Skipping category %s: HTTP %s (no typed schema)", category, e.code)
+        return False
+    except Exception as e:
+        logger.warning("Skipping category %s: %s", category, e)
+        return False
+    items: list = []
+    if isinstance(data, dict):
+        if isinstance(data.get(category), list):
+            items = data[category]
+        else:
+            for v in data.values():
+                if isinstance(v, list):
+                    items = v
+                    break
+    elif isinstance(data, list):
+        items = data
+    if not items:
+        logger.warning("Skipping category %s: empty list", category)
+        return False
+    return True
+
+
+def _component_row_from_jlc_item(category: str, item: dict) -> dict | None:
+    from openhac.database.kicad_3d import library_3d_fields_for_row
+    from openhac.database.pin_policy import pinout_for_sync_category
+
+    generic_name = _derive_generic_name(category, item)
+    if not generic_name:
+        return None
+    lcsc = item.get("lcsc", "")
+    mpn = item.get("mfr") or str(lcsc)
+    supplier_sku = f"C{lcsc}" if lcsc else ""
+    description = item.get("description") or ""
+    package = item.get("package") or ""
+    if category == "diodes":
+        kicad_symbol = _diode_kicad_symbol(item)
+    else:
+        kicad_symbol = KICAD_SYMBOL_MAP.get(category, "Device:R")
+    fp = _package_to_footprint(category, package, lcsc=supplier_sku)
+    pinout = pinout_for_sync_category(category)
+    row = {
+        "generic_name": generic_name,
+        "kicad_symbol": kicad_symbol,
+        "kicad_footprint": fp,
+        "manufacturer": "",
+        "mpn": mpn,
+        "supplier_sku": supplier_sku,
+        "description": description,
+        "category": category,
+        "package": package,
+        "catalog_tier": "warehouse",
+        "pinout_source": "jlcpcb" if pinout else "",
+        "attributes_json": json.dumps(
+            {
+                k: v
+                for k, v in item.items()
+                if k not in ("lcsc", "mfr", "description", "package", "stock")
+            }
+        ),
+    }
+    if pinout:
+        row["pinout_json"] = json.dumps(pinout)
+    row.update(library_3d_fields_for_row(row))
+    return row
 
 
 def _fetch_category(endpoint_path: str, response_key: str, limit: int = SYNC_LIMIT) -> list[dict]:
@@ -350,12 +536,20 @@ def _fetch_all_pages(endpoint_path: str, response_key: str, max_items: int = 100
     return all_items[:max_items]
 
 
-def sync_catalog(categories: list[str] = None, verbose: bool = True) -> int:
+def sync_catalog(
+    categories: list[str] = None,
+    verbose: bool = True,
+    *,
+    include_extended: bool = False,
+    max_per_category: int | None = None,
+) -> int:
     """Sync real in-stock JLCPCB parts from jlcsearch API into the local database.
 
     Args:
         categories: list of category names to sync, or None for all
         verbose: print progress
+        include_extended: CAT-003 — drop ``is_basic=true`` (default stays Basic)
+        max_per_category: cap inserts/fetches per typed category
 
     Returns:
         number of new components inserted
@@ -364,6 +558,8 @@ def sync_catalog(categories: list[str] = None, verbose: bool = True) -> int:
     db = DatabaseManager()
     total_inserted = 0
     any_success = False
+    fetch_attempted = False
+    limit = int(max_per_category or SYNC_LIMIT)
 
     for category in targets:
         if category not in CATEGORY_ENDPOINTS:
@@ -371,13 +567,20 @@ def sync_catalog(categories: list[str] = None, verbose: bool = True) -> int:
                 logger.warning(f"Unknown category '{category}', skipping.")
             continue
 
+        if category in PROBE_FIRST_CATEGORIES:
+            if not probe_typed_category(category):
+                continue
+
         if verbose:
             logger.info(f"Fetching {category}...")
 
-        endpoint_path, response_key = CATEGORY_ENDPOINTS[category]
+        endpoint_path, response_key = endpoint_path_for_sync(
+            category, include_extended=include_extended
+        )
+        fetch_attempted = True
 
         try:
-            items = _fetch_category(endpoint_path, response_key)
+            items = _fetch_category(endpoint_path, response_key, limit=limit)
         except Exception as e:
             if verbose:
                 logger.warning(f"Failed to fetch {category}: {e}")
@@ -389,43 +592,14 @@ def sync_catalog(categories: list[str] = None, verbose: bool = True) -> int:
             continue
 
         any_success = True
-
-        # Sort by stock descending so the most-stocked part wins on dedup
         items.sort(key=lambda x: int(x.get("stock") or 0), reverse=True)
+        items = items[:limit]
 
         inserted = 0
         for item in items:
-            generic_name = _derive_generic_name(category, item)
-            if not generic_name:
+            component = _component_row_from_jlc_item(category, item)
+            if not component:
                 continue
-
-            lcsc = item.get("lcsc", "")
-            mpn = item.get("mfr") or str(lcsc)
-            supplier_sku = f"C{lcsc}" if lcsc else ""
-            description = item.get("description") or ""
-            package = item.get("package") or ""
-
-            # Diodes use a per-item symbol; all other categories use the map
-            if category == "diodes":
-                kicad_symbol = _diode_kicad_symbol(item)
-            else:
-                kicad_symbol = KICAD_SYMBOL_MAP[category]
-
-            component = {
-                "generic_name":    generic_name,
-                "kicad_symbol":    kicad_symbol,
-                "kicad_footprint": _package_to_footprint(category, package, lcsc=supplier_sku),
-                "manufacturer":    "",
-                "mpn":             mpn,
-                "supplier_sku":    supplier_sku,
-                "description":     description,
-                "category":        category,
-                "attributes_json": json.dumps({
-                    k: v for k, v in item.items()
-                    if k not in ("lcsc", "mfr", "description", "package", "stock")
-                }),
-            }
-
             row_id = db.insert_component(component, ignore_duplicate=True)
             if row_id:
                 inserted += 1
@@ -434,7 +608,7 @@ def sync_catalog(categories: list[str] = None, verbose: bool = True) -> int:
         if verbose:
             logger.info(f"Inserted {inserted} new components from {category}")
 
-    if not any_success and targets:
+    if not any_success and fetch_attempted:
         raise RuntimeError(
             "All category fetches failed. Check your network connection or the "
             "jlcsearch API at https://jlcsearch.tscircuit.com."
@@ -981,15 +1155,20 @@ def sync_by_sku(skus: list[tuple[str, str]], verbose: bool = True) -> int:
                 logger.info(f"  Dimensions: {part_info.package_dimensions}")
 
             # Pinout quality check: JLC-only pinCount-derived pinouts are not named.
+            # CAT-004: hard skip — do not store numeric-only IC pinouts.
             try:
-                if part_info.pinout and all((p.get("name") or "") == (p.get("num") or "") for p in part_info.pinout if isinstance(p, dict)):
+                from openhac.database.pin_policy import should_store_vendor_pinout
+
+                cat = (part_info.category or (existing or {}).get("category") or "").strip()
+                if part_info.pinout and not should_store_vendor_pinout(
+                    part_info.pinout, category=cat, generic_name=generic_name
+                ):
                     if verbose:
                         logger.warning(
-                            "  %s: pinout appears numeric-only (no named pins). "
-                            "For named-pin designs, prefer a vendor source with real pin names "
-                            "(or provide a seed-file with pinout_json).",
+                            "  %s: CAT-004 hard-skip numeric-only pinout (not stored).",
                             generic_name,
                         )
+                    part_info.pinout = None
             except Exception:
                 pass
             

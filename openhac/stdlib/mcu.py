@@ -24,8 +24,7 @@ class MCU(Module, _ParametricMixin):
         name = f"MCU_{mpn or family or 'Generic'}"
         super().__init__(name)
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"MCU(" + \
                (f"family={family}" if family else "") + \

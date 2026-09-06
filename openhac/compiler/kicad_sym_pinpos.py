@@ -172,6 +172,30 @@ def resolve_symbol_tree_for_pins(lib_text: str, symbol_name: str, *, _depth: int
     return resolve_symbol_tree_for_pins(lib_text, parent, _depth=_depth + 1)
 
 
+@lru_cache(maxsize=64)
+def _cached_lib_symbol_sexp(path: str, inst_name: str, mtime_ns: int) -> str | None:
+    p = Path(path)
+    try:
+        text = p.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    tree = resolve_symbol_tree_for_pins(text, inst_name)
+    if tree is None:
+        return None
+    pm = re.match(r'\(symbol\s+"([^"]+)"', tree.lstrip())
+    source_name = pm.group(1) if pm else inst_name
+    lib = p.stem
+    tree = _EXTENDS_RE.sub("", tree, count=1)
+    tree = tree.replace(f'(symbol "{source_name}"', f'(symbol "{lib}:{inst_name}"', 1)
+    if source_name != inst_name:
+        tree = re.sub(
+            rf'\(symbol\s+"{re.escape(source_name)}_(\d+)_(\d+)"',
+            rf'(symbol "{inst_name}_\1_\2"',
+            tree,
+        )
+    return tree
+
+
 def schematic_lib_symbol_sexp(lib_id: str) -> str | None:
     """Return a ``lib_symbols``-ready ``(symbol "Lib:Name" ...)`` body, or None.
 
@@ -188,26 +212,10 @@ def schematic_lib_symbol_sexp(lib_id: str) -> str | None:
     if path is None:
         return None
     try:
-        text = path.read_text(encoding="utf-8", errors="replace")
+        mtime = int(path.stat().st_mtime_ns)
     except OSError:
-        return None
-    tree = resolve_symbol_tree_for_pins(text, inst_name)
-    if tree is None:
-        return None
-    pm = re.match(r'\(symbol\s+"([^"]+)"', tree.lstrip())
-    source_name = pm.group(1) if pm else inst_name
-    # Flatten extends into a self-contained cache. KiCad 9 will not load a stub
-    # that ``(extends ...)`` a sibling in lib_symbols. Unit children must use
-    # the instance short name (``{name}_0_1`` / ``_1_1``).
-    tree = _EXTENDS_RE.sub("", tree, count=1)
-    tree = tree.replace(f'(symbol "{source_name}"', f'(symbol "{lib}:{inst_name}"', 1)
-    if source_name != inst_name:
-        tree = re.sub(
-            rf'\(symbol\s+"{re.escape(source_name)}_(\d+)_(\d+)"',
-            rf'(symbol "{inst_name}_\1_\2"',
-            tree,
-        )
-    return tree
+        mtime = 0
+    return _cached_lib_symbol_sexp(str(path.resolve()), inst_name, mtime)
 
 
 def parse_kicad_symbol_id(symbol_library_id: str) -> tuple[str, str] | None:
@@ -396,6 +404,7 @@ def _cached_pin_map(path: str, symbol_name: str, mtime_ns: int) -> dict[str, tup
 def clear_symbol_pin_cache() -> None:
     """Drop memoized symbol parses (for tests that rewrite fixture libraries)."""
     _cached_pin_map.cache_clear()
+    _cached_lib_symbol_sexp.cache_clear()
 
 
 def load_symbol_pin_positions(lib_file: Path, symbol_name: str) -> dict[str, tuple[float, float, float, float]] | None:

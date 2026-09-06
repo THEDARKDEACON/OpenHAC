@@ -50,8 +50,7 @@ class VoltageRegulator(Module, _ParametricMixin):
             name += f"_{package}"
         super().__init__(name)
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"VoltageRegulator(v_out={v_out}" + \
                (f", package={package}" if package else "") + \
@@ -113,8 +112,7 @@ class Connector(Module, _ParametricMixin):
             name += f"_{gender}"
         super().__init__(name)
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"Connector(type={type}, pin_count={pin_count}" + \
                (f", gender={gender}" if gender else "") + ")"
@@ -249,8 +247,7 @@ class VoltageReference(Module, _ParametricMixin):
                  package: str = "SOT-23", **kwargs):
         super().__init__(f"VREF_{v_out}V")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"VoltageReference(v_out={v_out}V, accuracy={accuracy}%)"
 
@@ -297,8 +294,7 @@ class PMIC(Module, _ParametricMixin):
     def __init__(self, mcu_family: str = None, rails: int = 3, **kwargs):
         super().__init__(f"PMIC_{mcu_family or 'Generic'}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"PMIC(mcu_family={mcu_family}, rails={rails})"
 
@@ -337,8 +333,7 @@ class BatteryGauge(Module, _ParametricMixin):
     def __init__(self, chemistry: str = "LiPo", interface: str = "I2C", **kwargs):
         super().__init__(f"Gauge_{chemistry}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"BatteryGauge(chemistry={chemistry}, interface={interface})"
 
@@ -383,8 +378,7 @@ class BuckConverter(Module, _ParametricMixin):
     def __init__(self, v_out: float, max_current_a: float, efficiency: float = 0.9, **kwargs):
         super().__init__(f"Buck_{v_out}V_{max_current_a}A")
         
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
         
         comp_data, _ = db.parametric_search("buck_regulators", v_out=v_out, max_current=max_current_a)
         if not comp_data:
@@ -436,14 +430,6 @@ from openhac.core.parametric import ParametricModule
 from openhac.core.part import Part, Pin
 import json
 
-# Simplified Pin Mappers for common IC families
-FAMILY_PIN_MAP = {
-    "TPS54302": {"VIN": "2", "GND": "1", "SW": "3", "EN": "5", "BOOT": "6", "FB": "4"},
-    "AP3211": {"VIN": "5", "GND": "2", "SW": "3", "EN": "4", "BOOT": "1", "FB": "6"},
-    # Default fallback guessing
-    "DEFAULT": {"VIN": "VIN", "GND": "GND", "SW": "SW", "EN": "EN", "BOOT": "BOOT", "FB": "FB"}
-}
-
 class SwitchingRegulator(ParametricModule):
     """Dynamically selected Switching Regulator (Buck Converter)."""
     
@@ -478,10 +464,10 @@ class SwitchingRegulator(ParametricModule):
             except Exception as e:
                 logger.warning(f"Failed to parse pinout for {gn}: {e}")
                 
-        # If no DB pinout, we mock it based on the family map (for testing/resiliency)
         if not pins:
-            logger.warning(f"No pinout in DB for {gn}, falling back to mock pins.")
-            pins = [Pin(str(i), str(i)) for i in range(1, 9)]
+            raise ValueError(
+                f"CODE-003: {gn} has no catalog pinout_json; refusing mock pin maps."
+            )
             
         ic = self.add(Part(
             "U_REG", 
@@ -492,18 +478,30 @@ class SwitchingRegulator(ParametricModule):
         
         # 2. Determine Pin Mapping
         # We try to match a known family string in the generic name
-        mapping = FAMILY_PIN_MAP["DEFAULT"]
-        for family, cmap in FAMILY_PIN_MAP.items():
-            if family in gn:
-                mapping = cmap
-                break
+        mapping = {}
+        for p in pins:
+            nm = str(getattr(p, "name", "") or "").upper()
+            num = str(getattr(p, "number", None) or getattr(p, "num", "") or "")
+            if nm:
+                mapping[nm] = num or nm
+        required = ("VIN", "GND", "SW")
+        missing = [k for k in required if k not in mapping]
+        if missing:
+            raise ValueError(
+                f"CODE-003: {gn} pinout missing {missing}; catalog names required (no family map)."
+            )
                 
         # 3. Dynamic Passive Calculation
         # Example: L = (Vin - Vout) * (Vout/Vin) / (f_sw * I_ripple)
         # We will use simplified hardcoded heuristics for the demonstration
-        l_value = "4.7uH" if self.current_min > 2.0 else "10uH"
-        c_in_val = "10uF"
-        c_out_val = "22uF" if self.current_min > 2.0 else "10uF"
+        l_value = str(self.constraints.get("l_value") or "").strip()
+        if not l_value:
+            raise ValueError(
+                "CODE-003: SwitchingRegulator requires l_value (inductor) from the author or model; "
+                "refusing magic 4.7µH/10µH."
+            )
+        c_in_val = str(self.constraints.get("c_in") or "10uF")
+        c_out_val = str(self.constraints.get("c_out") or "22uF")
         
         # 4. Inject and Connect Components
         # Input Cap

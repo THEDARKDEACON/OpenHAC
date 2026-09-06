@@ -9,9 +9,11 @@
 
 ## Honest production claim
 
-For **supported part classes** and **ordinary digital + power layouts** (no BGA escape, no impedance-controlled HS, no RF sign-off):
+For **the CI golden fixture** — two 0805 resistors (`tests/fixtures/fab_golden_board.py`), not multi-IC / HS / RF boards:
 
-> A board that passes `scripts/ci_validate_production.py --require-all` (or the `kicad-production-validation` CI job) has a **fail-closed software path** from declarative code → native ERC/DRC → placed PCB → autorouted copper → KiCad PCB DRC → Gerbers/drill/pos, with audited pin/pad/net parity on the compile manifest.
+> A green `scripts/ci_validate_production.py --require-all` (or the `kicad-production-validation` CI job) proves a **fail-closed software path** on that **2-pin passive class**: declarative code → native ERC/DRC → placed PCB → autorouted copper → KiCad PCB DRC → Gerbers/drill/pos, with audited pin/pad/net parity on the compile manifest.
+
+`--require-all` does **not** imply HS, RF, EMC, or multi-IC production readiness. Complex boards use a separate matrix; default `--route` covers only `esp32c3_usb` and `rs485_node` (**ABC-008**).
 
 This is **software fabrication readiness**, not a substitute for:
 
@@ -48,6 +50,8 @@ Legacy / subset: `scripts/ci_validate_fab_gates.py` (place + Gerbers; route opti
 - Mirror: [`examples/fab_golden_resistor_bridge.py`](../../examples/fab_golden_resistor_bridge.py)
 
 Two 0805 resistors, explicit pinouts, stock KiCad footprint, offline `comp_data` — small enough for CI routing + DRC.
+
+**GLD-001** tracks a separate analog-island golden (`examples/spice_island_golden.py`) that uses bundled Apache physics (diode / opto / in-amp). That is **not** part of `--require-all` and does **not** change the 2R fab claim. Schematic ERC golden remains `examples/sso041_signoff_node.py`. See [WORKFLOW_GATES_SPEC.md](./WORKFLOW_GATES_SPEC.md).
 
 ---
 

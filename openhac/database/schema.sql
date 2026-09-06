@@ -1,5 +1,5 @@
--- OpenHaC component catalog schema (v8)
--- This file reflects the current full schema including all migrations (v1–v8).
+-- OpenHaC component catalog schema (v11)
+-- This file reflects the current full schema including all migrations (v1–v11).
 -- db_manager.py applies these same columns via idempotent ALTER TABLE migrations
 -- for existing databases, so this file and the migrations stay in sync.
 
@@ -45,14 +45,22 @@ CREATE TABLE IF NOT EXISTS components (
     typical_applications TEXT,   -- Comma-separated reference design names
     datasheet_url        TEXT,
     product_url          TEXT,
-    pinout_source        TEXT,   -- digikey | jlcpcb | seed_file | manual
+    pinout_source        TEXT,   -- digikey | jlcpcb | seed_file | manual | overlay | kicad_symbol
     enriched_at_utc      TEXT,   -- ISO8601
     footprint_verified   INTEGER, -- 1 = verified against local KiCad lib, 0 = unverified
     footprint_resolved   TEXT,   -- normalized Library:Name when auto-resolved
     footprint_notes      TEXT,   -- warnings / ambiguity notes
     -- v8: Vendor enrich persistence
     package              TEXT,   -- vendor package / case code (e.g. SOT-23, 0603)
-    stock                INTEGER -- distributor stock level
+    stock                INTEGER, -- distributor stock level
+    -- v9: 3D model path
+    model_3d_url         TEXT,
+    model_3d_local       TEXT,
+    -- v11: catalog depth + 3D provenance (CAT-009 / 3D-001)
+    catalog_tier         TEXT,   -- verified | warehouse
+    model_3d_sha256      TEXT,
+    model_3d_license     TEXT,
+    model_3d_source      TEXT    -- kicad_lib | easyeda | overlay | manufacturer
 );
 
 CREATE TABLE IF NOT EXISTS part_alternates (

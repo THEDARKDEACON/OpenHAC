@@ -71,7 +71,9 @@ def _seed_iot_edge_db(dm) -> None:
         ("C_100NF_0603", "Capacitor_SMD:C_0603_1608Metric"),
         ("C_100NF_0402", "Capacitor_SMD:C_0402_1005Metric"),
     ):
-        ins(g, "Device:C", fp, cat="capacitors")
+        cat = "inductors" if g.startswith("INDUCTOR") else "capacitors"
+        pinout = [{"num": "1", "name": "1", "type": "passive"}, {"num": "2", "name": "2", "type": "passive"}]
+        ins(g, "Device:L" if cat == "inductors" else "Device:C", fp, cat=cat, pinout=pinout)
     for g in ("R_100K_0603", "R_32K4_0603", "R_1K_0603", "R_120_0603"):
         ins(g, "Device:R", "Resistor_SMD:R_0603_1608Metric", cat="resistors")
 

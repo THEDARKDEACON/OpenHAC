@@ -6,9 +6,19 @@ import warnings
 logger = logging.getLogger("openhac.db")
 
 _default_db = os.path.join(os.path.dirname(__file__), "openhac.db")
-_env_db = (os.environ.get("OPENHAC_DB_PATH") or "").strip()
-DB_PATH = os.path.abspath(os.path.expanduser(_env_db)) if _env_db else _default_db
+# Packaged catalog. Live ``OPENHAC_DB_PATH`` is read in :func:`resolve_db_path` (CODE-002).
+DB_PATH = os.path.abspath(_default_db)
 SCHEMA_PATH = os.path.join(os.path.dirname(__file__), "schema.sql")
+
+
+def resolve_db_path(db_path=None) -> str:
+    """Catalog file for this process: explicit path, then env, then packaged DB."""
+    if db_path is not None and str(db_path).strip():
+        return os.path.abspath(os.path.expanduser(str(db_path)))
+    env = (os.environ.get("OPENHAC_DB_PATH") or "").strip()
+    if env:
+        return os.path.abspath(os.path.expanduser(env))
+    return os.path.abspath(os.path.expanduser(str(DB_PATH)))
 
 # Columns added in schema v2 (Phase 2 — Parametric Abstraction)
 _V2_COLUMNS = {
@@ -78,6 +88,48 @@ _V9_COLUMNS = {
     "model_3d_local": "TEXT", # Local filesystem path
 }
 
+# Catalog depth + 3D provenance (CAT-009 / 3D-001)
+_V11_COLUMNS = {
+    "catalog_tier": "TEXT",  # verified | warehouse
+    "model_3d_sha256": "TEXT",
+    "model_3d_license": "TEXT",
+    "model_3d_source": "TEXT",  # kicad_lib | easyeda | overlay | manufacturer
+}
+
+_MANAGER_BY_PATH: dict[str, "DatabaseManager"] = {}
+
+
+def reset_database_managers() -> None:
+    """Close cached catalog connections (tests / db-path switches)."""
+    for mgr in list(_MANAGER_BY_PATH.values()):
+        cx = getattr(mgr, "_cx", None)
+        if cx is not None:
+            try:
+                cx.close()
+            except Exception:
+                pass
+            mgr._cx = None
+        mgr._ready = False
+    _MANAGER_BY_PATH.clear()
+
+
+def get_database_manager(db_path: str | None = None) -> "DatabaseManager":
+    """Process-wide DatabaseManager for *db_path* (PERF-002)."""
+    return DatabaseManager(db_path=db_path)
+
+
+def _norm_param_token(v: str | None) -> str:
+    return str(v or "").strip().lower().replace(" ", "")
+
+
+def _split_generic_value_package(generic_name: str) -> tuple[str, str]:
+    parts = [p for p in str(generic_name or "").split("_") if p]
+    if len(parts) >= 3:
+        return _norm_param_token("_".join(parts[1:-1])), _norm_param_token(parts[-1])
+    if len(parts) == 2:
+        return _norm_param_token(parts[1]), ""
+    return "", ""
+
 
 
 def _normalize_sensor_category_for_db(
@@ -100,25 +152,73 @@ def _normalize_sensor_category_for_db(
 
 
 class DatabaseManager:
-    def __init__(self, db_path=DB_PATH):
-        self.db_path = db_path
+    def __new__(cls, db_path=None):
+        path = resolve_db_path(db_path)
+        inst = _MANAGER_BY_PATH.get(path)
+        if inst is not None and getattr(inst, "_ready", False):
+            return inst
+        if inst is None:
+            inst = super().__new__(cls)
+            _MANAGER_BY_PATH[path] = inst
+        return inst
+
+    def __init__(self, db_path=None):
+        if getattr(self, "_ready", False):
+            return
+        self.db_path = resolve_db_path(db_path)
+        self._cx = None
         self._init_db()
+        self._ready = True
+
+    def _connect(self):
+        if self._cx is None:
+            self._cx = sqlite3.connect(self.db_path, check_same_thread=False)
+            self._cx.row_factory = sqlite3.Row
+            try:
+                self._cx.execute("PRAGMA journal_mode=WAL")
+            except sqlite3.Error:
+                pass
+        return self._cx
+
+    class _Tx:
+        def __init__(self, mgr: "DatabaseManager"):
+            self.mgr = mgr
+
+        def __enter__(self):
+            return self.mgr._connect()
+
+        def __exit__(self, et, ev, tb):
+            cx = self.mgr._cx
+            if cx is None:
+                return False
+            if et is None:
+                cx.commit()
+            else:
+                try:
+                    cx.rollback()
+                except sqlite3.Error:
+                    pass
+            return False
+
+    def _tx(self):
+        return DatabaseManager._Tx(self)
 
     def _init_db(self):
         """Create database, apply schema, and run migrations."""
-        with sqlite3.connect(self.db_path) as conn:
-            with open(SCHEMA_PATH, "r") as f:
-                conn.executescript(f.read())
-            # Run v2 migration — add parametric columns if they don't exist
-            self._migrate_v2(conn)
-            self._migrate_v3(conn)
-            self._migrate_v4(conn)
-            self._migrate_v5_part_alternates_group(conn)
-            self._migrate_v6_pinout(conn)
-            self._migrate_v7_complete_data(conn)
-            self._migrate_v8_vendor_enrich_fields(conn)
-            self._migrate_v9_3d_models(conn)
-            conn.commit()
+        conn = self._connect()
+        with open(SCHEMA_PATH, "r") as f:
+            conn.executescript(f.read())
+        self._migrate_v2(conn)
+        self._migrate_v3(conn)
+        self._migrate_v4(conn)
+        self._migrate_v5_part_alternates_group(conn)
+        self._migrate_v6_pinout(conn)
+        self._migrate_v7_complete_data(conn)
+        self._migrate_v8_vendor_enrich_fields(conn)
+        self._migrate_v9_3d_models(conn)
+        self._migrate_v10_indexes_and_dedupe(conn)
+        self._migrate_v11_catalog_depth(conn)
+        conn.commit()
 
     @staticmethod
     def _migrate_v2(conn):
@@ -146,6 +246,98 @@ class DatabaseManager:
         for col_name, col_def in _V9_COLUMNS.items():
             if col_name not in existing:
                 conn.execute(f"ALTER TABLE components ADD COLUMN {col_name} {col_def}")
+
+    @staticmethod
+    def _migrate_v11_catalog_depth(conn):
+        """CAT-009 / 3D-001: catalog_tier + 3D provenance (idempotent)."""
+        cursor = conn.execute("PRAGMA table_info(components)")
+        existing = {row[1] for row in cursor.fetchall()}
+        for col_name, col_def in _V11_COLUMNS.items():
+            if col_name not in existing:
+                conn.execute(f"ALTER TABLE components ADD COLUMN {col_name} {col_def}")
+
+    @staticmethod
+    def _migrate_v10_indexes_and_dedupe(conn):
+        """PERF-001/003: indexes, catalog dedupe, value_norm backfill."""
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(components)").fetchall()}
+        if not existing:
+            return
+        if "value_norm" not in existing:
+            try:
+                conn.execute("ALTER TABLE components ADD COLUMN value_norm TEXT")
+                existing.add("value_norm")
+            except sqlite3.OperationalError:
+                pass
+        pkg_expr = "COALESCE(package,'')" if "package" in existing else "''"
+        vn_expr = "COALESCE(value_norm,'')" if "value_norm" in existing else "''"
+        pin_expr = "length(COALESCE(pinout_json,''))" if "pinout_json" in existing else "0"
+        rows = conn.execute(
+            f"SELECT id, generic_name, {pkg_expr}, {vn_expr}, {pin_expr} FROM components"
+        ).fetchall()
+        best: dict[str, tuple[int, int]] = {}
+        for row in rows:
+            cid, gn, pkg, vn, pin_len = (
+                int(row[0]),
+                str(row[1] or ""),
+                str(row[2] or ""),
+                str(row[3] or ""),
+                int(row[4] or 0),
+            )
+            prev = best.get(gn)
+            if prev is None or pin_len > prev[1] or (pin_len == prev[1] and cid > prev[0]):
+                best[gn] = (cid, pin_len)
+            if not vn or not pkg:
+                val, pkg_g = _split_generic_value_package(gn)
+                updates = []
+                params: list = []
+                if not vn and val and "value_norm" in existing:
+                    updates.append("value_norm=?")
+                    params.append(val)
+                if not pkg and pkg_g and "package" in existing:
+                    updates.append("package=?")
+                    params.append(pkg_g)
+                if updates:
+                    params.append(cid)
+                    conn.execute(f"UPDATE components SET {', '.join(updates)} WHERE id=?", params)
+        keep = {v[0] for v in best.values()}
+        if keep and len(keep) < len(rows):
+            dead = [int(r[0]) for r in rows if int(r[0]) not in keep]
+            for i in range(0, len(dead), 400):
+                chunk = dead[i : i + 400]
+                q = ",".join("?" * len(chunk))
+                conn.execute(f"DELETE FROM components WHERE id IN ({q})", chunk)
+        existing = {row[1] for row in conn.execute("PRAGMA table_info(components)").fetchall()}
+        index_sql = []
+        if "generic_name" in existing:
+            index_sql.append(
+                "CREATE INDEX IF NOT EXISTS idx_components_generic_name ON components(generic_name)"
+            )
+        if "category" in existing:
+            index_sql.append(
+                "CREATE INDEX IF NOT EXISTS idx_components_category ON components(category)"
+            )
+        if "supplier_sku" in existing:
+            index_sql.append(
+                "CREATE INDEX IF NOT EXISTS idx_components_supplier_sku ON components(supplier_sku)"
+            )
+        if "mpn" in existing:
+            index_sql.append("CREATE INDEX IF NOT EXISTS idx_components_mpn ON components(mpn)")
+        if "value_norm" in existing and "package" in existing:
+            index_sql.append(
+                "CREATE INDEX IF NOT EXISTS idx_components_value_pkg ON components(value_norm, package)"
+            )
+        for sql in index_sql:
+            try:
+                conn.execute(sql)
+            except sqlite3.OperationalError:
+                pass
+        if "generic_name" in existing:
+            try:
+                conn.execute(
+                    "CREATE UNIQUE INDEX IF NOT EXISTS idx_components_generic_name_unique ON components(generic_name)"
+                )
+            except sqlite3.Error:
+                pass
 
     @staticmethod
     def _migrate_v4(conn):
@@ -204,7 +396,7 @@ class DatabaseManager:
         """Fetches a component by its generic name."""
         from openhac.database.catalog_fixups import merge_catalog_fixup
 
-        with sqlite3.connect(self.db_path) as conn:
+        with self._tx() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
             # Prefer rows with pinout/symbol data when duplicates exist (bad sync/INSERT OR IGNORE).
@@ -220,14 +412,23 @@ class DatabaseManager:
             )
             row = cursor.fetchone()
             if row:
-                return merge_catalog_fixup(dict(row))
+                from openhac.database.catalog_coverage import stamp_spice_registry_on_row
+
+                return stamp_spice_registry_on_row(merge_catalog_fixup(dict(row)))
             return None
+
+    @staticmethod
+    def catalog_grade(row: dict | None) -> str:
+        """CAT-001 completeness grade: ``compile_ready`` or ``warehouse``."""
+        from openhac.database.catalog_coverage import catalog_grade as _grade
+
+        return _grade(row)
 
     def get_component_by_supplier_sku(self, supplier_sku: str) -> dict | None:
         """Fetch a component by its supplier SKU (e.g. LCSC Cxxxxx)."""
         if not supplier_sku:
             return None
-        with sqlite3.connect(self.db_path) as conn:
+        with self._tx() as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute("SELECT * FROM components WHERE supplier_sku = ?", (supplier_sku,))
@@ -247,7 +448,13 @@ class DatabaseManager:
         from openhac.database.lookup_meta import strip_openhac_internal_fields
 
         component_data = strip_openhac_internal_fields(dict(component_data))
-        with sqlite3.connect(self.db_path) as conn:
+        if not component_data.get("value_norm"):
+            val, pkg_g = _split_generic_value_package(str(component_data.get("generic_name") or ""))
+            if val:
+                component_data["value_norm"] = val
+            if pkg_g and not component_data.get("package"):
+                component_data["package"] = pkg_g
+        with self._tx() as conn:
             cursor = conn.cursor()
             columns = ', '.join(component_data.keys())
             placeholders = ', '.join('?' * len(component_data))
@@ -273,7 +480,7 @@ class DatabaseManager:
             return False
         set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
         params = list(updates.values()) + [generic_name]
-        with sqlite3.connect(self.db_path) as conn:
+        with self._tx() as conn:
             conn.execute(f"UPDATE components SET {set_clause} WHERE generic_name = ?", params)
             conn.commit()
         return True
@@ -319,7 +526,7 @@ class DatabaseManager:
 
     def list_part_alternates(self, primary_generic: str) -> list[dict]:
         """Return ranked alternate offers for a primary ``generic_name`` (LIB-002)."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._tx() as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute(
@@ -331,7 +538,7 @@ class DatabaseManager:
 
     def list_part_offers(self, generic_name: str) -> list[dict]:
         """Return ranked distributor offers for a ``generic_name`` (LIB-001)."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._tx() as conn:
             conn.row_factory = sqlite3.Row
             cur = conn.cursor()
             cur.execute(
@@ -344,7 +551,7 @@ class DatabaseManager:
     def insert_part_offer(self, data: dict, ignore_duplicate: bool = False) -> int | None:
         """Insert one offer row; *data* must include ``generic_name``, ``supplier``, and ``rank``."""
         row = dict(data)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._tx() as conn:
             cursor = conn.cursor()
             columns = ", ".join(row.keys())
             placeholders = ", ".join("?" * len(row))
@@ -360,7 +567,7 @@ class DatabaseManager:
     def insert_part_alternate(self, data: dict, ignore_duplicate: bool = False) -> int | None:
         """Insert one alternate row; *data* must include ``primary_generic`` and ``rank``."""
         row = dict(data)
-        with sqlite3.connect(self.db_path) as conn:
+        with self._tx() as conn:
             cursor = conn.cursor()
             columns = ", ".join(row.keys())
             placeholders = ", ".join("?" * len(row))
@@ -375,7 +582,7 @@ class DatabaseManager:
 
     def search_components(self, query: str = None, category: str = None, limit: int = 50) -> list[dict]:
         """Search components by generic_name or description substring."""
-        with sqlite3.connect(self.db_path) as conn:
+        with self._tx() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -486,10 +693,28 @@ class DatabaseManager:
             except Exception:
                 pass
         
-        # Pinout
+        # Pinout (CAT-004: never persist numeric-only IC / MCU / regulator tables)
         if part_info.pinout:
-            updates["pinout_json"] = json.dumps(part_info.pinout)
-            updates["pinout_source"] = getattr(part_info, "source_vendor", None) or updates.get("pinout_source") or ""
+            from openhac.database.pin_policy import should_store_vendor_pinout
+
+            cat = str(
+                getattr(part_info, "category", None)
+                or updates.get("category")
+                or ""
+            )
+            if should_store_vendor_pinout(
+                part_info.pinout, category=cat, generic_name=generic_name
+            ):
+                updates["pinout_json"] = json.dumps(part_info.pinout)
+                src = getattr(part_info, "source_vendor", None) or updates.get("pinout_source") or ""
+                updates["pinout_source"] = src
+                updates["catalog_tier"] = "verified"
+            else:
+                logger.warning(
+                    "CAT-004: hard-skip numeric-only pinout for %s (category=%s); not stored",
+                    generic_name,
+                    cat,
+                )
         try:
             from datetime import timezone
             updates["enriched_at_utc"] = part_info.last_updated.astimezone(timezone.utc).isoformat()
@@ -535,7 +760,7 @@ class DatabaseManager:
         set_clause = ", ".join(f"{k} = ?" for k in updates.keys())
         params = list(updates.values()) + [generic_name]
         
-        with sqlite3.connect(self.db_path) as conn:
+        with self._tx() as conn:
             conn.execute(
                 f"UPDATE components SET {set_clause} WHERE generic_name = ?",
                 params
@@ -582,7 +807,7 @@ class DatabaseManager:
             (component_dict, was_soft_fallback)
             component_dict is None if no match found at all.
         """
-        with sqlite3.connect(self.db_path) as conn:
+        with self._tx() as conn:
             conn.row_factory = sqlite3.Row
             cursor = conn.cursor()
 
@@ -652,6 +877,25 @@ class DatabaseManager:
 
             order_by = "ORDER BY CASE WHEN jlc_class = 'Basic' THEN 0 ELSE 1 END ASC"
 
+            vn = _norm_param_token(value) if value else ""
+            pkg_n = str(package or "").strip()
+            if vn or pkg_n:
+                idx_cond = ["category = ?"]
+                idx_params: list = [category]
+                if vn:
+                    idx_cond.append("value_norm = ?")
+                    idx_params.append(vn)
+                if pkg_n:
+                    idx_cond.append("package = ?")
+                    idx_params.append(pkg_n)
+                cursor.execute(
+                    f"SELECT * FROM components WHERE {' AND '.join(idx_cond)} {order_by} LIMIT ?",
+                    idx_params + [limit],
+                )
+                rows = cursor.fetchall()
+                if rows:
+                    return dict(rows[0]), False
+
             cursor.execute(
                 f"SELECT * FROM components WHERE {full_where} {order_by} LIMIT ?",
                 full_params,
@@ -699,6 +943,12 @@ class DatabaseManager:
 
             # --- Phase 4: JIT API Fallback ---
             # Component not found locally — try the live supply chain API
+            try:
+                from openhac.database.enrich import network_allowed as _net_ok
+            except Exception:
+                _net_ok = lambda: False  # noqa: E731 — fail closed (FAB-010)
+            if not _net_ok():
+                return None, False
             try:
                 from openhac.database.api_fallback import fetch_and_map_part
 

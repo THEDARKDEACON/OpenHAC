@@ -143,8 +143,8 @@ def main() -> int:
             f"OK: KiCad schematic ERC golden passed (errors=0, warnings={warn_n}, format={summary.get('format')})"
         )
 
-        # SSO-041: complex offline MCU/USB example under --schematic-signoff (skip-layout).
-        complex_script = _REPO / "examples" / "complex_rs485_node.py"
+        # SSO-041: multi-module Device R/C/LED node under --schematic-signoff (skip-layout).
+        complex_script = _REPO / "examples" / "sso041_signoff_node.py"
         if not complex_script.is_file():
             sys.stderr.write(f"FAIL: missing complex golden {complex_script}\n")
             return 1
@@ -174,7 +174,7 @@ def main() -> int:
         if r2.returncode != 0:
             sys.stdout.write(r2.stdout)
             sys.stderr.write(r2.stderr)
-            sys.stderr.write("FAIL: SSO-041 complex_rs485_node compile --schematic-signoff\n")
+            sys.stderr.write("FAIL: SSO-041 examples/sso041_signoff_node.py compile --schematic-signoff\n")
             return r2.returncode or 1
         sch2 = c_out / "ci_sso041_signoff.kicad_sch"
         if not sch2.is_file():

@@ -25,8 +25,7 @@ class MOSFET(Module, _ParametricMixin):
         name = f"MOS_{type.upper()}_{v_ds}V_{i_d}A"
         super().__init__(name)
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"MOSFET(type={type}, v_ds={v_ds}V, i_d={i_d}A, logic_level={logic_level})"
 
@@ -80,8 +79,7 @@ class Diode(Module, _ParametricMixin):
         name = f"D_{type.upper()}_{v_r}V_{i_f}A"
         super().__init__(name)
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"Diode(type={type}, v_r={v_r}V, i_f={i_f}A)"
 
@@ -130,8 +128,7 @@ class BJT(Module, _ParametricMixin):
         name = f"BJT_{type.upper()}"
         super().__init__(name)
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"BJT(type={type}, v_ce={v_ce}V, i_c={i_c}A)"
 
@@ -182,8 +179,7 @@ class ZenerDiode(Module, _ParametricMixin):
                  package: str = "SOD-123", **kwargs):
         super().__init__(f"ZENER_{v_zener}V")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"ZenerDiode(v_zener={v_zener}V)"
 
@@ -228,8 +224,7 @@ class BridgeRectifier(Module, _ParametricMixin):
                  package: str = "MB6S", **kwargs):
         super().__init__(f"BRIDGE_{i_avg}A")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"BridgeRectifier(v_rms={v_rms}V, i_avg={i_avg}A)"
 

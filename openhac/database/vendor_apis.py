@@ -31,6 +31,7 @@ import hmac
 import json
 import logging
 import os
+import re
 import time
 import urllib.error
 import urllib.parse
@@ -1125,6 +1126,155 @@ class JLCPCBAPI:
         )
 
 
+class NexarAPI:
+    """Optional Nexar / Octopart GraphQL client (CAT-010).
+
+    Fail closed without API keys. Not a default CI dependency. Do not scrape.
+    Environment: ``NEXAR_CLIENT_ID`` / ``NEXAR_CLIENT_SECRET`` (aliases
+    ``OCTOPART_CLIENT_ID`` / ``OCTOPART_CLIENT_SECRET``).
+    """
+
+    TOKEN_URL = "https://identity.nexar.com/connect/token"
+    GRAPHQL_URL = "https://api.nexar.com/graphql"
+
+    def __init__(self, client_id: Optional[str] = None, client_secret: Optional[str] = None):
+        self.client_id = (
+            client_id
+            or os.environ.get("NEXAR_CLIENT_ID")
+            or os.environ.get("OCTOPART_CLIENT_ID")
+        )
+        self.client_secret = (
+            client_secret
+            or os.environ.get("NEXAR_CLIENT_SECRET")
+            or os.environ.get("OCTOPART_CLIENT_SECRET")
+        )
+        self._token: Optional[str] = None
+        self._token_expires: Optional[datetime] = None
+        if not self.client_id or not self.client_secret:
+            raise ValueError(
+                "Nexar/Octopart API credentials not configured. "
+                "Set NEXAR_CLIENT_ID and NEXAR_CLIENT_SECRET (fail closed; no scrape)."
+            )
+
+    def _get_token(self) -> str:
+        if self._token and self._token_expires and datetime.now(timezone.utc) < self._token_expires:
+            return self._token
+        data = urllib.parse.urlencode(
+            {
+                "grant_type": "client_credentials",
+                "client_id": self.client_id,
+                "client_secret": self.client_secret,
+            }
+        ).encode()
+        req = urllib.request.Request(
+            self.TOKEN_URL,
+            data=data,
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "User-Agent": user_agent(),
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode())
+        self._token = str(payload.get("access_token") or "")
+        if not self._token:
+            raise ValueError("Nexar token response missing access_token")
+        ttl = int(payload.get("expires_in") or 3600)
+        self._token_expires = datetime.now(timezone.utc) + timedelta(seconds=max(60, ttl - 60))
+        return self._token
+
+    def search(self, keyword: str, limit: int = 1) -> list[PartInfo]:
+        query = """
+        query OpenHaCMpn($q: String!, $limit: Int!) {
+          supSearchMpn(q: $q, limit: $limit) {
+            results {
+              part {
+                mpn
+                manufacturer { name }
+                shortDescription
+                category { name }
+                specs { attribute { name } displayValue }
+              }
+            }
+          }
+        }
+        """
+        body = json.dumps({"query": query, "variables": {"q": keyword, "limit": int(limit)}}).encode()
+        req = urllib.request.Request(
+            self.GRAPHQL_URL,
+            data=body,
+            headers={
+                "Content-Type": "application/json",
+                "Authorization": f"Bearer {self._get_token()}",
+                "User-Agent": user_agent(),
+            },
+        )
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            payload = json.loads(resp.read().decode())
+        return self._parse_search(payload, keyword)
+
+    def _parse_search(self, payload: dict, keyword: str) -> list[PartInfo]:
+        data = payload.get("data") or {}
+        search = data.get("supSearchMpn") or {}
+        results = search.get("results") or []
+        out: list[PartInfo] = []
+        for rec in results:
+            part = (rec or {}).get("part") or {}
+            if not part:
+                continue
+            mfr = part.get("manufacturer") or {}
+            cat = part.get("category") or {}
+            pinout = _nexar_pinout_from_specs(part.get("specs") or [])
+            out.append(
+                PartInfo(
+                    mpn=str(part.get("mpn") or keyword),
+                    manufacturer=str(mfr.get("name") or ""),
+                    supplier_sku="",
+                    description=str(part.get("shortDescription") or ""),
+                    stock=0,
+                    price_breaks=[],
+                    datasheet_url=None,
+                    product_url=None,
+                    category=str(cat.get("name") or ""),
+                    package="",
+                    rohs=False,
+                    lead_time_days=None,
+                    last_updated=datetime.now(timezone.utc),
+                    pinout=pinout,
+                )
+            )
+        return out
+
+
+def _nexar_pinout_from_specs(specs: list) -> Optional[list]:
+    """Best-effort named pin list from Nexar spec rows. Never invent from pin count."""
+    names: list[str] = []
+    for spec in specs or []:
+        if not isinstance(spec, dict):
+            continue
+        attr = spec.get("attribute") or {}
+        name = str(attr.get("name") or spec.get("name") or "").strip().lower()
+        val = str(spec.get("displayValue") or spec.get("value") or "").strip()
+        if name in ("pinout", "pin names", "pins") and val and not val.isdigit():
+            parts = [p.strip() for p in re.split(r"[,;/]", val) if p.strip()]
+            if parts and not all(p.isdigit() for p in parts):
+                names = parts
+                break
+        if name.startswith("pin ") and val and val != name:
+            num = name.replace("pin ", "").strip()
+            names.append(f"{num}:{val}")
+    if not names:
+        return None
+    pinout = []
+    for i, tok in enumerate(names, start=1):
+        if ":" in tok:
+            num, pname = tok.split(":", 1)
+            pinout.append({"num": num.strip() or str(i), "name": pname.strip(), "type": "bidirectional"})
+        else:
+            pinout.append({"num": str(i), "name": tok, "type": "bidirectional"})
+    return pinout
+
+
 def vendor_apis_configured() -> bool:
     """Return True if at least one vendor integration has credentials in the environment."""
     if (os.environ.get("DIGIKEY_CLIENT_ID") or "").strip() and (os.environ.get("DIGIKEY_CLIENT_SECRET") or "").strip():
@@ -1202,6 +1352,17 @@ def lookup_part_live(mpn: str, preferred_vendor: str = "auto",
                 logger.debug(f"TME found: {tme_result[0].mpn}")
         except Exception as e:
             logger.debug(f"TME lookup failed: {e}")
+
+    # 5. Nexar / Octopart — optional, fail closed without keys (CAT-010). Not in auto.
+    if preferred_vendor in ("nexar", "octopart"):
+        nexar = NexarAPI()
+        nx = nexar.search(mpn, limit=1)
+        if nx:
+            results["nexar"] = nx[0]
+            try:
+                nx[0].source_vendor = "nexar"  # type: ignore[attr-defined]
+            except Exception:
+                pass
     
     # Merge results into single PartInfo
     merged = _merge_part_info(results, mpn)
@@ -1276,6 +1437,12 @@ def _merge_part_info(results: dict[str, PartInfo], mpn: str) -> Optional[PartInf
         merged.pinout = results["digikey"].pinout
         try:
             merged.source_vendor = "digikey"  # type: ignore[attr-defined]
+        except Exception:
+            pass
+    elif "nexar" in results and results["nexar"].pinout:
+        merged.pinout = results["nexar"].pinout
+        try:
+            merged.source_vendor = "nexar"  # type: ignore[attr-defined]
         except Exception:
             pass
     elif "jlcpcb" in results and results["jlcpcb"].pinout:

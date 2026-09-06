@@ -99,7 +99,16 @@ def _header(f, file_uuid: str, ir: SchematicIR, extra_power_syms: str) -> None:
     f.write("  )\n")
 
 
-def _emit_instance(f, inst) -> None:
+def _emit_kicad9_instances(f, *, project_name: str, sheet_uuid: str, ref: str, unit: int) -> None:
+    """KiCad 9 annotation lives on the symbol, path = /{sheet uuid} (not /{symbol uuid})."""
+    proj = kicad_string_escape(project_name or "board")
+    f.write("    (instances\n")
+    f.write(f'      (project "{proj}"\n')
+    f.write(f'        (path "/{sheet_uuid}" (reference "{kicad_string_escape(ref)}") (unit {int(unit or 1)}))\n')
+    f.write("      )\n    )\n")
+
+
+def _emit_instance(f, inst, *, file_uuid: str = "", project_name: str = "") -> None:
     unit = int(getattr(inst, "unit", 1) or 1)
     f.write(
         f'  (symbol (lib_id "{kicad_string_escape(inst.lib_id)}") '
@@ -148,6 +157,8 @@ def _emit_instance(f, inst) -> None:
         uid = det_uuid(f"pin:{inst.uuid}:{num}")
         f.write(f'    (pin "{kicad_string_escape(str(num))}"\n')
         f.write(f'      (uuid "{uid}")\n    )\n')
+    if file_uuid:
+        _emit_kicad9_instances(f, project_name=project_name, sheet_uuid=file_uuid, ref=inst.ref, unit=unit)
     f.write("  )\n")
 
 
@@ -191,7 +202,7 @@ def _emit_label(f, name: str, x: float, y: float, kind: str) -> None:
     f.write(f'    (uuid "{uid}")\n  )\n')
 
 
-def _emit_power_port(f, port) -> None:
+def _emit_power_port(f, port, *, file_uuid: str = "", project_name: str = "") -> None:
     uid = det_uuid(f"pwr:{port.net}:{port.x:.4f}:{port.y:.4f}:{port.is_pwr_flag}")
     dx, dy = _power_symbol_pin_offset(port.lib_id)
     # Sheet Y is flipped vs symbol-local: world_y = inst_y - dy ⇒ inst_y = world_y + dy.
@@ -212,6 +223,8 @@ def _emit_power_port(f, port) -> None:
         f'(at {fmt_mm(sx)} {fmt_mm(sy + (2.54 if port.is_gnd else -2.54))} 0) '
         f'(effects (font (size 1.27 1.27))))\n'
     )
+    if file_uuid:
+        _emit_kicad9_instances(f, project_name=project_name, sheet_uuid=file_uuid, ref=ref, unit=1)
     f.write("  )\n")
 
 
@@ -220,10 +233,19 @@ def _emit_nc(f, x, y) -> None:
     f.write(f'  (no_connect (at {fmt_mm(x)} {fmt_mm(y)}) (uuid "{uid}"))\n')
 
 
-def _write_sheet_body(f, ir: SchematicIR, *, file_uuid: str, extra_power: str, sheet_paths=None, sym_paths=None) -> None:
+def _write_sheet_body(
+    f,
+    ir: SchematicIR,
+    *,
+    file_uuid: str,
+    extra_power: str,
+    sheet_paths=None,
+    sym_paths=None,
+    project_name: str = "",
+) -> None:
     _header(f, file_uuid, ir, extra_power)
     for inst in ir.instances:
-        _emit_instance(f, inst)
+        _emit_instance(f, inst, file_uuid=file_uuid, project_name=project_name)
     for w in ir.wires:
         _emit_wire(f, w.x1, w.y1, w.x2, w.y2)
     for b in getattr(ir, "buses", None) or []:
@@ -233,7 +255,7 @@ def _write_sheet_body(f, ir: SchematicIR, *, file_uuid: str, extra_power: str, s
     for lb in ir.labels:
         _emit_label(f, lb.name, lb.x, lb.y, lb.kind)
     for p in ir.power_ports:
-        _emit_power_port(f, p)
+        _emit_power_port(f, p, file_uuid=file_uuid, project_name=project_name)
     for nc in ir.no_connects:
         _emit_nc(f, nc.x, nc.y)
     for sh in ir.sheets:
@@ -275,7 +297,15 @@ def _write_sheet_body(f, ir: SchematicIR, *, file_uuid: str, extra_power: str, s
             f'(unit {int(unit or 1)}) (value "{kicad_string_escape(val)}") '
             f'(footprint "{kicad_string_escape(fp)}"))\n'
         )
-    f.write("  )\n)\n")
+    f.write("  )\n")
+    for chunk in getattr(ir, "overlay_sexp", None) or []:
+        s = str(chunk).rstrip()
+        if s:
+            if not s.startswith("  "):
+                f.write("  ")
+            f.write(s)
+            f.write("\n")
+    f.write(")\n")
 
 
 def _write_openhac_power_lib(sch_path: Path, ir: SchematicIR, extra_power: str, gen_path: str | None) -> str | None:
@@ -344,6 +374,7 @@ def generate_schematic(
     embedded_lib_symbols: str | None = None,
     signoff: bool = False,
     circuit=None,
+    project_name: str | None = None,
 ) -> SchematicIR:
     logger.info("Generating schematic (SSO) -> %s", output_path)
     if circuit is not None and list(getattr(circuit, "parts", []) or []):
@@ -382,6 +413,12 @@ def generate_schematic(
         embedded_lib_symbols=embed or "",
         generated_sym_path=gen_path,
     )
+    overlay = getattr(board, "_kicad_artwork_overlay", None)
+    if overlay is not None:
+        from openhac.compiler.kicad_artwork import merge_schematic_overlay, raise_if_overlay_conflicts
+
+        conflicts = merge_schematic_overlay(ir, overlay, nets)
+        raise_if_overlay_conflicts(conflicts)
     extra_power = _synth_power_embed(ir)
     lib_ids = [inst.lib_id for inst in ir.instances]
     lib_ids.extend(p.lib_id for p in ir.power_ports)
@@ -396,6 +433,7 @@ def generate_schematic(
     root = Path(output_path)
     root.parent.mkdir(parents=True, exist_ok=True)
     file_uuid = root_schematic_uuid()
+    project_name = str(project_name or "").strip() or "board"
 
     if ir.child_sheets:
         stem = root.stem
@@ -423,8 +461,15 @@ def generate_schematic(
             root_ir.labels = list(ir.root_labels)
             from openhac.schematic.layout import _paper_for_ir
             root_ir.paper = _paper_for_ir(root_ir)
-            _write_sheet_body(f, root_ir, file_uuid=file_uuid, extra_power=extra_power,
-                              sheet_paths=sheet_paths, sym_paths=global_sym)
+            _write_sheet_body(
+                f,
+                root_ir,
+                file_uuid=file_uuid,
+                extra_power=extra_power,
+                sheet_paths=sheet_paths,
+                sym_paths=global_sym,
+                project_name=project_name,
+            )
         for name, child in ir.child_sheets.items():
             child_path = root.parent / f"{stem}.{name}.kicad_sch"
             seen_h: set[str] = set()
@@ -439,12 +484,24 @@ def generate_schematic(
             sym_paths = [(f"/{inst.uuid}", inst.ref, inst.value, inst.footprint, inst.unit) for inst in child.instances]
             with open(child_path, "w", encoding="utf-8") as cf:
                 _write_sheet_body(
-                    cf, child, file_uuid=sheet_instance_uuid(name), extra_power=extra_power, sym_paths=sym_paths,
+                    cf,
+                    child,
+                    file_uuid=sheet_instance_uuid(name),
+                    extra_power=extra_power,
+                    sym_paths=sym_paths,
+                    project_name=project_name,
                 )
     else:
         sym_paths = [(f"/{inst.uuid}", inst.ref, inst.value, inst.footprint, inst.unit) for inst in ir.instances]
         with open(root, "w", encoding="utf-8") as f:
-            _write_sheet_body(f, ir, file_uuid=file_uuid, extra_power=extra_power, sym_paths=sym_paths)
+            _write_sheet_body(
+                f,
+                ir,
+                file_uuid=file_uuid,
+                extra_power=extra_power,
+                sym_paths=sym_paths,
+                project_name=project_name,
+            )
 
     if pinpos_report_path:
         import json

@@ -13,6 +13,10 @@ class SchematicGenerationError(OpenHaCError):
     """Raised by schematic_gen.py when schematic generation fails."""
 
 
+class ArtworkParityError(OpenHaCError):
+    """Raised when saved KiCad artwork shorts nets that the graph keeps distinct (LIVE-006)."""
+
+
 class LayoutGenerationError(OpenHaCError):
     """Raised when KiCad pcbnew layout cannot be generated (e.g. bindings missing)."""
 
@@ -55,3 +59,19 @@ class KiCadSchErcError(OpenHaCError):
 
 class KicadLibraryLoadError(OpenHaCError):
     """Raised when a KiCad symbol cannot be loaded and synthetic fallback is disabled (LIB-004)."""
+
+
+class CatalogLockError(OpenHaCError):
+    """Raised when a catalog lockfile is missing or disagrees with the resolved BOM (LOCK-001)."""
+
+
+class PlacementIntentError(OpenHaCError):
+    """Raised when overlay footprint pose fails placement-intent checks (PLC-001)."""
+
+
+class PinoutAuthoringError(OpenHaCError):
+    """Raised when ``openhac pinout init`` cannot write a named pin table (PIN-001)."""
+
+
+class JlcExportError(OpenHaCError):
+    """Raised when a JLCPCB-shaped BOM/CPL pack cannot be written (MFG-010)."""

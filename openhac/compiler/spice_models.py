@@ -308,6 +308,13 @@ def _parse_pin_map(raw: Any) -> list[SpicePinMapEntry]:
     return out
 
 
+def _notes_text(raw: Any) -> str:
+    """Human notes only. ``notes.download_page`` is ignored and never fetched (SPS-051)."""
+    if isinstance(raw, dict):
+        return str(raw.get("text") or raw.get("summary") or raw.get("note") or "").strip()
+    return str(raw or "").strip()
+
+
 def _parse_checks(raw: Any) -> list[SpicePhysicsCheck]:
     if raw is None:
         return []
@@ -359,7 +366,7 @@ def parse_model_record(raw: dict[str, Any]) -> SpiceModelRecord:
         sha256=str(raw.get("sha256") or "").strip().lower(),
         license=str(raw.get("license") or "").strip(),
         simulator=str(raw.get("simulator") or "ngspice").strip() or "ngspice",
-        notes=str(raw.get("notes") or "").strip(),
+        notes=_notes_text(raw.get("notes")),
     )
     if kind != "primitive":
         rec.pin_map = _parse_pin_map(raw.get("pin_map"))
@@ -475,15 +482,37 @@ def parse_subckt_pin_count(text: str, subckt: str) -> int | None:
     return len(toks)
 
 
+def looks_encrypted_or_ltspice_only(path: Path, data: bytes | None = None) -> str | None:
+    """SPS-054: refuse encrypted LTspice / ``.asc`` payloads. None if the file looks usable."""
+    suffix = path.suffix.lower()
+    if suffix == ".asc":
+        return "LTspice .asc schematic (not an ngspice netlist)"
+    blob = data if data is not None else (path.read_bytes()[:16384] if path.is_file() else b"")
+    head = blob[:4096]
+    if b"\x00" in head:
+        return "binary/null bytes (encrypted or non-ASCII)"
+    low = head.lower()
+    if b"encrypted" in low or b"*$ encrypted" in low or b".protect" in low:
+        return "encrypted LTspice/PSpice payload"
+    return None
+
+
 def verify_record_file(rec: SpiceModelRecord, *, signoff: bool) -> Path | None:
     """Resolve include path; under sign-off require existence + checksum for vendor."""
     if rec.kind == "primitive" or not rec.include:
         return None
+    sim = (rec.simulator or "ngspice").strip().lower()
+    if sim and sim != "ngspice":
+        raise OpenHaCError(f"SPS-054: simulator must be ngspice, got {rec.simulator!r}.")
     path = expand_include_path(rec.include)
     if not path.is_file():
         if signoff or rec.kind == "vendor":
             raise OpenHaCError(f"SPS-014: SPICE model file not found: {path} (kind={rec.kind}).")
         return None
+    data = path.read_bytes()
+    bad = looks_encrypted_or_ltspice_only(path, data)
+    if bad:
+        raise OpenHaCError(f"SPS-054: refuse {path}: {bad}.")
     if rec.kind == "vendor" and rec.sha256:
         digest = file_sha256(path)
         if digest.lower() != rec.sha256.lower():
@@ -491,7 +520,7 @@ def verify_record_file(rec: SpiceModelRecord, *, signoff: bool) -> Path | None:
                 f"SPS-011: sha256 mismatch for {path}: expected {rec.sha256}, got {digest}."
             )
     if rec.kind != "primitive":
-        text = path.read_text(encoding="utf-8", errors="replace")
+        text = data.decode("utf-8", errors="replace")
         arity = parse_subckt_pin_count(text, rec.subckt)
         if arity is not None and rec.pin_map and arity != len(rec.pin_map):
             raise OpenHaCError(
@@ -502,6 +531,19 @@ def verify_record_file(rec: SpiceModelRecord, *, signoff: bool) -> Path | None:
                 f"SPS-018: subckt_pin_count={rec.subckt_pin_count} but file arity is {arity}."
             )
     return path
+
+
+def verify_vendor_dir_records(*, extra_paths: list[Path] | None = None) -> list[str]:
+    """SPS-052: verify every kind=vendor record locally. Returns error strings (empty = ok)."""
+    errors: list[str] = []
+    recs = load_spice_model_registry(extra_paths=extra_paths)
+    vendor = [r for r in recs if r.kind == "vendor"]
+    for rec in vendor:
+        try:
+            verify_record_file(rec, signoff=True)
+        except OpenHaCError as e:
+            errors.append(str(e))
+    return errors
 
 
 def record_from_part_fields(part) -> SpiceModelRecord | None:

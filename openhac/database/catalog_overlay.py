@@ -40,6 +40,12 @@ _MERGE_KEYS = frozenset(
         "spice_subckt",
         "spice_model_path",
         "spice_pin_map_json",
+        "model_3d_local",
+        "model_3d_sha256",
+        "model_3d_license",
+        "model_3d_source",
+        "catalog_tier",
+        "pinout_source",
     }
 )
 
@@ -72,6 +78,23 @@ def _normalize_entry(entry: dict[str, Any]) -> dict[str, Any] | None:
             continue
         if k in entry and entry[k] is not None:
             out[k] = entry[k]
+    if out.get("pinout_json") and "catalog_tier" not in out:
+        out["catalog_tier"] = "verified"
+        out.setdefault("pinout_source", "overlay")
+    src = str(out.get("model_3d_source") or "").strip()
+    if out.get("model_3d_local") and not src:
+        out["model_3d_source"] = "overlay"
+    local = out.get("model_3d_local")
+    if local and not out.get("model_3d_sha256"):
+        from pathlib import Path
+
+        p = Path(str(local)).expanduser()
+        if p.is_file():
+            import hashlib
+
+            h = hashlib.sha256()
+            h.update(p.read_bytes())
+            out["model_3d_sha256"] = h.hexdigest()
     return out
 
 
@@ -133,6 +156,9 @@ def load_bundled_overlay_index() -> dict[str, dict[str, Any]]:
         return idx
     if _PACKAGE_OVERLAY_DIR.is_dir():
         for f in sorted(_PACKAGE_OVERLAY_DIR.glob("*.json")):
+            # LIB-007: reference BOMs are opt-in via --catalog-overlay, not every lookup.
+            if "reference_bom" in f.name.lower():
+                continue
             _merge_index(idx, _load_json_file(f))
     _bundled_index_cache = idx
     return idx

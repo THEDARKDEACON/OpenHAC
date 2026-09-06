@@ -50,8 +50,7 @@ class Resistor(Module, _ParametricMixin):
                  tolerance: str = None, power_watts: float = None, **kwargs):
         super().__init__(f"R_{value}_{package}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"Resistor({value}, {package}" + \
                (f", {tolerance}" if tolerance else "") + \
@@ -98,8 +97,7 @@ class Capacitor(Module, _ParametricMixin):
                  voltage_rating: float = None, **kwargs):
         super().__init__(f"C_{value}_{package}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"Capacitor({value}" + \
                (f", {package}" if package else "") + \
@@ -137,8 +135,7 @@ class Inductor(Module, _ParametricMixin):
     def __init__(self, value: str = "10uH", package: str = "0603",
                  current_max_ma: float = None, **kwargs):
         super().__init__(f"L_{value}")
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
         comp_data, _ = db.parametric_search("inductors", value=value, package=package)
         if not comp_data:
             comp_data = Component._live_lookup(f"L_{value}_{package}")
@@ -161,8 +158,7 @@ class ResistorArray(Module, _ParametricMixin):
                  package: str = "0603x4", **kwargs):
         super().__init__(f"RA_{count}x{value}")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"ResistorArray(value={value}, count={count})"
 
@@ -202,8 +198,7 @@ class FerriteBead(Module, _ParametricMixin):
                  package: str = "0603", **kwargs):
         super().__init__(f"FB_{impedance_at_100mhz}R")
 
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
 
         desc = f"FerriteBead(z={impedance_at_100mhz}R, i_max={i_max}A)"
 
@@ -240,8 +235,7 @@ class Transformer(Module, _ParametricMixin):
 
     def __init__(self, type: str = "signal", **kwargs):
         super().__init__(f"XFMR_{type.upper()}")
-        from openhac.database.db_manager import DatabaseManager
-        db = DatabaseManager()
+        db = Component.db
         comp_data = db.get_component("Transformer_Signal")
         self.ic = self.add(Component(comp_data["generic_name"], comp_data=comp_data, **kwargs))
         self.ic.lib = "Device"

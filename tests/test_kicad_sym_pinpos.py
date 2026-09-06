@@ -90,6 +90,7 @@ def test_find_device_library_with_kicad6_symbol_dir(monkeypatch):
 
 def test_schematic_wires_use_library_offsets_when_fixture_on_path(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENHAC_LEGACY_SKIDL", "1")
     monkeypatch.setenv("OPENHAC_KICAD_SYMBOL_DIRS", str(_FIXTURE_SYM.parent))
     clear_symbol_pin_cache()
 
@@ -118,6 +119,7 @@ def test_schematic_wires_use_library_offsets_when_fixture_on_path(tmp_path, monk
 
 def test_empty_resolver_matches_index_stub_geometry(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENHAC_LEGACY_SKIDL", "1")
     n = Net("N12")
     r1 = Part("Device", "R", value="1k", ref="R1")
     r2 = Part("Device", "R", value="1k", ref="R2")
@@ -139,6 +141,7 @@ def test_empty_resolver_matches_index_stub_geometry(tmp_path, monkeypatch):
 
 def test_openhac_schematic_stub_only_env_forces_stub_geometry_and_report(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENHAC_LEGACY_SKIDL", "1")
     monkeypatch.setenv("OPENHAC_KICAD_SYMBOL_DIRS", str(_FIXTURE_SYM.parent))
     monkeypatch.setenv("OPENHAC_SCHEMATIC_STUB_ONLY", "1")
     clear_symbol_pin_cache()

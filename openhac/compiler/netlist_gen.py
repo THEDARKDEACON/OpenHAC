@@ -130,8 +130,19 @@ def generate_logic_and_bom(
             elif ref.startswith('TP'):
                 comp_type = "TestPoint"
             
-            # DNP detection (test points, fiducials, etc.)
-            dnp = "Yes" if comp_type in ("TestPoint",) or "DNP" in str(val).upper() else "No"
+            # DNP: explicit field wins (VAR-001); test points / value substring remain.
+            dnp = "No"
+            if hasattr(part, "fields") and str((part.fields or {}).get("DNP") or "").strip().lower() in (
+                "yes",
+                "true",
+                "1",
+                "dnp",
+            ):
+                dnp = "Yes"
+            elif bool(getattr(part, "_openhac_dnp", False)):
+                dnp = "Yes"
+            elif comp_type in ("TestPoint",) or "DNP" in str(val).upper():
+                dnp = "Yes"
             
             # Placement notes based on component type
             placement_notes = ""

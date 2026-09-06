@@ -123,13 +123,13 @@ def test_power_and_io_modules_use_wide_columns(tmp_path, monkeypatch):
 
     class Ldo(Module):
         def __init__(self):
-            super().__init__("Ldo3V3")
+            super().__init__("Ldo3V3", schematic_flow="power")
             r = self.add(Part("Device", "R", value="10k", footprint="Resistor_SMD:R_0603_1608Metric"))
             r[1] += vcc
 
     class Usb(Module):
         def __init__(self):
-            super().__init__("UsbJack")
+            super().__init__("UsbJack", schematic_flow="io")
             r = self.add(Part("Device", "R", value="10k", footprint="Resistor_SMD:R_0603_1608Metric"))
             r[1] += sig
 

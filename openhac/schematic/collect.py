@@ -63,20 +63,34 @@ def collect_parts_and_nets(board) -> tuple[list, list]:
 
     if not parts:
         try:
-            from openhac.circuit import get_default_circuit
+            from openhac.circuit import (
+                empty_native_circuit_is_error,
+                get_default_circuit,
+                legacy_skidl_enabled,
+            )
+
             c = get_default_circuit()
             for p in list(getattr(c, "parts", []) or []):
                 _add(p)
-        except Exception:
-            pass
-    if not parts:
-        try:
-            import builtins
-            sk = getattr(builtins, "default_circuit", None)
-            if sk is not None:
-                for p in list(getattr(sk, "parts", []) or []):
-                    _add(p)
-        except Exception:
+            if not parts and empty_native_circuit_is_error():
+                from openhac.core.exceptions import OpenHaCError
+
+                raise OpenHaCError(
+                    "FAB-004: native circuit has no parts; refusing silent "
+                    "builtins.default_circuit fallback under sign-off or fabrication."
+                )
+            if not parts and legacy_skidl_enabled():
+                import builtins
+
+                sk = getattr(builtins, "default_circuit", None)
+                if sk is not None:
+                    for p in list(getattr(sk, "parts", []) or []):
+                        _add(p)
+        except Exception as e:
+            from openhac.core.exceptions import OpenHaCError
+
+            if isinstance(e, OpenHaCError):
+                raise
             pass
 
     parts.sort(key=part_stable_key)

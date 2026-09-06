@@ -120,6 +120,211 @@ def _default_project_name(script_path: str) -> str:
     return os.path.splitext(os.path.basename(script_path))[0]
 
 
+def _preview_artifact(out_dir: str, name: str, suffix: str) -> str:
+    p = os.path.join(out_dir, f"{name}{suffix}")
+    if os.path.isfile(p):
+        return p
+    nested = os.path.join(out_dir, name, f"{name}{suffix}")
+    return nested if os.path.isfile(nested) else p
+
+
+def _preview_compile_once(args, *, name: str, out_dir: str, overlay_paths: list):
+    """Write schematic (and SVG if kicad-cli exists). Return ``(sch, sch_svg, pcb_svg)``."""
+    from pathlib import Path
+
+    from openhac.compiler.kicad_sch_svg import export_schematic_svg
+    from openhac.compiler.svg_preview import export_pcb_preview_svg
+    from openhac.core.base import Component
+    from openhac.core.exceptions import KiCadCliNotFoundError
+
+    user_mod = _load_user_script(args.script)
+    board = _find_board_instance(user_mod)
+    if board is None:
+        raise RuntimeError(f"No Board instance named 'board' (or build_board()) in {args.script}")
+    board.compile(
+        project_name=name,
+        generate_bom=False,
+        auto_route=False,
+        export_schematic=True,
+        allow_risky_part_lookups=Component.allow_risky_part_lookups,
+        kicad_sch_erc=False,
+        source_script_path=os.path.abspath(args.script),
+        output_dir=out_dir,
+        catalog_overlay_paths=tuple(overlay_paths) if overlay_paths else (),
+        schematic_signoff=False,
+        compile_profile="preview_pcb" if bool(getattr(args, "pcb", False)) else "preview",
+    )
+    sch = _preview_artifact(out_dir, name, ".kicad_sch")
+    if not os.path.isfile(sch):
+        raise FileNotFoundError(f"preview did not write a schematic at {sch}")
+    live = getattr(board, "_live_kicad_artwork", None) or {}
+    if live.get("merged"):
+        print(
+            "Merged last-saved KiCad overlay: "
+            f"{live.get('symbol_uuid_count', 0)} symbol poses, "
+            f"{live.get('footprint_count', 0)} footprints.",
+            flush=True,
+        )
+    svg_dir = Path(out_dir) / "openhac-preview"
+    sch_svg = None
+    pcb_svg = None
+    try:
+        sch_svg = export_schematic_svg(sch, output_dir=svg_dir)
+        print(f"Preview SVG: {sch_svg}", flush=True)
+    except KiCadCliNotFoundError as e:
+        logger.warning("%s (schematic is still at %s)", e, sch)
+    except RuntimeError as e:
+        logger.warning("%s", e)
+    if sch_svg is not None and bool(getattr(args, "pcb", False)):
+        pcb = _preview_artifact(out_dir, name, ".kicad_pcb")
+        if os.path.isfile(pcb):
+            try:
+                pcb_svg = export_pcb_preview_svg(pcb, svg_dir / "board.svg")
+                print(f"Preview PCB SVG: {pcb_svg}", flush=True)
+            except (KiCadCliNotFoundError, RuntimeError) as e:
+                logger.warning("PCB SVG skipped: %s", e)
+    return sch, sch_svg, pcb_svg
+
+
+def cmd_preview(args):
+    """SSO-012: generate schematic + KiCad SVG. Never runs ``kicad-cli sch erc``.
+
+    ``--watch`` serves a localhost SVG viewer of that export (LIVE-008) and rebuilds
+    on Python save. ``--kicad`` still opens eeschema for pose edits (Save, then Revert).
+    Preview is not ERC-stamped. ``--pcb`` adds a place-only board (LIVE-007).
+    """
+    import time
+
+    from openhac.compiler.kicad_live import (
+        prefer_kicad_open_path,
+        reset_preview_runtime,
+        spawn_kicad,
+        watch_debounce_s,
+    )
+    from openhac.compiler.svg_preview import (
+        SvgPreviewServer,
+        open_preview_browser,
+        want_preview_browser,
+    )
+
+    name = getattr(args, "name", None) or _default_project_name(args.script)
+    out_dir = getattr(args, "output_dir", None) or os.path.join(
+        os.path.dirname(os.path.abspath(args.script)), name
+    )
+    os.makedirs(out_dir, exist_ok=True)
+    overlay_paths = getattr(args, "catalog_overlay", None) or []
+    want_pcb = bool(getattr(args, "pcb", False))
+    print(
+        "OpenHaC preview: KiCad schematic from library symbols. "
+        "This is NOT ERC-stamped. Stamp remains: openhac compile --schematic-signoff",
+        flush=True,
+    )
+    if want_pcb:
+        print("LIVE-007: place-only PCB (no autoroute, no ERC).", flush=True)
+    sch, sch_svg, pcb_svg = None, None, None
+    try:
+        sch, sch_svg, pcb_svg = _preview_compile_once(
+            args, name=name, out_dir=out_dir, overlay_paths=overlay_paths
+        )
+    except (RuntimeError, FileNotFoundError) as e:
+        logger.error("%s", e)
+        sys.exit(1)
+    if want_pcb:
+        from openhac.compiler.kicad_live import try_pcb_revert_via_ipc
+
+        pcb = _preview_artifact(out_dir, name, ".kicad_pcb")
+        if os.path.isfile(pcb):
+            ipc = try_pcb_revert_via_ipc(pcb)
+            if ipc.get("reloaded"):
+                print("LIVE-010: asked KiCad to revert/reload the PCB via IPC.", flush=True)
+            elif ipc.get("attempted"):
+                print(
+                    f"LIVE-010: KiCad IPC present but PCB revert skipped ({ipc.get('reason')}). "
+                    "File → Revert still works. Schematic IPC is KiCad 11 and is not faked.",
+                    flush=True,
+                )
+    open_kicad = bool(getattr(args, "kicad", False))
+    watch = bool(getattr(args, "watch", False))
+    svg_ok = sch_svg is not None
+    if not svg_ok and not open_kicad:
+        sys.exit(2)
+    if open_kicad:
+        target = prefer_kicad_open_path(out_dir, name)
+        proc = spawn_kicad(target)
+        if proc is None:
+            sys.exit(2)
+        print(
+            f"KiCad opened on {target}. Save in KiCad first (unsaved nudges never reach disk), "
+            "then save the Python board script to merge. KiCad 9 usually will not prompt Reload "
+            "while the sheet is open — File → Revert, or close and reopen the sheet.",
+            flush=True,
+        )
+    viewer = None
+    if watch and sch_svg is not None:
+        viewer = SvgPreviewServer(title=name)
+        viewer.update(sch_svg=sch_svg, pcb_svg=pcb_svg)
+        url = viewer.start()
+        print(
+            f"SVG viewer: {url}  (KiCad's drawing of the .kicad_sch; refreshes on .py save). "
+            "This is not an editor — nudge pose in KiCad, then Save there.",
+            flush=True,
+        )
+        if want_preview_browser(no_browser=bool(getattr(args, "no_browser", False))):
+            if not open_preview_browser(url):
+                print(f"Open {url} in a browser.", flush=True)
+        else:
+            print("Browser launch skipped (--no-browser / OPENHAC_PREVIEW_NO_BROWSER).", flush=True)
+    if not watch:
+        return
+    script = os.path.abspath(args.script)
+    last = os.path.getmtime(script)
+    debounce = watch_debounce_s(pcb=want_pcb)
+    print(f"Watching {script} (debounce {debounce:.1f}s, Ctrl+C to stop)…", flush=True)
+    try:
+        while True:
+            time.sleep(min(0.4, debounce))
+            try:
+                mtime = os.path.getmtime(script)
+            except OSError:
+                continue
+            if mtime <= last:
+                continue
+            time.sleep(debounce)
+            try:
+                mtime2 = os.path.getmtime(script)
+            except OSError:
+                continue
+            if mtime2 != mtime:
+                continue
+            last = mtime2
+            print("Script changed; regenerating (merge last-saved KiCad artwork)…", flush=True)
+            try:
+                reset_preview_runtime()
+                sch, sch_svg, pcb_svg = _preview_compile_once(
+                    args, name=name, out_dir=out_dir, overlay_paths=overlay_paths
+                )
+                if want_pcb:
+                    from openhac.compiler.kicad_live import try_pcb_revert_via_ipc
+
+                    pcb = _preview_artifact(out_dir, name, ".kicad_pcb")
+                    if os.path.isfile(pcb):
+                        try_pcb_revert_via_ipc(pcb)
+                if viewer is not None:
+                    viewer.update(sch_svg=sch_svg or viewer.sch_svg, pcb_svg=pcb_svg or viewer.pcb_svg)
+                print(
+                    f"Wrote {sch}. SVG viewer refreshes on its own. "
+                    "If KiCad is open: File → Revert, or close and reopen the sheet.",
+                    flush=True,
+                )
+            except Exception as e:
+                logger.error("Preview rebuild failed: %s", e)
+    except KeyboardInterrupt:
+        print("Preview watch stopped.", flush=True)
+    finally:
+        if viewer is not None:
+            viewer.stop()
+
+
 def cmd_compile(args):
     """Compile a hardware description to KiCad output."""
     from pathlib import Path
@@ -383,8 +588,24 @@ def cmd_compile(args):
             deoverlap_step_mm=float(getattr(args, "deoverlap_step_mm", 0.75) or 0.75),
             catalog_overlay_paths=tuple(overlay_paths) if overlay_paths else (),
             schematic_signoff=schematic_signoff,
+            compile_profile=getattr(args, "compile_profile", None),
+            keep_kicad_artwork=bool(getattr(args, "keep_kicad_artwork", False)),
+            regenerate_artwork=bool(getattr(args, "regenerate_artwork", False)),
+            require_lock=bool(getattr(args, "require_lock", False)),
+            lock_file=getattr(args, "lock_file", None),
+            placement_intent=bool(getattr(args, "placement_intent", False)),
+            require_testpoints=bool(getattr(args, "require_testpoints", False)),
+            variant=getattr(args, "variant", None),
         )
         logger.info("Compilation complete.")
+        try:
+            from openhac.core.base import _IMPLICIT_PIN_EVENTS
+
+            n_inv = len({str(e.get("generic_name") or "") for e in _IMPLICIT_PIN_EVENTS if e.get("invented")})
+            if n_inv:
+                logger.warning("CODE-006: invented Pin_N parts in this compile: %s", n_inv)
+        except Exception:
+            pass
 
         spice_signoff = bool(getattr(args, "spice_signoff", False))
         if os.environ.get("OPENHAC_SPICE_SIGNOFF", "").strip().lower() in ("1", "true", "yes", "on"):
@@ -416,6 +637,10 @@ def cmd_compile(args):
 
         # --- Optional interactive webview ---
         if getattr(args, "webview", False):
+            logger.warning(
+                "FAB-041: --webview is deprecated. Use `openhac preview` for KiCad SVG. "
+                "ERC stamp remains --schematic-signoff (kicad-cli sch erc)."
+            )
             try:
                 out_dir = getattr(args, "output_dir", None) or os.path.join(
                     os.path.dirname(os.path.abspath(args.script)), name
@@ -840,7 +1065,12 @@ def cmd_sync(args):
     categories = args.categories.split(",") if args.categories else None
     verbose = not args.quiet
     logger.info("Syncing JLCPCB catalog...")
-    count = sync_catalog(categories=categories, verbose=verbose)
+    count = sync_catalog(
+        categories=categories,
+        verbose=verbose,
+        include_extended=bool(getattr(args, "include_extended", False)),
+        max_per_category=getattr(args, "max_per_category", None),
+    )
     logger.info("Synced %s components.", count)
     if _prev_db_path is None:
         os.environ.pop("OPENHAC_DB_PATH", None)
@@ -871,7 +1101,12 @@ def cmd_database_enrich(args):
     from pathlib import Path
 
     from openhac.database.db_manager import DatabaseManager
-    from openhac.database.enrich import batch_enrich_targets, parse_enrich_targets_from_json
+    from openhac.database.enrich import (
+        batch_enrich_targets,
+        enrich_missing_pinouts_from_db,
+        network_allowed,
+        parse_enrich_targets_from_json,
+    )
 
     _prev_db_path = os.environ.get("OPENHAC_DB_PATH")
     if getattr(args, "db_path", None):
@@ -886,20 +1121,31 @@ def cmd_database_enrich(args):
     raw = json.loads(Path(skus_file).read_text(encoding="utf-8")) if skus_file else None
     targets = parse_enrich_targets_from_json(raw) if raw is not None else []
 
-    if not targets:
-        logger.error("No parts to enrich. Provide --skus-file with a list of parts.")
-        raise SystemExit(2)
-
     limit = int(getattr(args, "limit", 0) or 0)
     vendor = str(getattr(args, "vendor", "auto") or "auto")
+    missing = bool(getattr(args, "missing_pinouts", False))
 
-    attempted, updated = batch_enrich_targets(
-        targets,
-        db=db,
-        vendor=vendor,
-        limit=limit,
-        quiet=bool(getattr(args, "quiet", False)),
-    )
+    if missing:
+        if not network_allowed():
+            logger.error(
+                "CAT-005: --missing-pinouts requires network; refused under "
+                "OPENHAC_NO_NETWORK / fabrication."
+            )
+            raise SystemExit(2)
+        attempted, updated = enrich_missing_pinouts_from_db(
+            db, vendor=vendor, limit=limit, quiet=bool(getattr(args, "quiet", False))
+        )
+    else:
+        if not targets:
+            logger.error("No parts to enrich. Provide --skus-file or --missing-pinouts.")
+            raise SystemExit(2)
+        attempted, updated = batch_enrich_targets(
+            targets,
+            db=db,
+            vendor=vendor,
+            limit=limit,
+            quiet=bool(getattr(args, "quiet", False)),
+        )
 
     logger.info("Enrichment complete. attempted=%s updated=%s", attempted, updated)
 
@@ -951,8 +1197,170 @@ def cmd_export_fab(args):
         include_ipc2581=bool(getattr(args, "ipc2581", False)),
         gerber_use_board_settings=args.board_plot_params,
         zip_path=zip_path,
+        assembler=getattr(args, "assembler", None),
     )
     logger.info("Fabrication export complete.")
+
+
+def cmd_export_jlc(args):
+    """MFG-010: JLCPCB-shaped BOM + CPL. Does not invent LCSC SKUs."""
+    from openhac.compiler.export_jlc import export_jlc_pack
+
+    strict = bool(getattr(args, "strict", True))
+    written = export_jlc_pack(
+        args.source,
+        args.output,
+        strict=strict,
+        bom_csv=getattr(args, "bom", None),
+    )
+    for kind, path in written.items():
+        logger.info("JLC %s → %s", kind, path)
+
+
+def cmd_lock(args):
+    """LOCK-001: write a catalog lockfile from the local DB (no HTTP)."""
+    from pathlib import Path
+
+    from openhac.database.catalog_lock import collect_lock_entries, write_lockfile
+
+    prev_nn = os.environ.get("OPENHAC_NO_NETWORK")
+    os.environ["OPENHAC_NO_NETWORK"] = "1"
+    logger.info("LOCK-001: writing lock from local catalog only (no network).")
+    try:
+        user_mod = _load_user_script(args.script)
+        board = _find_board_instance(user_mod)
+        if board is None:
+            logger.error("No Board instance in %s", args.script)
+            sys.exit(1)
+        name = getattr(args, "name", None) or _default_project_name(args.script)
+        entries = collect_lock_entries(board)
+        dest = getattr(args, "output", None)
+        if not dest:
+            dest = str(Path(os.path.abspath(args.script)).parent / "openhac.lock")
+        write_lockfile(dest, entries, project=name)
+        print(f"Wrote {dest} ({len(entries)} parts)", flush=True)
+    finally:
+        if prev_nn is None:
+            os.environ.pop("OPENHAC_NO_NETWORK", None)
+        else:
+            os.environ["OPENHAC_NO_NETWORK"] = prev_nn
+
+
+def cmd_pinout_init(args):
+    """PIN-001: overlay JSON stub from catalog / KiCad symbol oracle. No datasheet scrape."""
+    from openhac.compiler.pinout_init import build_pinout_stub, write_pinout_overlay
+
+    stub = build_pinout_stub(args.query)
+    dest = getattr(args, "output", None)
+    if not dest:
+        dest = f"{stub['generic_name']}.pinout.overlay.json"
+    write_pinout_overlay(stub, dest)
+    print(f"Wrote {dest} pinout_hash={stub.get('pinout_hash', '')}", flush=True)
+
+
+def cmd_catalog_coverage(args):
+    """CAT-006: catalog depth report. Does not fetch."""
+    from openhac.database.catalog_coverage import (
+        collect_catalog_coverage,
+        coverage_text_report,
+        write_coverage_json,
+    )
+    from openhac.database.db_manager import DatabaseManager
+
+    db = DatabaseManager()
+    report = collect_catalog_coverage(db)
+    out = getattr(args, "output", None)
+    if out:
+        write_coverage_json(report, out)
+        logger.info("Wrote coverage JSON: %s", out)
+    if getattr(args, "as_json", False) or getattr(args, "json", False):
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        print(coverage_text_report(report), end="")
+
+
+def cmd_catalog_prefetch_3d(args):
+    """3D-003: prefetch EasyEDA 3D into ~/.kiro/openhac/. Forbidden under no-network / fab."""
+    from openhac.database.db_manager import DatabaseManager
+    from openhac.database.enrich import network_allowed, prefetch_3d_for_skus, prefetch_3d_from_board
+
+    if not network_allowed():
+        logger.error(
+            "3D-003: catalog prefetch-3d is forbidden under OPENHAC_NO_NETWORK / fabrication."
+        )
+        raise SystemExit(2)
+
+    db = DatabaseManager()
+    script = getattr(args, "script", None)
+    skus_raw = getattr(args, "skus", None) or ""
+    skus = [s.strip() for s in str(skus_raw).split(",") if s.strip()]
+    if script:
+        user_mod = _load_user_script(script)
+        board = _find_board_instance(user_mod)
+        if board is None:
+            logger.error("No Board instance in %s", script)
+            raise SystemExit(1)
+        attempted, updated = prefetch_3d_from_board(board, db=db)
+    elif skus:
+        attempted, updated = prefetch_3d_for_skus(skus, db=db)
+    else:
+        logger.error("Provide a board .py or --skus C123,C456")
+        raise SystemExit(2)
+    logger.info("prefetch-3d complete. attempted=%s updated=%s", attempted, updated)
+
+
+def cmd_spice_coverage(args):
+    """SPS-050: analog coverage without ngspice or HTTP fetch of .lib."""
+    from openhac.compiler.spice_gen import _circuit_and_parts
+    from openhac.compiler.spice_models import collect_spice_coverage
+
+    user_mod = _load_user_script(args.script)
+    board = _find_board_instance(user_mod)
+    if board is None:
+        logger.error("No Board instance in %s", args.script)
+        raise SystemExit(1)
+    _circuit, parts = _circuit_and_parts(signoff=False)
+    rows = collect_spice_coverage(parts)
+    report = {
+        "schema": "openhac.spice_coverage.v1",
+        "coverage": rows,
+        "counts": {},
+    }
+    for r in rows:
+        st = str(r.get("status") or "")
+        report["counts"][st] = report["counts"].get(st, 0) + 1
+    if getattr(args, "as_json", False):
+        print(json.dumps(report, indent=2, sort_keys=True))
+    else:
+        for r in rows:
+            extra = f" ({r['reason']})" if r.get("reason") else ""
+            print(f"{r.get('ref')}: {r.get('status')}{extra}")
+        print("counts:", json.dumps(report["counts"], sort_keys=True))
+    # Report, not sign-off: exit 0 even when unmodeled.
+    return 0
+
+
+def cmd_spice_verify_vendor_dir(args):
+    """SPS-052: local hash + .subckt arity for kind=vendor records. No network."""
+    from pathlib import Path
+
+    from openhac.compiler.spice_models import verify_vendor_dir_records
+    from openhac.core.base import OpenHaCError
+
+    extra = []
+    ov = getattr(args, "overlay", None)
+    if ov:
+        extra.append(Path(ov))
+    try:
+        errors = verify_vendor_dir_records(extra_paths=extra or None)
+    except OpenHaCError as e:
+        logger.error("%s", e)
+        raise SystemExit(1) from e
+    if errors:
+        for err in errors:
+            logger.error("%s", err)
+        raise SystemExit(1)
+    print("spice verify-vendor-dir: ok")
 
 
 def _setup_logging(verbose: bool = False):
@@ -1032,6 +1440,45 @@ def main():
         "--skip-layout",
         action="store_true",
         help="Skip pcbnew layout generation and autoroute (sets OPENHAC_SKIP_LAYOUT=1 for the run)",
+    )
+    art = p_compile.add_mutually_exclusive_group()
+    art.add_argument(
+        "--keep-kicad-artwork",
+        action="store_true",
+        help="LIVE-006: merge last-saved .kicad_sch/.kicad_pcb pose and copper; fail if overlay is missing "
+        "or KiCad connectivity shorts graph nets. Skips autoroute so user copper is not clobbered.",
+    )
+    art.add_argument(
+        "--regenerate-artwork",
+        action="store_true",
+        help="LIVE-006: ignore saved KiCad overlay and fully rewrite schematic/PCB artwork",
+    )
+    p_compile.add_argument(
+        "--placement-intent",
+        action="store_true",
+        help="PLC-001: fail if overlay footprint pose is outside the board or courtyards overlap catastrophically",
+    )
+    p_compile.add_argument(
+        "--require-lock",
+        action="store_true",
+        help="LOCK-001: fail if openhac.lock is missing or disagrees with the resolved BOM",
+    )
+    p_compile.add_argument(
+        "--lock-file",
+        default=None,
+        metavar="PATH",
+        help="LOCK-001: catalog lockfile path (default: openhac.lock next to the board script)",
+    )
+    p_compile.add_argument(
+        "--require-testpoints",
+        action="store_true",
+        help="TST-001: fail if Board.declare_testpoint nets are missing from the graph",
+    )
+    p_compile.add_argument(
+        "--variant",
+        default=None,
+        metavar="NAME",
+        help="VAR-001: select Board variant (DNP / include_in_variants)",
     )
     p_compile.add_argument(
         "--kicad-symbol-dirs",
@@ -1290,11 +1737,53 @@ def main():
         "Same as env OPENHAC_CATALOG_OVERLAY (pathsep-separated). See openhac/database/catalog_overlay.py.",
     )
     p_compile.add_argument(
+        "--compile-profile",
+        choices=("preview", "logic", "fabrication", "handoff"),
+        default=None,
+        help="PERF-006: preview=schematic+SVG path (skip enrich/layout/route/ERC); "
+        "logic=skip-layout; fabrication=full gates.",
+    )
+    p_compile.add_argument(
         "--webview",
         action="store_true",
-        help="Generate an interactive HTML graph explorer after compilation and open it in the browser.",
+        help="Deprecated (FAB-041). Cytoscape HTML explorer; prefer `openhac preview`.",
     )
     p_compile.set_defaults(func=cmd_compile)
+
+    p_preview = subparsers.add_parser(
+        "preview",
+        help="SSO-012: schematic + KiCad SVG (not ERC-stamped; never runs sch erc)",
+    )
+    p_preview.add_argument("script", help="Path to the hardware description .py file")
+    p_preview.add_argument("--name", default=None, help="Output base name (default: script basename)")
+    p_preview.add_argument("-o", "--output-dir", default=None, metavar="DIR")
+    p_preview.add_argument(
+        "--catalog-overlay",
+        action="append",
+        default=None,
+        metavar="PATH",
+    )
+    p_preview.add_argument(
+        "--kicad",
+        action="store_true",
+        help="Open KiCad GUI on the generated project (live session: use with --watch)",
+    )
+    p_preview.add_argument(
+        "--watch",
+        action="store_true",
+        help="Rebuild on .py save; serve a localhost SVG viewer of the KiCad export (LIVE-008)",
+    )
+    p_preview.add_argument(
+        "--pcb",
+        action="store_true",
+        help="LIVE-007: also emit a place-only .kicad_pcb (no autoroute, no ERC); merge saved artwork",
+    )
+    p_preview.add_argument(
+        "--no-browser",
+        action="store_true",
+        help="With --watch, print the SVG viewer URL but do not open a browser",
+    )
+    p_preview.set_defaults(func=cmd_preview)
 
     p_sim = subparsers.add_parser("simulate", help="Generate SPICE netlist")
     p_sim.add_argument("script", help="Path to the hardware description .py file")
@@ -1393,6 +1882,18 @@ def main():
     p_sync = subparsers.add_parser("sync", help="Sync JLCPCB component catalog")
     p_sync.add_argument("--categories", default=None, help="Comma-separated categories")
     p_sync.add_argument("-q", "--quiet", action="store_true", help="Suppress verbose output")
+    p_sync.add_argument(
+        "--include-extended",
+        action="store_true",
+        help="CAT-003: drop is_basic=true (default stays Basic in-stock)",
+    )
+    p_sync.add_argument(
+        "--max-per-category",
+        type=int,
+        default=None,
+        metavar="N",
+        help="Cap fetches/inserts per typed category (CAT-003)",
+    )
     p_sync.set_defaults(func=cmd_sync)
 
     p_seed = subparsers.add_parser("seed", help="Seed database with sample components")
@@ -1403,15 +1904,22 @@ def main():
     p_enrich = db_sub.add_parser("enrich", help="Enrich missing part metadata via vendor APIs")
     p_enrich.add_argument(
         "--skus-file",
-        required=True,
+        required=False,
         metavar="PATH",
         help="JSON list of parts to enrich (dicts with generic_name/mpn/supplier_sku, or simple names).",
     )
     p_enrich.add_argument(
+        "--missing-pinouts",
+        "--from-db",
+        action="store_true",
+        dest="missing_pinouts",
+        help="CAT-005: walk catalog rows lacking a named pinout (never used by --production).",
+    )
+    p_enrich.add_argument(
         "--vendor",
         default="auto",
-        choices=("auto", "jlcpcb", "digikey", "mouser", "tme"),
-        help="Preferred vendor API (default: auto).",
+        choices=("auto", "jlcpcb", "digikey", "mouser", "tme", "nexar", "octopart"),
+        help="Preferred vendor API (default: auto). nexar/octopart fail closed without keys.",
     )
     p_enrich.add_argument(
         "--limit",
@@ -1492,7 +2000,43 @@ def main():
         metavar="PATH",
         help="Zip file path (overrides default when using --zip)",
     )
+    p_fab.add_argument(
+        "--assembler",
+        default=None,
+        choices=("jlc", "jlcpcb"),
+        help="MFG-010: also write assembler-shaped BOM/CPL (jlc fails closed on missing LCSC)",
+    )
     p_fab.set_defaults(func=cmd_export_fab)
+
+    p_jlc = export_sub.add_parser(
+        "jlc",
+        help="JLCPCB-shaped BOM + CPL from an OpenHaC BOM CSV / .kicad_pcb (MFG-010)",
+    )
+    p_jlc.add_argument("source", help="BOM .csv or .kicad_pcb (sibling .csv required)")
+    p_jlc.add_argument(
+        "-o",
+        "--output",
+        required=True,
+        help="Output directory",
+    )
+    p_jlc.add_argument(
+        "--bom",
+        default=None,
+        help="Explicit OpenHaC BOM CSV (default: sibling of the PCB)",
+    )
+    p_jlc.add_argument(
+        "--strict",
+        action="store_true",
+        default=True,
+        help="Fail closed if LCSC C-codes are missing (default)",
+    )
+    p_jlc.add_argument(
+        "--allow-missing-lcsc",
+        action="store_false",
+        dest="strict",
+        help="Write empty LCSC cells instead of failing (still does not invent SKUs)",
+    )
+    p_jlc.set_defaults(func=cmd_export_jlc)
 
     p_doc = subparsers.add_parser("doctor", help="Check toolchain availability and configured paths")
     p_doc.add_argument(
@@ -1532,6 +2076,54 @@ def main():
         help="Exit nonzero if routing prerequisites are missing (java + FREEROUTING_JAR)",
     )
     p_doc.set_defaults(func=cmd_doctor)
+
+    p_catalog = subparsers.add_parser("catalog", help="Catalog coverage and 3D prefetch (CAT/3D)")
+    cat_sub = p_catalog.add_subparsers(dest="catalog_command", required=True)
+    p_cov = cat_sub.add_parser("coverage", help="Depth report: compile_ready vs warehouse (no fetch)")
+    p_cov.add_argument("--json", dest="as_json", action="store_true", help="Print JSON")
+    p_cov.add_argument("-o", "--output", default=None, help="Write openhac.catalog_coverage.v1 JSON")
+    p_cov.set_defaults(func=cmd_catalog_coverage)
+    p_pf = cat_sub.add_parser(
+        "prefetch-3d",
+        help="Prefetch EasyEDA 3D into ~/.kiro/openhac/ (forbidden under no-network / fab)",
+    )
+    p_pf.add_argument("script", nargs="?", default=None, help="Board .py whose SKUs to prefetch")
+    p_pf.add_argument("--skus", default=None, help="Comma-separated LCSC SKUs (Cxxxxx)")
+    p_pf.set_defaults(func=cmd_catalog_prefetch_3d)
+
+    p_spice = subparsers.add_parser("spice", help="SPICE coverage and vendor-dir verify (SPS-05x)")
+    spice_sub = p_spice.add_subparsers(dest="spice_command", required=True)
+    p_scov = spice_sub.add_parser(
+        "coverage",
+        help="List primitive/modeled/omitted/unmodeled without running ngspice",
+    )
+    p_scov.add_argument("script", help="Board .py")
+    p_scov.add_argument("--json", dest="as_json", action="store_true", help="Print JSON")
+    p_scov.set_defaults(func=cmd_spice_coverage)
+    p_sver = spice_sub.add_parser(
+        "verify-vendor-dir",
+        help="Check kind=vendor files exist, sha256, .subckt arity (no network)",
+    )
+    p_sver.add_argument("--overlay", default=None, help="Extra spice overlay JSON or directory")
+    p_sver.set_defaults(func=cmd_spice_verify_vendor_dir)
+
+    p_lock = subparsers.add_parser("lock", help="Write catalog lockfile from the local DB (LOCK-001, no fetch)")
+    p_lock.add_argument("script", help="Board .py")
+    p_lock.add_argument("--name", default=None, help="Project name recorded in the lock")
+    p_lock.add_argument(
+        "-o",
+        "--output",
+        default=None,
+        help="Lock path (default: openhac.lock next to the script)",
+    )
+    p_lock.set_defaults(func=cmd_lock)
+
+    p_pin = subparsers.add_parser("pinout", help="Pinout overlay authoring (PIN-001)")
+    pin_sub = p_pin.add_subparsers(dest="pinout_command", required=True)
+    p_pinit = pin_sub.add_parser("init", help="Write overlay JSON stub from catalog / KiCad symbol oracle")
+    p_pinit.add_argument("query", help="generic_name or LCSC SKU")
+    p_pinit.add_argument("-o", "--output", default=None, help="Overlay JSON path")
+    p_pinit.set_defaults(func=cmd_pinout_init)
 
     args = parser.parse_args()
     _setup_logging(verbose=args.verbose)

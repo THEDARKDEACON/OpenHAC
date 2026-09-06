@@ -20,6 +20,7 @@ from openhac.core.compile_context import get_compile_context
 from openhac.core.exceptions import (          # noqa: F401
     OpenHaCError,
     SchematicGenerationError,
+    ArtworkParityError,
     LayoutGenerationError,
     UnconnectedInterfaceError,
     InterfaceNotFoundError,
@@ -31,6 +32,10 @@ from openhac.core.exceptions import (          # noqa: F401
     KiCadCliNotFoundError,
     KiCadSchErcError,
     KicadLibraryLoadError,
+    CatalogLockError,
+    PlacementIntentError,
+    PinoutAuthoringError,
+    JlcExportError,
 )
 from openhac.core.interface import Interface   # noqa: F401
 from openhac.core.module import Module         # noqa: F401
@@ -48,8 +53,15 @@ _IMPLICIT_PIN_EVENTS: list[dict] = []
 # (Exceptions and _component_pin_access_aliases now imported from submodules above.)
 
 
+class _SharedCatalogDb:
+    """PERF-002: one SQLite connection per catalog path; follows live ``OPENHAC_DB_PATH``."""
+
+    def __get__(self, obj, objtype=None):
+        return DatabaseManager()
+
+
 class Component:
-    db = DatabaseManager()
+    db = _SharedCatalogDb()
     #: When False (default), :class:`RiskyPartLookupError` is raised for low-confidence JIT parts
     #: unless ``OPENHAC_ALLOW_RISKY_PARTS`` is set. Default False = strict mode requires pre-populated DB.
     allow_risky_part_lookups: bool = False
@@ -207,25 +219,7 @@ class Component:
         self._comp_data = dict(comp_data)
 
         # Get pinout from database (best-effort auto-enrich if missing and network allowed).
-        pin_objs = self._get_pins_from_data(comp_data)
-        # Prefer constructor-supplied metadata; do not let an empty/stale DB row
-        # overwrite explicit pinout (breaks fab golden / offline parts).
-        try:
-            fresh = self.db.get_component(generic_name)
-            if fresh:
-                fresh = strip_openhac_internal_fields(fresh)
-                merged = dict(fresh)
-                # Keep explicit pinout/footprint/symbol from constructor when present.
-                for k in ("pinout_json", "kicad_footprint", "kicad_symbol", "package", "category"):
-                    if comp_data.get(k) and not merged.get(k):
-                        merged[k] = comp_data.get(k)
-                    elif comp_data.get(k) and k == "pinout_json":
-                        merged[k] = comp_data.get(k)
-                self._comp_data = merged
-                comp_data = merged
-        except Exception:
-            pass
-        
+        pin_objs = self._get_pins_from_data(comp_data) 
         # Get or generate reference designator
         ref_prefix = self._get_refdes_prefix(
             comp_data.get("category"),
@@ -261,11 +255,11 @@ class Component:
             self.part.fields["kiCad_symbol"] = ks
         if not getattr(self.part, "kicad_symbol", None):
             try:
-                self.part.kicad_symbol = ks
+                setattr(self.part, "kicad_symbol", ks)
             except Exception:
                 pass
 
-        self.refresh_from_db()
+        self._stamp_catalog_fields(self._comp_data)
 
         self.layout_zone = None
 
@@ -279,10 +273,11 @@ class Component:
         self.part.fields["OpenHaC_JIT_Confidence"] = conf
         self.part.fields["OpenHaC_JIT_Score"] = f"{jit_score:.2f}"
 
+        alt_rows = list(self.db.list_part_alternates(generic_name))
         alt_parts: list[str] = []
         alt_notes: list[str] = []
         alt_group_ids: list[str] = []
-        for a in self.db.list_part_alternates(generic_name):
+        for a in alt_rows:
             sku = (a.get("alternate_supplier_sku") or "").strip()
             mpn = (a.get("alternate_mpn") or "").strip()
             if sku or mpn:
@@ -296,7 +291,6 @@ class Component:
         self.part.fields["Alternate_SKUs"] = "; ".join(alt_parts)
         self.part.fields["Alternate_Notes"] = " | ".join(alt_notes)
         self.part.fields["Alternate_Group_ID"] = "; ".join(alt_group_ids)
-        alt_rows = self.db.list_part_alternates(generic_name)
         alt_line_count = sum(
             1
             for a in alt_rows
@@ -433,6 +427,11 @@ class Component:
 
     def __getattr__(self, name):
         return getattr(self.part, name)
+
+    def dnp_in_variants(self, *names: str):
+        """VAR-001: this part is DNP for the named board variants."""
+        self._dnp_in_variants = tuple(str(n).strip() for n in names if str(n).strip())
+        return self
 
     def __getitem__(self, key):
         import inspect
@@ -741,12 +740,25 @@ class Component:
         zone.add_member(self)
         return self
 
+    def _stamp_catalog_fields(self, comp_data: dict) -> None:
+        if not comp_data or not getattr(self, "part", None):
+            return
+        self.part.fields["Value"] = self.generic_name
+        self.part.fields["Manufacturer"] = comp_data.get("manufacturer") or ""
+        self.part.fields["MPN"] = comp_data.get("mpn") or ""
+        self.part.fields["Supplier_SKU"] = comp_data.get("supplier_sku") or ""
+        self.part.fields["kiCad_symbol"] = comp_data.get("kicad_symbol") or ""
+        jc = comp_data.get("jlc_class")
+        self.part.fields["JLC_Class"] = str(jc) if jc is not None else ""
+        self.part.fields["Mouser_SKU"] = comp_data.get("mouser_sku") or ""
+        self.part.fields["DigiKey_SKU"] = comp_data.get("digikey_sku") or ""
+        self.part.fields["Model_3D_Local"] = comp_data.get("model_3d_local") or ""
+        new_fp = comp_data.get("kicad_footprint")
+        if new_fp and (not self.part.footprint or "easyeda_generated" in str(new_fp)):
+            self.part.footprint = new_fp
+
     def refresh_from_db(self):
-        """Re-read component metadata from the database and update Part fields.
-        
-        Useful after online enrichment to pull in newly downloaded 3D model paths, 
-        pinouts, or symbol mappings.
-        """
+        """Re-read component metadata from the database and update Part fields."""
         try:
             from openhac.database.lookup_meta import strip_openhac_internal_fields
             fresh = self.db.get_component(self.generic_name)
@@ -754,27 +766,7 @@ class Component:
                 return
             comp_data = strip_openhac_internal_fields(fresh)
             self._comp_data = dict(comp_data)
-            
-            # Update Part fields
-            self.part.fields['Value'] = self.generic_name
-            self.part.fields['Manufacturer'] = comp_data.get('manufacturer') or ""
-            self.part.fields['MPN'] = comp_data.get('mpn') or ""
-            self.part.fields['Supplier_SKU'] = comp_data.get('supplier_sku') or ""
-            self.part.fields['kiCad_symbol'] = comp_data.get('kicad_symbol') or ""
-            
-            jc = comp_data.get("jlc_class")
-            self.part.fields["JLC_Class"] = str(jc) if jc is not None else ""
-            self.part.fields["Mouser_SKU"] = comp_data.get("mouser_sku") or ""
-            self.part.fields["DigiKey_SKU"] = comp_data.get("digikey_sku") or ""
-            self.part.fields["Model_3D_Local"] = comp_data.get("model_3d_local") or ""
-            
-            # Update Part footprint if it was NULL or changed to easyeda_generated
-            new_fp = comp_data.get('kicad_footprint')
-            if new_fp and (not self.part.footprint or "easyeda_generated" in new_fp):
-                self.part.footprint = new_fp
-
-            # Note: We don't update pins here as they are already wired in the Circuit.
-            # Pinout mismatches are caught by separate DRC checks.
+            self._stamp_catalog_fields(comp_data)
         except Exception as e:
             logger.debug("Failed to refresh component %s from DB: %s", self.generic_name, e)
 

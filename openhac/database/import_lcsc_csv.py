@@ -193,16 +193,30 @@ def _derive_generic_name(row: dict) -> str:
     return f"{cat_clean}_{mpn}_{pkg}"
 
 
-def import_lcsc_csv(csv_path: str, verbose: bool = True) -> int:
-    """Import LCSC components CSV into the database.
+WAREHOUSE_IMPORT_BANNER = (
+    "WAREHOUSE IMPORT: LCSC CSV is not a packed catalog. Rows without named "
+    "pinouts are not compile-ready. SKU count is not a success metric (CAT-007)."
+)
+
+
+def import_lcsc_csv(
+    csv_path: str,
+    verbose: bool = True,
+    *,
+    warehouse_only: bool = True,
+) -> int:
+    """Import LCSC components CSV into the database as warehouse rows (CAT-007).
 
     Args:
         csv_path: Path to the LCSC CSV file
         verbose: Print progress
+        warehouse_only: persist ``catalog_tier=warehouse`` (default True)
 
     Returns:
         Number of components inserted
     """
+    print(WAREHOUSE_IMPORT_BANNER, file=sys.stderr)
+    logger.warning(WAREHOUSE_IMPORT_BANNER)
     db = DatabaseManager()
     csv_file = Path(csv_path)
 
@@ -253,11 +267,15 @@ def import_lcsc_csv(csv_path: str, verbose: bool = True) -> int:
                 "package": pkg,
                 "stock": int(stock) if stock.isdigit() else 0,
                 "jlc_class": "Basic" if category in ("Resistors", "Capacitors", "LEDs") else "Extended",
+                "catalog_tier": "warehouse",
                 "attributes_json": json.dumps({
                     "lcsc_category": category,
                     "lcsc_package": pkg,
+                    "warehouse_import": True,
                 }),
             }
+            if not warehouse_only:
+                component["catalog_tier"] = "warehouse"
 
             row_id = db.insert_component(component, ignore_duplicate=True)
             if row_id:
@@ -347,7 +365,7 @@ Download from: https://lcsc.com (BOM Tool > Export)
         if csv_path:
             import_lcsc_csv(csv_path)
     else:
-        import_lcsc_csv(sys.argv[1])
+        import_lcsc_csv(sys.argv[1], warehouse_only=True)
 
 
 if __name__ == "__main__":

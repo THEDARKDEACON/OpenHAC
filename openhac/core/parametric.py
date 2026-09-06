@@ -1,10 +1,8 @@
 """Base classes for Parametric Submodules (Phase 3)."""
 import logging
-import os
-from typing import Any
 
 from openhac.core.base import Module
-from openhac.database.db_manager import DB_PATH, DatabaseManager
+from openhac.database.db_manager import DatabaseManager
 
 logger = logging.getLogger("openhac.parametric")
 
@@ -24,8 +22,7 @@ class ParametricModule(Module):
         self.category = category
         self.constraints = constraints
         self._is_resolved = False
-        env_db = (os.environ.get("OPENHAC_DB_PATH") or "").strip()
-        self._db = DatabaseManager(db_path=env_db or DB_PATH)
+        self._db = DatabaseManager()
         
     def resolve(self) -> None:
         """Query the database and dynamically construct the sub-circuit.
@@ -38,9 +35,14 @@ class ParametricModule(Module):
         logger.info(f"Resolving ParametricModule '{self.name}' (Category: {self.category})")
         
         # 1. Query the database
+        search_kw = {
+            k: v
+            for k, v in self.constraints.items()
+            if k not in ("l_value", "c_in", "c_out")
+        }
         part_data, fallback = self._db.parametric_search(
             category=self.category,
-            **self.constraints
+            **search_kw,
         )
         
         if not part_data:
