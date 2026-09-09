@@ -24,6 +24,7 @@ def symbol_library_search_paths() -> list[Path]:
     jlc_dir = Path.home() / ".kiro" / "openhac" / "jlc2kicad_generated"
     if jlc_dir.is_dir():
         paths.append(jlc_dir)
+        paths.append(jlc_dir / "symbol")
         
     extra = os.environ.get("OPENHAC_KICAD_SYMBOL_DIRS", "")
     for p in extra.split(os.pathsep):
@@ -83,9 +84,30 @@ def _extract_symbol_tree(lib_text: str, symbol_name: str) -> str | None:
     esc = re.escape(symbol_name)
     pat = re.compile(rf'\(symbol\s+"{esc}"\s*[\(]')
     m = pat.search(lib_text)
-    if not m:
-        return None
-    return _balanced_paren(lib_text, m.start())
+    if m:
+        return _balanced_paren(lib_text, m.start())
+
+    pat_ci = re.compile(rf'\(symbol\s+"{esc}"\s*[\(]', re.IGNORECASE)
+    m_ci = pat_ci.search(lib_text)
+    if m_ci:
+        return _balanced_paren(lib_text, m_ci.start())
+
+    # Check if symbol_name is an LCSC number (e.g. C2040) matching property LCSC or ki_keywords
+    if re.match(r"^C\d+$", symbol_name, re.IGNORECASE):
+        lcsc_esc = re.escape(symbol_name.upper())
+        prop_pat = re.compile(rf'\(property\s+"(?:LCSC|ki_keywords)"\s+"{lcsc_esc}"', re.IGNORECASE)
+        pm = prop_pat.search(lib_text)
+        if pm:
+            sym_start_pat = re.compile(r'\(symbol\s+"([^"]+)"\s*[\(]')
+            matches = list(sym_start_pat.finditer(lib_text[:pm.start()]))
+            if matches:
+                last_match = matches[-1]
+                try:
+                    return _balanced_paren(lib_text, last_match.start())
+                except ValueError:
+                    pass
+
+    return None
 
 
 def _iter_pin_blocks(symbol_tree: str) -> list[str]:

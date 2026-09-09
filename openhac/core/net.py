@@ -51,6 +51,7 @@ class Net:
         self.current_a: float = 0.0  # Current in Amperes for IPC-2152 trace width
         self.guard_net: Optional[Net] = None
         self._openhac_net_type: str | None = None
+        self.domain: Optional[Any] = None
         self._initialized = True
         
         # Auto-register with default circuit if possible
@@ -120,6 +121,9 @@ class Net:
             return self_true
         elif type(other).__name__ == "Pin":
             self.add_pin(other)
+            return self
+        elif hasattr(other, "connect") and hasattr(other, "direction"):
+            other.connect(self)
             return self
         else:
             raise TypeError(f"Cannot add {type(other)} to Net")

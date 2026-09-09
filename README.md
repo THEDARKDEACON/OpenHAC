@@ -1,24 +1,26 @@
-# OpenHaC — Open Hardware-as-Code
+# OpenHaC v2 — Open Hardware-as-Code
 
-Python compiler that turns declarative hardware code into **netlists**, **BOMs**, **KiCad PCB** outputs, optional **FreeRouting**, and **SPICE** — no GUI required. The native circuit graph is the compile source of truth. With `--schematic-signoff`, the generated `.kicad_sch` is the EE-stamped review artifact (library symbols or pinout boxes, KiCad ERC clean). With `--spice-signoff` on `compile` or `simulate`, SPICE is a fail-closed analog gate (Kirchhoff-correct `.cir`, vendor or physics models, ngspice operating-point windows). Fabrication (`--production`) may still omit the drawing and does not imply SPICE sign-off.
+OpenHaC is a strongly-typed **Hardware Description Language (HDL)** and **compiler pipeline** in Python that turns declarative hardware code into **Circuit Intermediate Representation (CIR)**, physical **KiCad PCB layouts**, verified **schematics**, **BOMs**, **KiCad 8/9 custom DRC rules**, **SPICE decks**, and **FPGA/SoC physical constraints** — no GUI or manual EDA intervention required.
 
-## Outputs
+## Outputs & Capabilities
 
-- `.net` / `.csv` — netlist and BOM (LCSC-oriented fields when available)
-- `.kicad_pcb` — placement, pad nets; optional autoroute (FreeRouting or minimal `pcbnew` fallback)
-- `.kicad_sch` / `.kicad_pro` — schematic + project (off by default under `--production`; required under `--schematic-signoff`)
-- Generated symbol stubs (`*.openhac-generated.kicad_sym`) and manifest / handoff JSON when configured
-- `.cir` — SPICE from `Board.simulate()`, also invoked by `openhac compile --run-ngspice` / `--spice-signoff`. With `--spice-signoff`, fail-closed Kirchhoff + vendor/physics models + ngspice OP windows ([SPICE_SIGN_OFF_SPEC.md](docs/internal/SPICE_SIGN_OFF_SPEC.md)).
-- Fab bundle — Gerbers / drill / position via `openhac export fab` (after a successful PCB)
-- `.dsn` — Specctra for FreeRouting. Compile writes one; after KiCad placement edits use `openhac export dsn` so IPC widths are not flattened to 0.2 mm
+- **Circuit Intermediate Representation (CIR)** — Immutable, hermetic hardware DAG (`CircuitIR`, `ComponentNode`, `NetNode`, `ConstraintNode`) ensuring thread-safe, deterministic compilation.
+- **Strongly-Typed Protocols & ERC** — Directional types (`Input`, `Output`, `InOut`, `OpenDrain`), protocols (`I2C`, `SPI`, `UART`, `SWD`, `JTAG`), electrical domains (`PowerDomain`, `DigitalDomain`, `AnalogDomain`, `DifferentialPair`), and static Electrical Rules Checking (`ERC-001` driver contention, `ERC-002` floating inputs, `ERC-003` domain mismatch).
+- **Generative Passive Synthesis** — Standard IEC 60063 decade solvers (E6/E12/E24/E96) for optimal resistor dividers, RC/LC filters, and synchronous buck converter passives (`VoltageDividerModule`, `RCLowPassFilterModule`).
+- **First-Class Physical Constraints** — `@constraint` engine with first-class `DifferentialPairConstraint`, `ClearanceConstraint`, `TraceWidthConstraint`, and `KeepoutConstraint` compiled directly into KiCad 8/9 custom DRC text rules (`.kicad_dru`) and FreeRouting DSN rules.
+- **FPGA & Digital HDL Co-Design** — Verilog / SystemVerilog RTL port parsing and automated physical constraint synthesis for AMD/Xilinx Vivado (`.xdc`), Gowin EDA (`.cst`), Lattice Radiant (`.pdc`), and Intel Quartus Prime (`.qsf`).
+- **`.net` / `.csv`** — Netlist and BOM (LCSC-oriented fields when available).
+- **`.kicad_pcb`** — Automated component placement, pad nets, and optional FreeRouting autoroute.
+- **`.kicad_sch` / `.kicad_pro`** — Schematic + project (off by default under `--production`; required under `--schematic-signoff`).
+- **`.cir`** — SPICE decks from `Board.simulate()` or `openhac compile --run-ngspice` / `--spice-signoff`. With `--spice-signoff`, fail-closed Kirchhoff + vendor/physics models + ngspice OP windows ([SPICE_SIGN_OFF_SPEC.md](docs/internal/SPICE_SIGN_OFF_SPEC.md)).
+- **Fab bundle** — Gerbers / drill / position via `openhac export fab` (after a successful PCB).
+- **`.dsn`** — Specctra for FreeRouting. Compile writes one; after KiCad placement edits use `openhac export dsn` so IPC widths are not flattened to 0.2 mm.
 
 **Docs:** [USER_GUIDE.md](docs/USER_GUIDE.md), [API_REFERENCE.md](docs/API_REFERENCE.md), [3D_MODELS_AND_FOOTPRINTS.md](docs/3D_MODELS_AND_FOOTPRINTS.md).
 **Internal/Spec:** [SCOPE.md](docs/internal/SCOPE.md), [IMPLEMENTATION_STATUS.md](docs/internal/IMPLEMENTATION_STATUS.md), [FABRICATION_READINESS_SPEC.md](docs/internal/FABRICATION_READINESS_SPEC.md) (Phase-2 code→fab gates), [SCHEMATIC_SIGN_OFF_SPEC.md](docs/internal/SCHEMATIC_SIGN_OFF_SPEC.md) (EE-stamped `.kicad_sch`), [SPICE_SIGN_OFF_SPEC.md](docs/internal/SPICE_SIGN_OFF_SPEC.md) (physics-correct analog simulate), [CATALOG_DEPTH_SPEC.md](docs/internal/CATALOG_DEPTH_SPEC.md) (catalog depth / 3D pointers / SPICE operator), [PRODUCTION_VALIDATION.md](docs/internal/PRODUCTION_VALIDATION.md) (ERC→DRC→Gerbers matrix).
 
-Autorouting is **assistive** (not a substitute for HS/EMC review). See SCOPE for **PCB-007** / differential-pair notes. Phase-2 defines fail-closed fabrication gates — track status in IMPLEMENTATION_STATUS.
-
-**Software production claim:** `--require-all` is proved on the **minimal 2-pin 0805 resistor class** only (`tests/fixtures/fab_golden_board.py` — two resistors). A green `scripts/ci_validate_production.py --require-all` run proves code → native ERC/DRC → place → FreeRouting → KiCad PCB DRC → Gerbers with audited pin/pad parity for **that fixture**, not for multi-IC / HS / RF boards. That is **fabrication-ready software output** for the 2R golden, not physical bring-up or RF/HS sign-off.
-The active circuit is the **native** OpenHaC circuit (`openhac.core.circuit`). Legacy SKiDL `builtins.default_circuit` is opt-in via `OPENHAC_LEGACY_SKIDL=1` for migration / schematic tooling only.
+Autorouting is **assistive** (not a substitute for HS/EMC review). See SCOPE for **PCB-007** / differential-pair notes.
+Compilation is isolated and thread-safe via `with DesignContext():`, with native Circuit Intermediate Representation (`CircuitIR`) acting as the hermetic single source of truth.
 
 ---
 
@@ -326,8 +328,84 @@ Vendor macromodels stay on disk under `OPENHAC_SPICE_VENDOR_DIR` (or `--spice-ve
 
 ---
 
-## Usage sketch
+## OpenHaC v2 HDL & Compiler Usage
 
+### 1. Strongly-Typed Modules & Protocols
+```python
+from openhac import (
+    Module, Input, Output, Signal,
+    I2C, UART, PowerDomain, DigitalDomain
+)
+
+class EnvironmentalSensor(Module):
+    def __init__(self):
+        super().__init__("BME280_Node")
+        # Typed standard interfaces with automatic peripheral orientation
+        self.i2c = I2C().as_peripheral()
+        self.vcc = Signal[Input](domain=PowerDomain(3.3))
+        self.alert = Signal[Output](domain=DigitalDomain(3.3))
+```
+
+### 2. Generative Passive Synthesis Solvers
+```python
+from openhac import VoltageDividerModule, solve_rc_lowpass, solve_buck_converter
+
+# Synthesize an optimal standard E96 resistor divider for 5V -> 3.3V (<1% error)
+divider = VoltageDividerModule(vin=5.0, vout=3.3, i_max=1e-3, series="E96")
+
+# Calculate optimal standard passives for a 10 kHz RC low-pass filter
+rc = solve_rc_lowpass(fc=10_000.0, series_r="E24", series_c="E12")
+print(rc.r_formatted, rc.c_formatted)  # e.g., 1.6k, 10nF
+
+# Continuous conduction mode passive sizing for a buck converter
+buck = solve_buck_converter(
+    vin_min=10.0, vin_max=14.0, vout=3.3, iout_max=2.0, fsw_hz=500e3
+)
+print(buck.l_formatted, buck.c_out_formatted)  # e.g., 10uH, 22uF
+```
+
+### 3. First-Class Layout Constraints & KiCad Rules
+```python
+from openhac import (
+    Board, DifferentialPairConstraint, ClearanceConstraint, constraint
+)
+
+class HighSpeedController(Board):
+    @constraint
+    def enforce_high_speed_rules(self):
+        return [
+            # 90-ohm USB differential pair with controlled gap and skew
+            DifferentialPairConstraint(
+                net_p="USB_DP", net_n="USB_DM",
+                target_impedance_ohms=90.0, min_gap_mm=0.15, max_skew_ps=5.0
+            ),
+            # 1.5mm high-voltage creepage clearance
+            ClearanceConstraint(min_clearance_mm=1.5, netclass_a="HighVoltage"),
+        ]
+```
+
+### 4. Circuit Elaboration & FPGA Co-Design
+```python
+from openhac import DesignContext, elaborate
+from openhac.compiler import export_fpga_bundle, generate_kicad_dru
+
+# Hermetic scoped elaboration
+with DesignContext("my_board") as ctx:
+    board = HighSpeedController(size_mm=(60, 40), layers=4)
+    # ... add modules and connections ...
+    
+    # Elaborate into immutable Circuit Intermediate Representation (CIR)
+    cir = elaborate(board=board)
+    print(cir.stats())
+    
+    # Generate KiCad 8/9 custom DRC rules (.kicad_dru)
+    generate_kicad_dru(cir.constraints, out_path="build/my_board.kicad_dru")
+    
+    # Export FPGA constraints (.xdc for Vivado, .cst for Gowin, .pdc for Lattice, .qsf for Quartus)
+    export_fpga_bundle(cir, fpga_refdes="U1", out_dir="build/fpga/")
+```
+
+### 5. Classic Board Compilation
 ```python
 from openhac.core import Board
 from openhac.stdlib.power import XT60_Input, LDO_5V
@@ -374,21 +452,23 @@ GitHub Actions runs the above plus KiCad schematic ERC, layout smoke, fab golden
 
 ## Errors
 
-Common compiler exceptions live in `openhac.core.base` and `openhac.compiler.rule_check` — e.g. floating/unconnected nets, interface not wired, power budget, FreeRouting missing/failed, layout/schematic failures, DRC violations, risky JIT lookups, fabrication pin/footprint refusals (FAB-001/003). See docstrings and tests for details.
+Common compiler exceptions live in `openhac.core.exceptions`, `openhac.core.base`, and `openhac.compiler.rule_check` — e.g. floating/unconnected nets, driver contention (`ERC-001`), floating input (`ERC-002`), domain mismatch (`ERC-003`), interface not wired, power budget, FreeRouting missing/failed, layout/schematic failures, DRC violations, risky JIT lookups, fabrication pin/footprint refusals (FAB-001/003). See docstrings and tests for details.
 
 ---
 
-## Layout
+## Repository Layout
 
 ```
 openhac/
-  core/           # Component, Module, Board (native circuit SoT)
-  stdlib/         # Reusable modules
-  compiler/       # Netlist, layout, PCB, schematic, SPICE, export, manifest
-  database/       # SQLite catalog, sync_jlc, seed (vendor cache under ~/.cache/openhac/)
-tests/            # Unit tests + fab fixtures (tests/fixtures/fab_*.py)
+  core/           # Base Component, Module, Board, DesignContext, Protocols, Domains, Constraints
+  ir/             # Circuit Intermediate Representation (CircuitIR, ComponentNode, NetNode, ConstraintNode)
+  compiler/       # Elaborator, DRC/ERC rules, parametric solvers, FPGA exporter, KiCad rules, netlist, layout, SPICE
+  stdlib/         # Standard library hardware modules (MCU, Power, Sensors, Interfaces)
+  database/       # SQLite catalog, sync_jlc, seed, 3D model fills
+tests/            # Unit tests (protocols, CIR, synthesis, DRC, fab gates)
 scripts/          # CI smoke, fab gate validator, report build
-examples/         # Sample boards (incl. fab golden mirror)
+examples/         # Sample boards and reference implementations
+docs/             # Specifications, architecture, user guides
 ```
 
 ---

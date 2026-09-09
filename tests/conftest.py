@@ -41,6 +41,7 @@ _LEGACY_SKIDL_SHEET_TESTS = {
     "test_audit_gates.py",
     "test_sso_no_hardcoded_graphics.py",
     "test_sps_spice_signoff.py",
+    "test_hierarchical_schematic.py",
 }
 
 

@@ -181,6 +181,43 @@ SOIC4 = "Package_SO:SOIC-4_4.55x2.6mm_P1.27mm"
 TP_FP = "TestPoint:TestPoint_Pad_D1.5mm"
 
 
+def test_mpn_search_queries_stems_family_letter():
+    from openhac.database.threed_fillin import mpn_search_queries
+
+    assert mpn_search_queries("RFM95W") == ["RFM95W", "RFM95"]
+    assert mpn_search_queries("RFM95W-868S2") == ["RFM95W-868S2", "RFM95W", "RFM95"]
+    assert mpn_search_queries("nRF24L01+") == ["nRF24L01+"]
+    assert mpn_search_queries("PC817") == ["PC817"]
+
+
+def test_discover_mpn_stem_hits_module_package():
+    from openhac.database.threed_fillin import discover_lcsc_for_mpn
+
+    hoperf = "RF_Module:HOPERF_RFM9XW_SMD"
+    queries: list[str] = []
+
+    def fake_search(query: str):
+        queries.append(query)
+        if query == "RFM95W":
+            return []
+        if query == "RFM95":
+            return [
+                {
+                    "lcsc": 2844472,
+                    "mfr": "DL-RFM95-868M",
+                    "package": "SMD,16x16mm",
+                    "stock": 10,
+                }
+            ]
+        return []
+
+    assert (
+        discover_lcsc_for_mpn("RFM95W", search=fake_search, footprint=hoperf)
+        == "C2844472"
+    )
+    assert queries == ["RFM95W", "RFM95"]
+
+
 def test_pick_lcsc_requires_mfr_match():
     from openhac.database.threed_fillin import pick_lcsc_matching_mpn
 

@@ -394,8 +394,14 @@ def _fp_size_mm_for_part(
             h_iu = abs(int(bb.GetBottom()) - int(bb.GetTop()))
         w_mm = float(pcbnew_mod.ToMM(w_iu))
         h_mm = float(pcbnew_mod.ToMM(h_iu))
-        out = (max(w_mm, 0.4), max(h_mm, 0.4))
-    except Exception:
+        out = (w_mm, h_mm)
+    except Exception as e:
+        logger.warning("Failed loading footprint bbox for %s/%s: %s", fpid[0], fpid[1], e)
+        if os.environ.get("OPENHAC_COMPILE_GOAL", "").strip().lower() in (
+            "fabrication", "fab", "push_button_fab", "push-button-fab", "pushbuttonfab"
+        ):
+            from openhac.core.exceptions import LayoutGenerationError
+            raise LayoutGenerationError(f"Failed loading footprint bbox for {fpid[0]}/{fpid[1]}: {e}") from e
         out = (grid_mm, grid_mm)
     cache[fpid] = out
     return out
@@ -883,8 +889,13 @@ def place_circuit_on_board(pcb, board, pcbnew_mod) -> None:
                 bb = _footprint_pack_bbox(fp)
                 x_mm -= float(pcbnew_mod.ToMM(int(bb.GetLeft())))
                 y_mm -= float(pcbnew_mod.ToMM(int(bb.GetTop())))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Could not calculate pack bbox offset for %s: %s", getattr(part, "ref", "?"), e)
+                if os.environ.get("OPENHAC_COMPILE_GOAL", "").strip().lower() in (
+                    "fabrication", "fab", "push_button_fab", "push-button-fab", "pushbuttonfab"
+                ):
+                    from openhac.core.exceptions import LayoutGenerationError
+                    raise LayoutGenerationError(f"Could not calculate pack bbox offset for {getattr(part, 'ref', '?')}: {e}") from e
             fp.SetPosition(_to_board_vec(pcbnew_mod, x_mm, y_mm))
 
             # Optional rotation hint (degrees) carried on SKiDL part fields.

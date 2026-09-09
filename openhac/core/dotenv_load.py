@@ -73,9 +73,14 @@ def load_repo_dotenv(*, quiet: bool = True) -> None:
 def apply_kicad_env_aliases() -> None:
     """Mirror ``KICAD9_*`` into legacy env names that component libraries probe at import time.
 
+    Auto-detects standard system installs (/usr/share/kicad) when not explicitly set in env.
     Call this immediately after :func:`load_repo_dotenv`.
     """
     sym = (os.environ.get("KICAD9_SYMBOL_DIR") or "").strip()
+    if not sym and Path("/usr/share/kicad/symbols").is_dir():
+        sym = "/usr/share/kicad/symbols"
+        os.environ["KICAD9_SYMBOL_DIR"] = sym
+
     if sym:
         for key in (
             "KICAD_SYMBOL_DIR",
@@ -84,6 +89,11 @@ def apply_kicad_env_aliases() -> None:
             "KICAD8_SYMBOL_DIR",
         ):
             os.environ.setdefault(key, sym)
+
     fp = (os.environ.get("KICAD9_FOOTPRINT_DIR") or "").strip()
+    if not fp and Path("/usr/share/kicad/footprints").is_dir():
+        fp = "/usr/share/kicad/footprints"
+        os.environ["KICAD9_FOOTPRINT_DIR"] = fp
+
     if fp:
         os.environ.setdefault("KICAD_FOOTPRINT_DIR", fp)

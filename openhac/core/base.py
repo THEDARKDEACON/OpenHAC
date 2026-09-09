@@ -185,7 +185,7 @@ class Component:
                     comp_data = self._create_from_explicit_pins(generic_name, pins)
                 else:
                     raise ValueError(
-                        f"Component {generic_name!r} is not in the catalog. "
+                        f"Component {generic_name!r} not found (is not in the catalog). "
                         "Put a packed seed next to the board "
                         "({stem}.openhac-seed.json or {stem}.openhac.json), "
                         "run `openhac sync` for warehouse passives, "
@@ -333,6 +333,11 @@ class Component:
         import warnings
 
         from openhac.version_info import user_agent
+        from openhac.database.lookup_meta import (
+            CONFIDENCE_HIGH,
+            CONFIDENCE_LOW,
+            LOOKUP_CONFIDENCE_KEY,
+        )
 
         # ABC-016: respect network policy (FAB-010)
         try:
@@ -342,6 +347,41 @@ class Component:
                 return None
         except Exception:
             pass
+
+        # Direct LCSC part ID (e.g. C2040, C17513) -> Zero-Touch JIT CAD retrieval directly
+        import re
+        if re.match(r"^C\d+$", generic_name, re.IGNORECASE):
+            sku_up = generic_name.upper()
+            try:
+                from openhac.database.jlc2kicad_integration import generate_symbol_from_lcsc
+                from openhac.compiler.kicad_sym_pinpos import pinout_from_kicad_symbol_id
+                res = generate_symbol_from_lcsc(sku_up)
+                gen_sym, m3d_path = res if isinstance(res, tuple) else (res, None)
+                sym_id = f"jlc2kicad_generated:{sku_up}"
+                po = pinout_from_kicad_symbol_id(sym_id) or (pinout_from_kicad_symbol_id(gen_sym) if gen_sym else None)
+                if po:
+                    comp_data = {
+                        "generic_name": generic_name,
+                        "kicad_symbol": sym_id,
+                        "kicad_footprint": f"jlc2kicad_generated:{sku_up}",
+                        "manufacturer": "",
+                        "mpn": sku_up,
+                        "supplier_sku": sku_up,
+                        "description": f"LCSC component {sku_up}",
+                        "category": "live_lookup",
+                        "attributes_json": "{}",
+                        "pinout_json": json.dumps(po),
+                        LOOKUP_CONFIDENCE_KEY: CONFIDENCE_HIGH,
+                    }
+                    if m3d_path:
+                        comp_data["model_3d_local"] = m3d_path
+                    try:
+                        cls.db.insert_component(comp_data, ignore_duplicate=True)
+                    except Exception:
+                        pass
+                    return comp_data
+            except Exception as e:
+                logger.debug("Direct JLC2KiCad download failed for %s: %s", generic_name, e)
 
         API_BASE = "https://jlcsearch.tscircuit.com"
         HEADERS = {"User-Agent": user_agent(), "Accept": "application/json"}
@@ -379,19 +419,46 @@ class Component:
         package = best.get("package") or ""
         description = best.get("description") or ""
 
-        # Prefer stock KiCad FP + ratings (ABC-017/018/019)
+        sku_str = f"C{lcsc}" if lcsc else ""
+        sym_id = "Device:Q"
+        fp_str = f"Package_TO_SOT_SMD:{package}" if package else "Package_TO_SOT_SMD:SOT-23"
+        po_str = None
+        m3d_str = None
+
+        if sku_str:
+            from openhac.schematic.util import truthy_env
+            if not truthy_env("OPENHAC_NO_NETWORK"):
+                try:
+                    from openhac.database.jlc2kicad_integration import generate_symbol_from_lcsc
+                    from openhac.compiler.kicad_sym_pinpos import pinout_from_kicad_symbol_id
+                    res = generate_symbol_from_lcsc(sku_str)
+                    gen_sym, m3d = res if isinstance(res, tuple) else (res, None)
+                    if gen_sym:
+                        sym_id = gen_sym
+                        po = pinout_from_kicad_symbol_id(gen_sym) or pinout_from_kicad_symbol_id(f"jlc2kicad_generated:{sku_str}")
+                        if po:
+                            po_str = json.dumps(po)
+                    if m3d:
+                        m3d_str = m3d
+                except Exception as e:
+                    logger.debug("JIT CAD download in _live_lookup failed for %s: %s", sku_str, e)
+
         comp_data = {
             "generic_name":    generic_name,
-            "kicad_symbol":    "Device:Q",   # generic fallback
-            "kicad_footprint": f"Package_TO_SOT_SMD:{package}" if package else "Package_TO_SOT_SMD:SOT-23",
+            "kicad_symbol":    sym_id,
+            "kicad_footprint": fp_str,
             "manufacturer":    "",
             "mpn":             mpn,
-            "supplier_sku":    f"C{lcsc}" if lcsc else "",
+            "supplier_sku":    sku_str,
             "description":     description,
             "category":        "live_lookup",
             "attributes_json": json.dumps({k: v for k, v in best.items() if k not in ("lcsc", "mfr", "description", "package")}),
-            LOOKUP_CONFIDENCE_KEY: CONFIDENCE_LOW,
+            LOOKUP_CONFIDENCE_KEY: CONFIDENCE_LOW if sym_id == "Device:Q" else "high",
         }
+        if po_str:
+            comp_data["pinout_json"] = po_str
+        if m3d_str:
+            comp_data["model_3d_local"] = m3d_str
         enrich_comp_data_from_jlc_item(comp_data, best)
 
         # Cache it so subsequent lookups are instant
@@ -608,12 +675,16 @@ class Component:
         """Convert explicit pin definitions to Pin objects."""
         result = []
         for num, info in pins.items():
-            if isinstance(info, tuple):
-                name, pin_type = info
+            if isinstance(info, (tuple, list)):
+                if len(info) >= 2:
+                    name, pin_type = info[0], info[1]
+                elif len(info) == 1:
+                    name, pin_type = info[0], "bidirectional"
+                else:
+                    name, pin_type = str(num), "bidirectional"
                 result.append(Pin(str(num), name, pin_type))
             else:
-                # Simple string name
-                result.append(Pin(str(num), info, "bidirectional"))
+                result.append(Pin(str(num), str(info), "bidirectional"))
         return result
     
     def _get_package_template_pins(self, package: str, category: str) -> list[Pin] | None:
@@ -665,9 +736,15 @@ class Component:
         import json
         
         # Build pinout_json
-        pinout = [{"num": str(k), "name": v[0] if isinstance(v, tuple) else v, 
-                   "type": v[1] if isinstance(v, tuple) else "bidirectional"}
-                  for k, v in pins.items()]
+        pinout = []
+        for k, v in pins.items():
+            if isinstance(v, (tuple, list)):
+                p_name = str(v[0]) if len(v) >= 1 else str(k)
+                p_type = str(v[1]) if len(v) >= 2 else "bidirectional"
+            else:
+                p_name = str(v)
+                p_type = "bidirectional"
+            pinout.append({"num": str(k), "name": p_name, "type": p_type})
         
         # Infer package from pin count
         pin_count = len(pins)

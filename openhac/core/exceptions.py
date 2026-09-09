@@ -75,3 +75,32 @@ class PinoutAuthoringError(OpenHaCError):
 
 class JlcExportError(OpenHaCError):
     """Raised when a JLCPCB-shaped BOM/CPL pack cannot be written (MFG-010)."""
+
+
+class ModulePropertyError(OpenHaCError):
+    """Raised when propagating module or schematic properties onto child parts fails in production mode."""
+
+
+class ERCDriverContentionError(OpenHaCError):
+    """Raised when multiple driving outputs conflict on the same net (ERC-001)."""
+
+
+class ERCUnconnectedPinError(OpenHaCError):
+    """Raised when pins are left unconnected without explicit NoConnect marker."""
+
+
+class ERCFloatingInputError(ERCUnconnectedPinError):
+    """Raised when an input or load signal/pin is left unconnected in strict checks (ERC-002)."""
+
+
+class ERCDomainMismatchError(OpenHaCError):
+    """Raised when incompatible electrical voltage/logic domains are interconnected (ERC-003)."""
+
+
+class ERCMissingTerminationError(OpenHaCError):
+    """Raised when an open-drain bus lacks necessary pull-up/termination (ERC-004)."""
+
+
+class ProtocolCompatibilityError(OpenHaCError):
+    """Raised when connecting two protocols with incompatible signal interfaces."""
+

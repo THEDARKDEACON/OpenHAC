@@ -51,11 +51,16 @@ def pins_from_explicit(pins: dict) -> list[Pin]:
     """
     result: list[Pin] = []
     for num, info in pins.items():
-        if isinstance(info, tuple):
-            name, pin_type = info
+        if isinstance(info, (tuple, list)):
+            if len(info) >= 2:
+                name, pin_type = info[0], info[1]
+            elif len(info) == 1:
+                name, pin_type = info[0], "bidirectional"
+            else:
+                name, pin_type = str(num), "bidirectional"
             result.append(Pin(str(num), name, pin_type))
         else:
-            result.append(Pin(str(num), info, "bidirectional"))
+            result.append(Pin(str(num), str(info), "bidirectional"))
     return result
 
 
@@ -107,6 +112,49 @@ def get_pins_from_data(
                     f"FAB-001: invalid pinout_json for {gn!r}; refusing invented pins in fabrication mode."
                 ) from e
             logger.warning("Invalid pinout_json for %r (%s); falling back.", gn, e)
+
+    # Priority 2.5: Replicate authentic manufacturer pinout from KiCad or vendor symbol
+    ks = str(comp_data.get("kicad_symbol") or "").strip()
+    sku = str(comp_data.get("supplier_sku") or "").strip()
+    if not ks and sku.upper().startswith("C") and sku[1:].isdigit():
+        ks = f"jlc2kicad_generated:{sku}"
+
+    if ks:
+        try:
+            from openhac.compiler.kicad_sym_pinpos import pinout_from_kicad_symbol_id
+            po = pinout_from_kicad_symbol_id(ks)
+            if not po and sku.upper().startswith("C") and sku[1:].isdigit():
+                from openhac.schematic.util import truthy_env
+                if not truthy_env("OPENHAC_NO_NETWORK"):
+                    try:
+                        from openhac.database.jlc2kicad_integration import generate_symbol_from_lcsc
+                        res = generate_symbol_from_lcsc(sku)
+                        sym_id = res[0] if isinstance(res, tuple) else res
+                        if sym_id:
+                            po = pinout_from_kicad_symbol_id(sym_id) or pinout_from_kicad_symbol_id(ks)
+                    except Exception as e:
+                        logger.debug("JIT pinout fetch failed for %s: %s", sku, e)
+            if po:
+                out = []
+                for p in po:
+                    try:
+                        unit = max(1, int(p.get("unit") or 1))
+                    except (TypeError, ValueError):
+                        unit = 1
+                    out.append(
+                        Pin(str(p["num"]), str(p.get("name") or p["num"]), str(p.get("type") or "bidirectional"), unit=unit)
+                    )
+                if out:
+                    try:
+                        comp_data["pinout_json"] = json.dumps(po)
+                        from openhac.core.base import Component
+                        if hasattr(Component, "db") and Component.db:
+                            Component.db.update_component_fields(gn, {"pinout_json": json.dumps(po)})
+                    except Exception:
+                        pass
+                    return out
+        except Exception as e:
+            logger.debug("Could not resolve manufacturer pinout from symbol %r: %s", ks, e)
 
     # Priority 3
     package = comp_data.get("package", "")

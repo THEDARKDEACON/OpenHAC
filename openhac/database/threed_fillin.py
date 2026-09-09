@@ -28,6 +28,7 @@ _JLCSEARCH_LIST = "https://jlcsearch.tscircuit.com/components/list.json"
 
 _index_cache: tuple[str, dict[str, dict[str, str]]] | None = None
 _MPN_ALNUM = re.compile(r"[^A-Z0-9]+")
+_TRAILING_FAMILY_LETTER = re.compile(r"^(.+\d)[A-Z]$")
 
 
 def reset_fillin_map_cache() -> None:
@@ -394,6 +395,31 @@ def _alnum_mpn(value: str | None) -> str:
     return _MPN_ALNUM.sub("", str(value or "").upper())
 
 
+def mpn_search_queries(mpn: str) -> list[str]:
+    """jlcsearch strings: exact MPN, one dash-suffix peel, trailing family letter.
+
+    ``RFM95W`` has no JLCPCB index row; ``RFM95`` hits 16×16 LoRa modules
+    (``DL-RFM95-…``). ``nRF24L01+`` has no extra stem (alnum ends in a digit).
+    """
+    raw = str(mpn or "").strip()
+    out: list[str] = []
+
+    def _push(s: str) -> None:
+        s = str(s or "").strip()
+        if not s or s in out or len(_alnum_mpn(s)) < 5:
+            return
+        out.append(s)
+
+    _push(raw)
+    if "-" in raw:
+        _push(raw.rsplit("-", 1)[0])
+    for existing in list(out):
+        m = _TRAILING_FAMILY_LETTER.match(_alnum_mpn(existing))
+        if m:
+            _push(m.group(1))
+    return out
+
+
 def _lcsc_sku_from_item(item: dict) -> str | None:
     raw = item.get("lcsc")
     if raw is None:
@@ -497,9 +523,18 @@ def discover_lcsc_for_mpn(
     if len(_alnum_mpn(needle)) < 5:
         return None
     fetch = search if search is not None else _jlcsearch_components
-    return pick_lcsc_matching_mpn(
-        needle, fetch(needle), footprint=footprint, skip_skus=skip_skus
+    for query in mpn_search_queries(needle):
+        sku = pick_lcsc_matching_mpn(
+            query, fetch(query), footprint=footprint, skip_skus=skip_skus
+        )
+        if sku:
+            return sku
+    logger.debug(
+        "3D fill-in: no jlcsearch MPN match for %r (tried %s)",
+        needle,
+        mpn_search_queries(needle),
     )
+    return None
 
 
 def footprints_from_board(board) -> list[str]:

@@ -60,38 +60,45 @@ def collect_parts_and_nets(board) -> tuple[list, list]:
 
     if board is not None:
         _walk(board)
+        for p in getattr(board, "parts", []) or []:
+            _add(p)
+        for comp in getattr(board, "components", []) or []:
+            from openhac.core.base import Component
+            if isinstance(comp, Component):
+                _add(getattr(comp, "part", None))
+            elif hasattr(comp, "pins"):
+                _add(comp)
 
-    if not parts:
-        try:
-            from openhac.circuit import (
-                empty_native_circuit_is_error,
-                get_default_circuit,
-                legacy_skidl_enabled,
-            )
+    try:
+        from openhac.circuit import (
+            empty_native_circuit_is_error,
+            get_default_circuit,
+            legacy_skidl_enabled,
+        )
 
-            c = get_default_circuit()
-            for p in list(getattr(c, "parts", []) or []):
-                _add(p)
-            if not parts and empty_native_circuit_is_error():
-                from openhac.core.exceptions import OpenHaCError
-
-                raise OpenHaCError(
-                    "FAB-004: native circuit has no parts; refusing silent "
-                    "builtins.default_circuit fallback under sign-off or fabrication."
-                )
-            if not parts and legacy_skidl_enabled():
-                import builtins
-
-                sk = getattr(builtins, "default_circuit", None)
-                if sk is not None:
-                    for p in list(getattr(sk, "parts", []) or []):
-                        _add(p)
-        except Exception as e:
+        c = get_default_circuit()
+        for p in list(getattr(c, "parts", []) or []):
+            _add(p)
+        if not parts and empty_native_circuit_is_error():
             from openhac.core.exceptions import OpenHaCError
 
-            if isinstance(e, OpenHaCError):
-                raise
-            pass
+            raise OpenHaCError(
+                "FAB-004: native circuit has no parts; refusing silent "
+                "builtins.default_circuit fallback under sign-off or fabrication."
+            )
+        if legacy_skidl_enabled():
+            import builtins
+
+            sk = getattr(builtins, "default_circuit", None)
+            if sk is not None:
+                for p in list(getattr(sk, "parts", []) or []):
+                    _add(p)
+    except Exception as e:
+        from openhac.core.exceptions import OpenHaCError
+
+        if isinstance(e, OpenHaCError):
+            raise
+        pass
 
     parts.sort(key=part_stable_key)
     return parts, harvest_nets_from_parts(parts)

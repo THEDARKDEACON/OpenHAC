@@ -1,0 +1,294 @@
+[
+  {
+    "generic_name": "max6675_thermocouple_module_1",
+    "mpn": "max6675_thermocouple_module_1",
+    "category": "Sensor",
+    "kicad_footprint": "",
+    "pinout": [
+      {
+        "num": "CS",
+        "name": "CS",
+        "type": "input"
+      },
+      {
+        "num": "GND",
+        "name": "GND",
+        "type": "power_in"
+      },
+      {
+        "num": "SCK",
+        "name": "SCK",
+        "type": "input"
+      },
+      {
+        "num": "SO",
+        "name": "SO",
+        "type": "open_collector"
+      },
+      {
+        "num": "Vcc",
+        "name": "Vcc",
+        "type": "power_in"
+      }
+    ],
+    "description": "max6675_thermocouple_module_1 \u2014 electrical pinout only; footprint required before fab",
+    "enrichment_required": true,
+    "reason": "No Fundi/KiCad mechanical identity; refuse PinHeader stand-ins"
+  },
+  {
+    "generic_name": "max6675_thermocouple_module_2",
+    "mpn": "max6675_thermocouple_module_2",
+    "category": "Sensor",
+    "kicad_footprint": "",
+    "pinout": [
+      {
+        "num": "CS",
+        "name": "CS",
+        "type": "input"
+      },
+      {
+        "num": "GND",
+        "name": "GND",
+        "type": "power_in"
+      },
+      {
+        "num": "SCK",
+        "name": "SCK",
+        "type": "input"
+      },
+      {
+        "num": "SO",
+        "name": "SO",
+        "type": "open_collector"
+      },
+      {
+        "num": "Vcc",
+        "name": "Vcc",
+        "type": "power_in"
+      }
+    ],
+    "description": "max6675_thermocouple_module_2 \u2014 electrical pinout only; footprint required before fab",
+    "enrichment_required": true,
+    "reason": "No Fundi/KiCad mechanical identity; refuse PinHeader stand-ins"
+  },
+  {
+    "generic_name": "max6675_thermocouple_module_3",
+    "mpn": "max6675_thermocouple_module_3",
+    "category": "Sensor",
+    "kicad_footprint": "",
+    "pinout": [
+      {
+        "num": "CS",
+        "name": "CS",
+        "type": "input"
+      },
+      {
+        "num": "GND",
+        "name": "GND",
+        "type": "power_in"
+      },
+      {
+        "num": "SCK",
+        "name": "SCK",
+        "type": "input"
+      },
+      {
+        "num": "SO",
+        "name": "SO",
+        "type": "open_collector"
+      },
+      {
+        "num": "Vcc",
+        "name": "Vcc",
+        "type": "power_in"
+      }
+    ],
+    "description": "max6675_thermocouple_module_3 \u2014 electrical pinout only; footprint required before fab",
+    "enrichment_required": true,
+    "reason": "No Fundi/KiCad mechanical identity; refuse PinHeader stand-ins"
+  },
+  {
+    "generic_name": "max6675_thermocouple_module_4",
+    "mpn": "max6675_thermocouple_module_4",
+    "category": "Sensor",
+    "kicad_footprint": "",
+    "pinout": [
+      {
+        "num": "CS",
+        "name": "CS",
+        "type": "input"
+      },
+      {
+        "num": "GND",
+        "name": "GND",
+        "type": "power_in"
+      },
+      {
+        "num": "SCK",
+        "name": "SCK",
+        "type": "input"
+      },
+      {
+        "num": "SO",
+        "name": "SO",
+        "type": "open_collector"
+      },
+      {
+        "num": "Vcc",
+        "name": "Vcc",
+        "type": "power_in"
+      }
+    ],
+    "description": "max6675_thermocouple_module_4 \u2014 electrical pinout only; footprint required before fab",
+    "enrichment_required": true,
+    "reason": "No Fundi/KiCad mechanical identity; refuse PinHeader stand-ins"
+  },
+  {
+    "generic_name": "Battery_Cell",
+    "mpn": "Battery_Cell",
+    "category": "Power",
+    "kicad_footprint": "",
+    "pinout": [
+      {
+        "num": "1",
+        "name": "+",
+        "type": "passive"
+      },
+      {
+        "num": "2",
+        "name": "-",
+        "type": "passive"
+      }
+    ],
+    "description": "Battery_Cell \u2014 electrical pinout only; footprint required before fab",
+    "enrichment_required": true,
+    "reason": "No Fundi/KiCad mechanical identity; refuse PinHeader stand-ins"
+  },
+  {
+    "generic_name": "Motor_AC",
+    "mpn": "Motor_AC",
+    "category": "Motor",
+    "kicad_footprint": "",
+    "pinout": [
+      {
+        "num": "1",
+        "name": "1",
+        "type": "passive"
+      },
+      {
+        "num": "2",
+        "name": "2",
+        "type": "passive"
+      }
+    ],
+    "description": "Motor_AC \u2014 electrical pinout only; footprint required before fab",
+    "enrichment_required": true,
+    "reason": "No Fundi/KiCad mechanical identity; refuse PinHeader stand-ins",
+    "kicad_symbol": "Motor:Motor_AC"
+  },
+  {
+    "generic_name": "Motor_Servo",
+    "mpn": "Motor_Servo",
+    "category": "Motor",
+    "kicad_footprint": "",
+    "pinout": [
+      {
+        "num": "1",
+        "name": "PWM",
+        "type": "passive"
+      },
+      {
+        "num": "2",
+        "name": "+",
+        "type": "passive"
+      },
+      {
+        "num": "3",
+        "name": "-",
+        "type": "passive"
+      }
+    ],
+    "description": "Motor_Servo \u2014 electrical pinout only; footprint required before fab",
+    "enrichment_required": true,
+    "reason": "No Fundi/KiCad mechanical identity; refuse PinHeader stand-ins",
+    "kicad_symbol": "Motor:Motor_Servo"
+  },
+  {
+    "generic_name": "VDC",
+    "mpn": "VDC",
+    "category": "Power",
+    "kicad_footprint": "",
+    "pinout": [
+      {
+        "num": "1",
+        "name": "1",
+        "type": "passive"
+      },
+      {
+        "num": "2",
+        "name": "2",
+        "type": "passive"
+      }
+    ],
+    "description": "VDC \u2014 electrical pinout only; footprint required before fab",
+    "enrichment_required": true,
+    "reason": "No Fundi/KiCad mechanical identity; refuse PinHeader stand-ins"
+  },
+  {
+    "generic_name": "VSIN",
+    "mpn": "VSIN",
+    "category": "Power",
+    "kicad_footprint": "",
+    "pinout": [
+      {
+        "num": "1",
+        "name": "1",
+        "type": "passive"
+      },
+      {
+        "num": "2",
+        "name": "2",
+        "type": "passive"
+      }
+    ],
+    "description": "VSIN \u2014 electrical pinout only; footprint required before fab",
+    "enrichment_required": true,
+    "reason": "No Fundi/KiCad mechanical identity; refuse PinHeader stand-ins"
+  },
+  {
+    "generic_name": "max6675_thermocouple_module",
+    "mpn": "max6675_thermocouple_module",
+    "category": "Sensor",
+    "kicad_footprint": "",
+    "pinout": [
+      {
+        "num": "CS",
+        "name": "CS",
+        "type": "input"
+      },
+      {
+        "num": "GND",
+        "name": "GND",
+        "type": "power_in"
+      },
+      {
+        "num": "SCK",
+        "name": "SCK",
+        "type": "input"
+      },
+      {
+        "num": "SO",
+        "name": "SO",
+        "type": "open_collector"
+      },
+      {
+        "num": "Vcc",
+        "name": "Vcc",
+        "type": "power_in"
+      }
+    ],
+    "description": "max6675_thermocouple_module \u2014 electrical pinout only; footprint required before fab",
+    "enrichment_required": true,
+    "reason": "No Fundi/KiCad mechanical identity; refuse PinHeader stand-ins"
+  }
+]

@@ -64,7 +64,8 @@ fill-in cache (**3D-006**):
 
 The map is `openhac/database/3d_fillin_map.json` (`lcsc:C…` or `file:/path`).
 Prefetch also **discovers** an LCSC id by manufacturer part number (jlcsearch
-`mfr` match, never the first unrelated hit) and remembers it in
+`mfr` match, never the first unrelated hit; also tries one dash-suffix peel and
+a trailing family letter, so `RFM95W` can hit `DL-RFM95-…`) and remembers it in
 `~/.kiro/openhac/3d_fillin_discovered.json` (not git). Compile does **not** glob
 `easyeda_generated.3dshapes` or pick `R0805.step` from a JLC folder. Leftover
 JEDEC cubes are never attached to those footprints. Test pads / mounting holes

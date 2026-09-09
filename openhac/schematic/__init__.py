@@ -1,6 +1,10 @@
 """OpenHaC schematic sign-off package (SSO)."""
 
 from openhac.schematic.emit_kicad import generate_schematic
+from openhac.schematic.hierarchical_layout import (
+    generate_hierarchical_schematic,
+    summarize_hierarchical_schematic,
+)
 from openhac.schematic.layout import pin_world_xy
 from openhac.schematic.parity import (
     assert_graph_schematic_parity,
@@ -19,6 +23,8 @@ from openhac.schematic.util import (
 
 __all__ = [
     "generate_schematic",
+    "generate_hierarchical_schematic",
+    "summarize_hierarchical_schematic",
     "write_generated_symbol_library",
     "pin_world_xy",
     "assert_graph_schematic_parity",

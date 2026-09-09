@@ -37,7 +37,7 @@ def get_default_circuit():
         return builtins.default_circuit
     from openhac.core import circuit as _core_circuit
 
-    return _core_circuit.default_circuit
+    return _core_circuit.get_active_circuit()
 
 
 def get_circuit():

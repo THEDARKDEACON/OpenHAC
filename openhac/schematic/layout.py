@@ -134,6 +134,7 @@ def _add_stub_label(
     kind: str = "local",
     prot: float | None = None,
     pin_num_s: str = "",
+    shape: str = "passive",
 ) -> None:
     """Wire from the pin (exact library coords) out one grid step, label on the end.
 
@@ -147,7 +148,7 @@ def _add_stub_label(
     if abs(lx - wx) + abs(ly - wy) < 1.0:
         lx, ly = wx + _STUB_MM, wy
     ir.wires.append(WireSeg(wx, wy, lx, ly, sheet=sheet, net=name))
-    ir.labels.append(NetLabel(name, lx, ly, kind, sheet=sheet, owner_ref=ref))
+    ir.labels.append(NetLabel(name, lx, ly, kind, sheet=sheet, owner_ref=ref, shape=shape))
 
 
 def _stretch_wire_to_label(ir: SchematicIR, lb: NetLabel, nx: float, ny: float) -> None:
@@ -471,6 +472,8 @@ def build_ir(
     signoff: bool = False,
     embedded_lib_symbols: str = "",
     generated_sym_path: str | None = None,
+    hierarchical: bool | None = None,
+    circuit_ir: Any = None,
 ) -> SchematicIR:
     from openhac.compiler.kicad_sym_pinpos import (
         find_symbol_library_file,
@@ -495,7 +498,17 @@ def build_ir(
                      generated_sym_path=generated_sym_path)
 
     sheet_names = sorted({sheet_field(p) for p in parts if sheet_field(p)})
-    multi = want_multi_sheet(parts, sheet_names) and bool(sheet_names)
+    if circuit_ir is not None and hasattr(circuit_ir, "modules") and circuit_ir.modules:
+        cir_mods = [
+            m.name for m in circuit_ir.modules.values()
+            if m.parent_path is None or m.parent_path == "root"
+        ]
+        if cir_mods:
+            sheet_names = sorted(set(sheet_names) | set(cir_mods))
+
+    if hierarchical is None:
+        hierarchical = bool(getattr(board, "hierarchical_schematic", False)) or None
+    multi = want_multi_sheet(parts, sheet_names, hierarchical=hierarchical) and bool(sheet_names)
 
     for part in parts:
         resolved = resolve_part_symbol(part, signoff=signoff)
@@ -660,7 +673,7 @@ def build_ir(
     _separate_colliding_nets(ir)
 
     if multi:
-        _apply_hierarchy(ir, parts, nets, board, sheet_names)
+        _apply_hierarchy(ir, parts, nets, board, sheet_names, circuit_ir=circuit_ir)
 
     ir.paper = _paper_for_ir(ir)
     return ir
@@ -715,11 +728,12 @@ def _filter_sheet(items, mod_name: str):
     return [x for x in items if getattr(x, "sheet", "") == mod_name]
 
 
-def _attach_hier_label(child: SchematicIR, net_name_s: str) -> bool:
+def _attach_hier_label(child: SchematicIR, net_name_s: str, shape: str = "passive") -> bool:
     """One hierarchical label per interface net; leave extra locals for on-sheet fanout."""
     for lb in child.labels:
         if lb.name == net_name_s:
             lb.kind = "hierarchical"
+            lb.shape = shape
             return True
     inst_xy = {inst.ref: (inst.x, inst.y) for inst in child.instances}
     for inst in child.instances:
@@ -734,7 +748,7 @@ def _attach_hier_label(child: SchematicIR, net_name_s: str) -> bool:
             _add_stub_label(
                 child, sheet=inst.sheet, ref=inst.ref,
                 wx=xy[0], wy=xy[1], ox=ox, oy=oy, name=net_name_s, kind="hierarchical",
-                pin_num_s=pin_num(pin),
+                pin_num_s=pin_num(pin), shape=shape,
             )
             return True
     return False
@@ -833,6 +847,107 @@ def _iface_nets_for_sheet(mod_name: str, parts, nets, board) -> list:
     return iface_nets
 
 
+def _hier_pin_direction_for_module(
+    net,
+    mod_name: str,
+    parts: list,
+    board=None,
+    circuit_ir=None,
+) -> tuple[str, int]:
+    """Return (pin_type, rot) where rot=180 is left edge (input/bidi/passive) and rot=0 is right edge (output)."""
+    nn = net_name(net)
+
+    if board is not None:
+        try:
+            for m in getattr(board, "modules", []) or []:
+                if str(getattr(m, "name", "")) != mod_name:
+                    continue
+                from openhac.core.protocol import Protocol, SignalDirection
+                for attr_val in getattr(m, "__dict__", {}).values():
+                    if isinstance(attr_val, Protocol):
+                        for sig in attr_val.signals():
+                            if sig.net is not None and net_name(sig.net) == nn:
+                                if sig.direction in (SignalDirection.OUTPUT, SignalDirection.POWER_OUT):
+                                    return "output", 0
+                                elif sig.direction in (SignalDirection.INPUT, SignalDirection.POWER_IN):
+                                    return "input", 180
+                                elif sig.direction in (SignalDirection.INOUT, SignalDirection.OPEN_DRAIN, SignalDirection.TRISTATE):
+                                    return "bidirectional", 180
+                for ifaces in (
+                    getattr(m, "required_interfaces", {}) or {},
+                    getattr(m, "optional_interfaces", {}) or {},
+                ):
+                    for iface in ifaces.values():
+                        for sn, snet in (getattr(iface, "named_signals", {}) or {}).items():
+                            if snet is not None and net_name(snet) == nn:
+                                sn_lower = str(sn).lower()
+                                if any(x in sn_lower for x in ("tx", "out", "mosi", "sdo", "txd")):
+                                    return "output", 0
+                                elif any(x in sn_lower for x in ("rx", "in", "miso", "sdi", "rxd")):
+                                    return "input", 180
+        except Exception:
+            pass
+
+    if circuit_ir is not None and hasattr(circuit_ir, "nets"):
+        try:
+            net_node = circuit_ir.nets.get(nn)
+            if net_node:
+                mod_node = circuit_ir.modules.get(mod_name) or next(
+                    (m for m in circuit_ir.modules.values() if m.name == mod_name), None
+                )
+                if mod_node:
+                    comp_refs = {p.split(".")[-1] for p in mod_node.component_paths}
+                    has_driver = False
+                    has_load = False
+                    for ppath in net_node.connected_pin_paths:
+                        parts_split = ppath.split(".")
+                        ref = parts_split[-2] if len(parts_split) >= 2 else ""
+                        if ref in comp_refs:
+                            cnode = circuit_ir.get_component(ref)
+                            if cnode:
+                                pn = cnode.pins.get(parts_split[-1])
+                                if pn:
+                                    if pn.direction.is_driver():
+                                        has_driver = True
+                                    elif pn.direction.is_load():
+                                        has_load = True
+                    if has_driver and not has_load:
+                        return "output", 0
+                    elif has_load and not has_driver:
+                        return "input", 180
+                    elif has_driver and has_load:
+                        return "bidirectional", 180
+        except Exception:
+            pass
+
+    mod_parts = [p for p in parts if sheet_field(p) == mod_name]
+    has_out = False
+    has_in = False
+    has_bidi = False
+    for p in mod_parts:
+        for pin in iter_pins(p):
+            pn = getattr(pin, "net", None)
+            if pn is not None and net_name(pn) == nn:
+                pt = str(pin_type(pin) or "").lower()
+                if pt in ("output", "power_out") or pin_is_power_out(pin):
+                    has_out = True
+                elif pt in ("input", "power_in"):
+                    has_in = True
+                elif pt in ("bidirectional", "inout", "tristate", "open_drain"):
+                    has_bidi = True
+
+    if has_out and not has_in and not has_bidi:
+        return "output", 0
+    elif has_in and not has_out and not has_bidi:
+        return "input", 180
+    elif has_bidi or (has_in and has_out):
+        return "bidirectional", 180
+
+    base_t = _hier_pin_type(net)
+    rot = 0 if base_t == "output" else 180
+    return base_t, rot
+
+
 def _wire_parent_sheet_pins(ir: SchematicIR) -> None:
     """Stub + local label on each parent sheet pin. Same-named locals join the net.
 
@@ -842,7 +957,9 @@ def _wire_parent_sheet_pins(ir: SchematicIR) -> None:
     for sh in ir.sheets:
         for hp in sh.pins:
             hp.x, hp.y = snap(hp.x), snap(hp.y)
-            lx, ly = snap(hp.x - _STUB_MM), hp.y
+            rot = int(getattr(hp, "rot", 180) or 180)
+            stub_dx = _STUB_MM if rot == 0 else -_STUB_MM
+            lx, ly = snap(hp.x + stub_dx), hp.y
             n = 0
             k = _snap_key(lx, ly)
             while k in occupied and occupied[k] != hp.name and n < 12:
@@ -856,7 +973,15 @@ def _wire_parent_sheet_pins(ir: SchematicIR) -> None:
             ir.root_labels.append(NetLabel(hp.name, lx, ly, "local", sheet="", owner_ref=sh.name))
 
 
-def _apply_hierarchy(ir: SchematicIR, parts, nets, board, sheet_names: list[str]) -> None:
+def _apply_hierarchy(
+    ir: SchematicIR,
+    parts,
+    nets,
+    board,
+    sheet_names: list[str],
+    *,
+    circuit_ir=None,
+) -> None:
     sw = snap(139.7)
     gap = snap(25.4)
     n_sheets = max(1, len(sheet_names))
@@ -867,18 +992,39 @@ def _apply_hierarchy(ir: SchematicIR, parts, nets, board, sheet_names: list[str]
         s_uuid = sheet_instance_uuid(mod_name)
         col = i % cols
         iface_nets = _sheet_pin_nets(_iface_nets_for_sheet(mod_name, parts, nets, board))
-        n_pins = min(40, len(iface_nets))
-        sh = snap(max(50.8, (max(n_pins, 1) + 3) * 5.08))
+
+        left_nets: list[tuple[Any, str]] = []
+        right_nets: list[tuple[Any, str]] = []
+        for net in iface_nets[:60]:
+            pt, rot = _hier_pin_direction_for_module(net, mod_name, parts, board=board, circuit_ir=circuit_ir)
+            if rot == 0:
+                right_nets.append((net, pt))
+            else:
+                left_nets.append((net, pt))
+
+        max_side = max(len(left_nets), len(right_nets), 1)
+        sh = snap(max(50.8, (max_side + 3) * 5.08))
         sx = snap(50.8 + col * (sw + gap))
         sy = snap(col_y[col])
         col_y[col] = snap(sy + sh + gap)
+
         hpins = []
-        for j, net in enumerate(iface_nets[:40]):
+        for j, (net, pt) in enumerate(left_nets):
             nn = net_name(net)
             px, py = sx, snap(sy + (j + 2) * 5.08)
-            hpins.append(HierPin(nn, _hier_pin_type(net), px, py, rot=180))
-        child = SchematicIR(title=f"{ir.title} - {mod_name}", rev=ir.rev, company=ir.company,
-                            embedded_lib_symbols=ir.embedded_lib_symbols)
+            hpins.append(HierPin(nn, pt, px, py, rot=180, shape=pt))
+
+        for k, (net, pt) in enumerate(right_nets):
+            nn = net_name(net)
+            px, py = snap(sx + sw), snap(sy + (k + 2) * 5.08)
+            hpins.append(HierPin(nn, pt, px, py, rot=0, shape=pt))
+
+        child = SchematicIR(
+            title=f"{ir.title} - {mod_name}",
+            rev=ir.rev,
+            company=ir.company,
+            embedded_lib_symbols=ir.embedded_lib_symbols,
+        )
         child.instances = [inst for inst in ir.instances if inst.sheet == mod_name]
         child_refs = {inst.ref for inst in child.instances}
         child.pin_xy = {k: v for k, v in ir.pin_xy.items() if k[0] in child_refs}
@@ -891,7 +1037,7 @@ def _apply_hierarchy(ir: SchematicIR, parts, nets, board, sheet_names: list[str]
         child.bus_entries = _filter_sheet(ir.bus_entries, mod_name)
         kept = []
         for hp in hpins:
-            if _attach_hier_label(child, hp.name):
+            if _attach_hier_label(child, hp.name, shape=getattr(hp, "shape", "passive") or hp.pin_type):
                 kept.append(hp)
         hpins = kept
         _separate_colliding_nets(child)

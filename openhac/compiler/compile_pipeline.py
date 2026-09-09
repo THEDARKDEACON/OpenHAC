@@ -1157,6 +1157,7 @@ def phase_schematic(state: CompileState) -> None:
             "Check component pin data and prior errors."
         )
 
+    hierarchical_mode = bool(getattr(state.board, "hierarchical_schematic", False))
     sch_ir = generate_schematic(
         state.sch_path,
         state.board,
@@ -1165,6 +1166,8 @@ def phase_schematic(state: CompileState) -> None:
         embedded_lib_symbols=embed_syms,
         signoff=bool(state.schematic_signoff),
         project_name=state.project_name,
+        hierarchical=hierarchical_mode or None,
+        circuit_ir=getattr(state, "cir", None),
     )
 
     if state.schematic_signoff:

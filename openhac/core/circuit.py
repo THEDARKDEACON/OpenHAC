@@ -8,8 +8,9 @@ KiCad-compatible netlists and schematics.
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 from openhac.core.part import Part
 from openhac.core.net import Net, Bus
@@ -120,12 +121,110 @@ class Circuit:
         return f"Circuit({self.name}, parts={len(self.parts)}, nets={len(self.nets)})"
 
 
-# Global default circuit (like SKiDL's default_circuit)
-default_circuit = Circuit("default")
+# Context management for scoped hardware compilation (Option A)
+_fallback_default_circuit: Circuit = Circuit("default")
+_active_context_var: ContextVar[Optional["DesignContext"]] = ContextVar("openhac_design_context", default=None)
+
+
+class DesignContext:
+    """Scoped context manager for hardware design isolation (Option A).
+
+    Inside a ``with DesignContext() as ctx:`` block, all instantiated Components,
+    Parts, and Nets automatically attach to ``ctx.circuit``. Exiting the block
+    restores the prior context without polluting global state.
+    """
+    def __init__(self, name: str = "design", circuit: Optional[Circuit] = None):
+        self.name = name
+        self.circuit = circuit if circuit is not None else Circuit(name)
+        self._token = None
+
+    def __enter__(self) -> "DesignContext":
+        self._token = _active_context_var.set(self)
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self._token is not None:
+            _active_context_var.reset(self._token)
+            self._token = None
+
+    def reset(self) -> None:
+        """Reset the circuit in this context."""
+        self.circuit = Circuit(self.name)
+
+    def __repr__(self) -> str:
+        return f"DesignContext({self.name!r}, circuit={self.circuit!r})"
+
+
+def get_active_design_context() -> Optional[DesignContext]:
+    """Return the currently active DesignContext, or None."""
+    return _active_context_var.get()
+
+
+def get_active_circuit() -> Circuit:
+    """Return the currently active Circuit (scoped context circuit or fallback)."""
+    ctx = _active_context_var.get()
+    if ctx is not None:
+        return ctx.circuit
+    return _fallback_default_circuit
+
+
+class _CircuitProxy(Circuit):
+    """Dynamic proxy forwarding operations to the active Circuit in ContextVar."""
+    def __init__(self):
+        # State lives on the target circuit returned by get_active_circuit()
+        pass
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(get_active_circuit(), name)
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        setattr(get_active_circuit(), name, value)
+
+    def __repr__(self) -> str:
+        return repr(get_active_circuit())
+
+    def __iter__(self):
+        return iter(get_active_circuit().parts)
+
+    def add_part(self, part: Part) -> Part:
+        return get_active_circuit().add_part(part)
+
+    def add_net(self, net: Net) -> Net:
+        return get_active_circuit().add_net(net)
+
+    def add_bus(self, bus: Bus) -> Bus:
+        return get_active_circuit().add_bus(bus)
+
+    def auto_generate_refdes(self, prefix: str) -> str:
+        return get_active_circuit().auto_generate_refdes(prefix)
+
+    def get_nets(self) -> list[Net]:
+        return get_active_circuit().get_nets()
+
+    def get_unconnected_pins(self) -> list:
+        return get_active_circuit().get_unconnected_pins()
+
+    def generate_netlist(self, filepath: str | Path) -> Path:
+        return get_active_circuit().generate_netlist(filepath)
+
+    def generate_schematic(self, filepath: str | Path) -> Path:
+        return get_active_circuit().generate_schematic(filepath)
+
+    def erc(self) -> list[str]:
+        return get_active_circuit().erc()
+
+
+# Transparent proxy providing backward compatibility with v1 syntax
+default_circuit: Circuit = _CircuitProxy()
 
 
 def reset_default_circuit():
-    """Reset the global default circuit."""
-    global default_circuit
-    default_circuit = Circuit("default")
+    """Reset the active circuit (or the global fallback)."""
+    global _fallback_default_circuit
+    ctx = _active_context_var.get()
+    if ctx is not None:
+        ctx.reset()
+    else:
+        _fallback_default_circuit = Circuit("default")
     Net._counter = 0  # Reset net naming counter
+

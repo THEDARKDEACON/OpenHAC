@@ -197,6 +197,20 @@ def _vendor_lib_id(part) -> str | None:
         p = Path(d) / f"{lcsc}.kicad_sym"
         if p.is_file():
             return f"{lcsc}:{lcsc}"
+
+    # Zero-Touch JIT: Automatically download if component is missing from disk
+    if not truthy_env("OPENHAC_NO_NETWORK"):
+        try:
+            from openhac.database.jlc2kicad_integration import generate_symbol_from_lcsc
+            res = generate_symbol_from_lcsc(lcsc)
+            sym_id = res[0] if isinstance(res, tuple) else res
+            if _lib_has_symbol(cand):
+                return cand
+            if sym_id and _lib_has_symbol(sym_id):
+                return sym_id
+        except Exception as e:
+            logger.warning("Zero-touch JIT download failed for %s: %s", lcsc, e)
+
     return None
 
 

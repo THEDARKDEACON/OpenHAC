@@ -128,3 +128,30 @@ def export_hardware_ir(board: Board, output_path: str | Path | None = None) -> s
         out_path.write_text(json_data, encoding="utf-8")
         
     return json_data
+
+
+def export_circuit_ir(
+    board: Board | None = None,
+    circuit: Any | None = None,
+    output_path: str | Path | None = None,
+) -> "CircuitIR":
+    """Export modern frozen CircuitIR representation of the design (CIR 2.0).
+
+    Args:
+        board: Optional compiled Board object.
+        circuit: Optional Circuit object. Defaults to active circuit context.
+        output_path: Optional path to write the JSON file.
+
+    Returns:
+        CircuitIR dataclass instance.
+    """
+    from openhac.compiler.elaborator import elaborate
+    from openhac.ir.circuit_ir import CircuitIR
+
+    cir = elaborate(circuit=circuit, board=board)
+    if output_path:
+        out_path = Path(output_path)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        out_path.write_text(cir.to_json(indent=2), encoding="utf-8")
+
+    return cir

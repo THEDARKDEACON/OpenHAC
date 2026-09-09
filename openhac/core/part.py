@@ -29,6 +29,7 @@ class Pin:
         current_limit: Optional[float] = None,
         *,
         unit: int = 1,
+        domain: Optional[Any] = None,
     ):
         self.number = number
         self.name = name
@@ -36,6 +37,7 @@ class Pin:
         self.logic_level = logic_level        # Expected typical logic voltage (e.g., 3.3, 5.0)
         self.voltage_rating = voltage_rating  # Max absolute voltage for safety validation
         self.current_limit = current_limit    # Max continuous current draw/source for power budgets
+        self.domain = domain
         try:
             self.unit = max(1, int(unit or 1))
         except (TypeError, ValueError):
@@ -48,6 +50,7 @@ class Pin:
         logic_level: Optional[float] = None,
         voltage_rating: Optional[float] = None,
         current_limit: Optional[float] = None,
+        domain: Optional[Any] = None,
     ) -> Pin:
         """Chainable method to set electrical semantic properties for DRC."""
         if logic_level is not None:
@@ -56,6 +59,8 @@ class Pin:
             self.voltage_rating = voltage_rating
         if current_limit is not None:
             self.current_limit = current_limit
+        if domain is not None:
+            self.domain = domain
         return self
 
     @property
@@ -122,6 +127,9 @@ class Pin:
                         other.connect(self)
                     except Exception:
                         pass
+            return self
+        elif hasattr(other, "connect") and hasattr(other, "direction"):
+            other.connect(self)
             return self
         else:
             raise TypeError(f"Cannot connect Pin to {type(other)}")

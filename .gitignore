@@ -64,8 +64,24 @@ openhac-preview/
 # Deprecated Cytoscape explorer (FAB-041); generated next to compile output
 *.graph-explorer.html
 docs/graph_explorer.html
-# KiCad 9/10 design-rule sidecar from compile
+# KiCad 8/9/10 design-rule sidecar from compile
 *.kicad_dru
+**/*.kicad_dru
+
+# =============================================================================
+# OpenHaC v2 Compiler & Co-Design Outputs
+# =============================================================================
+*.cir.json
+*.circuit_ir.json
+# FPGA toolchain generated constraints
+*.xdc
+*.cst
+*.pdc
+*.qsf
+# Test runner temporary output folders
+**/fpga_out/
+**/temp_freerouting*
+
 # Autosave names KiCad actually writes
 _autosave-*
 ~_autosave-*

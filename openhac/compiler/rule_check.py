@@ -11,10 +11,15 @@ logger = logging.getLogger("openhac.rules")
 class ERCPowerBudgetError(OpenHaCError):
     pass
 
-class ERCFloatingNetError(OpenHaCError):
-    pass
+from openhac.core.exceptions import (
+    ERCDriverContentionError,
+    ERCFloatingInputError,
+    ERCDomainMismatchError,
+    ERCMissingTerminationError,
+    ERCUnconnectedPinError,
+)
 
-class ERCUnconnectedPinError(OpenHaCError):
+class ERCFloatingNetError(OpenHaCError):
     pass
 
 class ERCMissingPowerFlagError(OpenHaCError):
@@ -649,6 +654,7 @@ def _check_net_level(board):
 
     floating_violations = []
     unconnected_violations = []
+    floating_input_violations = []
     power_flag_violations = []
 
     # 1. Floating-net check
@@ -721,6 +727,9 @@ def _check_net_level(board):
                 if str(getattr(pin, "pin_type", "") or "").lower() in ("no_connect", "nc"):
                     continue
                 if not pin.is_connected():
+                    ptype = str(getattr(pin, "pin_type", "") or "").lower()
+                    if ptype in ("input", "power_in"):
+                        floating_input_violations.append(f"ERC-002: Floating input: {part.ref} pin {pin.num}")
                     unconnected_violations.append(f"Unconnected pin: {part.ref} pin {pin.num}")
             except Exception as e:
                 logger.warning(
@@ -764,7 +773,9 @@ def _check_net_level(board):
     errors = []
     if floating_violations:
         errors.append(ERCFloatingNetError("\n".join(sorted(floating_violations))))
-    if unconnected_violations:
+    if floating_input_violations and getattr(board, "strict_mode", False):
+        errors.append(ERCFloatingInputError("\n".join(sorted(floating_input_violations))))
+    elif unconnected_violations:
         errors.append(ERCUnconnectedPinError("\n".join(sorted(unconnected_violations))))
     if power_flag_violations:
         errors.append(ERCMissingPowerFlagError("\n".join(sorted(power_flag_violations))))
@@ -823,6 +834,7 @@ def _check_pin_type_compatibility(board) -> None:
         return
 
     violations = []
+    driver_violations = []
     for net in circuit.nets:
         if _net_is_no_connect_rail(net, circuit):
             continue
@@ -871,12 +883,16 @@ def _check_pin_type_compatibility(board) -> None:
             if len(power_sources) > 1:
                 logger.warning(f"Multiple power sources detected on net '{net.name}': {drivers}")
             else:
-                violations.append(f"Driver contention on net '{net.name}': Multiple output pins detected {drivers}")
+                msg = f"ERC-001: Driver contention on net '{net.name}': Multiple output pins detected {drivers}"
+                violations.append(msg)
+                driver_violations.append(msg)
 
         # Rule: Critical Short (Power vs Ground)
         if power_sources and grounds:
             violations.append(f"CRITICAL SHORT on net '{net.name}': Power source {power_sources} connected to Ground {grounds}!")
 
+    if driver_violations:
+        raise ERCDriverContentionError("ERC-001 Driver Contention Violations:\n" + "\n".join(driver_violations))
     if violations:
         raise OpenHaCError("ERC Pin Compatibility Violations:\n" + "\n".join(violations))
 
@@ -918,6 +934,16 @@ def _check_voltage_safety(board) -> None:
             comp = getattr(p, "part", None)
             if not comp: continue
             
+            # Check pin-level domain or rating if set
+            pin_domain = getattr(p, "domain", None)
+            if pin_domain is not None and getattr(pin_domain, "nominal_voltage", None) is not None:
+                _, p_max = pin_domain.effective_voltage_range()
+                if p_max is not None and nom_v > (p_max + 0.3):
+                    violations.append(
+                        f"ERC-003: VOLTAGE MISMATCH on net '{net.name}': Net voltage {nom_v}V exceeds "
+                        f"pin {getattr(comp, 'refdes', '?')}.{p.name} domain max {p_max:.2f}V!"
+                    )
+
             # Use database rating if available
             # Note: We access the component's internal data store
             comp_data = getattr(comp, "_comp_data", {}) if hasattr(comp, "_comp_data") else {}
@@ -928,14 +954,15 @@ def _check_voltage_safety(board) -> None:
                     v_max = float(v_rating)
                     if nom_v > v_max:
                         violations.append(
-                            f"VOLTAGE MISMATCH on net '{net.name}': Net voltage {nom_v}V exceeds "
+                            f"ERC-003: VOLTAGE MISMATCH on net '{net.name}': Net voltage {nom_v}V exceeds "
                             f"component {comp.refdes} ({comp.value}) rating of {v_max}V!"
                         )
                 except (ValueError, TypeError):
                     pass
     
     if violations:
-        # For now, we warn instead of failing until DB coverage is 100%
+        if getattr(board, "strict_mode", False) or os.environ.get("OPENHAC_COMPILE_GOAL") == "fabrication":
+            raise ERCDomainMismatchError("ERC-003 Voltage Domain Safety Violations:\n" + "\n".join(violations))
         for v in violations:
             logger.warning(f"ERC Warning: {v}")
     elif net_voltages:

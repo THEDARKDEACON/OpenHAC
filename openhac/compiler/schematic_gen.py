@@ -5,6 +5,10 @@ from __future__ import annotations
 from openhac.compiler.kicad_sym_pinpos import EmptySymbolPinResolver
 from openhac.schematic.collect import interface_nets_for_module as _interface_nets_for_module
 from openhac.schematic.emit_kicad import generate_schematic
+from openhac.schematic.hierarchical_layout import (
+    generate_hierarchical_schematic,
+    summarize_hierarchical_schematic,
+)
 from openhac.schematic.layout import pin_world_xy as _layout_pin_world_xy
 from openhac.schematic.layout import schematic_geometry
 from openhac.schematic.parity import (
@@ -27,6 +31,8 @@ from openhac.schematic.util import (
 __all__ = [
     "EmptySymbolPinResolver",
     "generate_schematic",
+    "generate_hierarchical_schematic",
+    "summarize_hierarchical_schematic",
     "write_generated_symbol_library",
     "schematic_geometry",
     "schematic_symbol_lib_key",

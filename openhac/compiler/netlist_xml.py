@@ -13,16 +13,23 @@ logger = logging.getLogger("openhac.netlist")
 
 
 def generate_netlist(circuit, filepath: str | Path) -> Path:
-    """Generate KiCad XML netlist from circuit.
+    """Generate KiCad XML netlist from a Circuit or CircuitIR object.
     
     Args:
-        circuit: The Circuit object containing parts and nets
+        circuit: A Circuit or CircuitIR object.
         filepath: Output path for the .net file
         
     Returns:
         Path to the generated netlist file
     """
     filepath = Path(filepath)
+    
+    from openhac.ir.circuit_ir import CircuitIR
+    if isinstance(circuit, CircuitIR):
+        cir = circuit
+    else:
+        from openhac.compiler.elaborator import elaborate
+        cir = elaborate(circuit)
     
     # Create root element
     root = Element("export")
@@ -31,26 +38,26 @@ def generate_netlist(circuit, filepath: str | Path) -> Path:
     # Design info
     design = SubElement(root, "design")
     source = SubElement(design, "source")
-    source.text = circuit.name
+    source.text = cir.name
     date = SubElement(design, "date")
     date.text = "today"
     tool = SubElement(design, "tool")
-    tool.text = "OpenHaC Native Netlist Generator"
+    tool.text = "OpenHaC CircuitIR Netlist Generator"
     
     # Components (parts)
     components = SubElement(root, "components")
-    for part in circuit.parts:
+    for comp_node in cir.components.values():
         comp = SubElement(components, "comp")
-        comp.set("ref", part.refdes)
+        comp.set("ref", comp_node.refdes)
         
         value = SubElement(comp, "value")
-        value.text = part.value or ""
+        value.text = comp_node.value or ""
         
         footprint = SubElement(comp, "footprint")
-        footprint.text = part.footprint or ""
+        footprint.text = comp_node.footprint or ""
         
         # Add any additional fields
-        for key, val in (part.fields or {}).items():
+        for key, val in (comp_node.attributes or {}).items():
             if val:
                 field = SubElement(comp, "field")
                 field.set("name", key)
@@ -58,19 +65,23 @@ def generate_netlist(circuit, filepath: str | Path) -> Path:
     
     # Nets
     nets = SubElement(root, "nets")
-    for net in circuit.get_nets():
-        if not net.is_connected():
+    net_code = 1
+    for net_node in cir.nets.values():
+        if not net_node.connected_pin_paths:
             continue
             
         net_elem = SubElement(nets, "net")
-        net_elem.set("code", str(net.code or 0))
-        net_elem.set("name", net.name or f"Net-{net.code}")
+        net_elem.set("code", str(net_code))
+        net_elem.set("name", net_node.name)
+        net_code += 1
         
         # Add all connected pins
-        for pin in net.pins:
-            node = SubElement(net_elem, "node")
-            node.set("ref", pin.part.refdes if pin.part else "?")
-            node.set("pin", pin.number)
+        for pin_path in net_node.connected_pin_paths:
+            if "." in pin_path:
+                ref, pin = pin_path.rsplit(".", 1)
+                node = SubElement(net_elem, "node")
+                node.set("ref", ref)
+                node.set("pin", pin)
     
     # Convert to pretty-printed XML
     xml_string = tostring(root, encoding="unicode")

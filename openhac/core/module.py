@@ -11,13 +11,27 @@ import os
 import re
 from typing import Any, TYPE_CHECKING
 
-from openhac.core.exceptions import InterfaceNotFoundError
+from openhac.core.exceptions import InterfaceNotFoundError, ModulePropertyError
 from openhac.core.interface import Interface
 
 if TYPE_CHECKING:
     from openhac.core.base import Component
 
 logger = logging.getLogger("openhac.core")
+
+
+def _is_production_mode(host_board=None) -> bool:
+    """True when compiling under strict production / fabrication mode."""
+    goal = os.environ.get("OPENHAC_COMPILE_GOAL", "").strip().lower()
+    if goal in ("fabrication", "fab", "push_button_fab", "push-button-fab", "pushbuttonfab"):
+        return True
+    if host_board is not None:
+        bg = str(getattr(host_board, "compile_goal", "") or "").strip().lower()
+        if bg in ("fabrication", "fab", "push_button_fab", "push-button-fab", "pushbuttonfab"):
+            return True
+        if getattr(host_board, "strict_mode", False):
+            return True
+    return False
 
 
 class Module:
@@ -129,8 +143,12 @@ class Module:
                         p.fields["OpenHaC_SchSheet"] = self.schematic_sheet
                     else:
                         p.fields.pop("OpenHaC_SchSheet", None)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed setting schematic sheet %r on %r: %s", sheet_name, item, e)
+                if _is_production_mode(getattr(self, "_openhac_host_board", None)):
+                    raise ModulePropertyError(
+                        f"Failed setting schematic sheet {sheet_name!r} on {item!r}: {e}"
+                    ) from e
         return self
 
     def nc_unused_pins(self) -> None:
@@ -196,8 +214,12 @@ class Module:
                     sheet = getattr(self, "schematic_sheet", None)
                     if sheet:
                         p.fields.setdefault("OpenHaC_SchSheet", str(sheet))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed setting module fields on component %r in %r: %s", component, self.name, e)
+                if _is_production_mode(getattr(self, "_openhac_host_board", None)):
+                    raise ModulePropertyError(
+                        f"Failed setting module fields on component {component!r} in {self.name!r}: {e}"
+                    ) from e
         elif isinstance(component, Module):
             hb = getattr(self, "_openhac_host_board", None)
             if hb is not None:
@@ -210,8 +232,12 @@ class Module:
                     sheet = getattr(self, "schematic_sheet", None)
                     if sheet:
                         component.fields.setdefault("OpenHaC_SchSheet", str(sheet))
-            except Exception:
-                pass
+            except Exception as e:
+                logger.warning("Failed setting module fields on item %r in %r: %s", component, self.name, e)
+                if _is_production_mode(getattr(self, "_openhac_host_board", None)):
+                    raise ModulePropertyError(
+                        f"Failed setting module fields on item {component!r} in {self.name!r}: {e}"
+                    ) from e
         return component
 
     def add_part(self, generic_name: str, **kwargs):
@@ -231,8 +257,12 @@ class Module:
                 sheet = getattr(self, "schematic_sheet", None)
                 if sheet:
                     p.fields.setdefault("OpenHaC_SchSheet", str(sheet))
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning("Failed setting module fields on component %r in %r: %s", c, self.name, e)
+            if _is_production_mode(getattr(self, "_openhac_host_board", None)):
+                raise ModulePropertyError(
+                    f"Failed setting module fields on component {c!r} in {self.name!r}: {e}"
+                ) from e
         return c
 
     def declare_interface(self, name: str, *nets, required: bool = True, **named_nets) -> Interface:

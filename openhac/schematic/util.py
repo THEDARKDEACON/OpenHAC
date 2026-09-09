@@ -311,11 +311,19 @@ def is_nc_net(net) -> bool:
     return False
 
 
-def want_multi_sheet(parts: list, module_names: list[str]) -> bool:
+def want_multi_sheet(parts: list, module_names: list[str], *, hierarchical: bool | None = None) -> bool:
     if truthy_env("OPENHAC_SCHEMATIC_SINGLE_SHEET"):
         return False
+    if hierarchical is True or truthy_env("OPENHAC_SCHEMATIC_HIERARCHICAL"):
+        return bool(module_names and len(module_names) >= 1)
     if truthy_env("OPENHAC_SCHEMATIC_MULTI_SHEET"):
         return True
+    if hierarchical is False:
+        try:
+            min_parts = int((os.environ.get("OPENHAC_SCHEMATIC_MULTI_SHEET_MIN_PARTS") or "25").strip() or 25)
+        except Exception:
+            min_parts = 25
+        return len(parts) >= max(1, min_parts)
     try:
         min_parts = int((os.environ.get("OPENHAC_SCHEMATIC_MULTI_SHEET_MIN_PARTS") or "25").strip() or 25)
     except Exception:

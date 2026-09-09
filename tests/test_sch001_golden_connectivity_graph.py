@@ -7,6 +7,7 @@ from openhac.compiler.kicad_sym_pinpos import EmptySymbolPinResolver
 from openhac.compiler.schematic_gen import (
     _pin_world_xy,
     generate_schematic,
+    parse_kicad_sch_net_labels,
     parse_kicad_sch_wire_segments,
     schematic_geometry,
     schematic_wire_endpoint_pairs,
@@ -74,6 +75,14 @@ def test_exported_schematic_wires_match_expected_pin_edges(tmp_path: Path, monke
         p1, p2 = _pt_key(x1, y1), _pt_key(x2, y2)
         adj[p1].add(p2)
         adj[p2].add(p1)
+
+    labels_by_name: dict[str, list[tuple[int, int]]] = defaultdict(list)
+    for name, lx, ly in parse_kicad_sch_net_labels(text):
+        labels_by_name[name].append(_pt_key(lx, ly))
+    for name, pts in labels_by_name.items():
+        for i in range(len(pts) - 1):
+            adj[pts[i]].add(pts[i + 1])
+            adj[pts[i + 1]].add(pts[i])
 
     seen: set[tuple[int, int]] = set()
     got_components = set()

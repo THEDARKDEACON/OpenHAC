@@ -1,6 +1,7 @@
 import logging
 import sqlite3
 import os
+import threading
 import warnings
 
 logger = logging.getLogger("openhac.db")
@@ -182,6 +183,7 @@ class DatabaseManager:
             return
         self.db_path = resolve_db_path(db_path)
         self._cx = None
+        self._lock = threading.RLock()
         self._init_db()
         self._ready = True
 
@@ -200,19 +202,24 @@ class DatabaseManager:
             self.mgr = mgr
 
         def __enter__(self):
+            if hasattr(self.mgr, "_lock"):
+                self.mgr._lock.acquire()
             return self.mgr._connect()
 
         def __exit__(self, et, ev, tb):
-            cx = self.mgr._cx
-            if cx is None:
-                return False
-            if et is None:
-                cx.commit()
-            else:
-                try:
-                    cx.rollback()
-                except sqlite3.Error:
-                    pass
+            try:
+                cx = self.mgr._cx
+                if cx is not None:
+                    if et is None:
+                        cx.commit()
+                    else:
+                        try:
+                            cx.rollback()
+                        except sqlite3.Error:
+                            pass
+            finally:
+                if hasattr(self.mgr, "_lock"):
+                    self.mgr._lock.release()
             return False
 
     def _tx(self):

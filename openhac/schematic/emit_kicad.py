@@ -189,13 +189,13 @@ def _emit_bus_entry(f, x, y, dx=2.54, dy=2.54) -> None:
     f.write(f'    (uuid "{uid}")\n  )\n')
 
 
-def _emit_label(f, name: str, x: float, y: float, kind: str) -> None:
+def _emit_label(f, name: str, x: float, y: float, kind: str, shape: str = "passive") -> None:
     uid = det_uuid(f"label:{kind}:{name}:{x:.4f}:{y:.4f}")
     esc = kicad_string_escape(name)
     if kind == "hierarchical":
-        f.write(f'  (hierarchical_label "{esc}" (shape passive) (at {fmt_mm(x)} {fmt_mm(y)} 0)\n')
+        f.write(f'  (hierarchical_label "{esc}" (shape {shape}) (at {fmt_mm(x)} {fmt_mm(y)} 0)\n')
     elif kind == "global":
-        f.write(f'  (global_label "{esc}" (shape passive) (at {fmt_mm(x)} {fmt_mm(y)} 0)\n')
+        f.write(f'  (global_label "{esc}" (shape {shape}) (at {fmt_mm(x)} {fmt_mm(y)} 0)\n')
     else:
         f.write(f'  (label "{esc}" (at {fmt_mm(x)} {fmt_mm(y)} 0)\n')
     f.write('    (effects (font (size 1.27 1.27)) (justify left))\n')
@@ -253,7 +253,7 @@ def _write_sheet_body(
     for e in getattr(ir, "bus_entries", None) or []:
         _emit_bus_entry(f, e.x, e.y, e.dx, e.dy)
     for lb in ir.labels:
-        _emit_label(f, lb.name, lb.x, lb.y, lb.kind)
+        _emit_label(f, lb.name, lb.x, lb.y, lb.kind, getattr(lb, "shape", "passive"))
     for p in ir.power_ports:
         _emit_power_port(f, p, file_uuid=file_uuid, project_name=project_name)
     for nc in ir.no_connects:
@@ -375,6 +375,8 @@ def generate_schematic(
     signoff: bool = False,
     circuit=None,
     project_name: str | None = None,
+    hierarchical: bool | None = None,
+    circuit_ir: Any = None,
 ) -> SchematicIR:
     logger.info("Generating schematic (SSO) -> %s", output_path)
     if circuit is not None and list(getattr(circuit, "parts", []) or []):
@@ -412,6 +414,8 @@ def generate_schematic(
         signoff=signoff,
         embedded_lib_symbols=embed or "",
         generated_sym_path=gen_path,
+        hierarchical=hierarchical,
+        circuit_ir=circuit_ir,
     )
     overlay = getattr(board, "_kicad_artwork_overlay", None)
     if overlay is not None:
@@ -460,18 +464,29 @@ def generate_schematic(
             path = f"/{sh.uuid}/{inst.uuid}" if sh else f"/{inst.uuid}"
             global_sym.append((path, inst.ref, inst.value, inst.footprint, inst.unit))
         with open(root, "w", encoding="utf-8") as f:
-            # Root holds sheet boxes + parent-side pin stubs (no component instances).
             for child in ir.child_sheets.values():
                 child_ids = [inst.lib_id for inst in child.instances]
                 child_ids.extend(p.lib_id for p in child.power_ports)
                 child.embedded_lib_symbols = embed_used_lib_symbols(
                     child_ids, pin_type_overrides=type_ov,
                 ) or ""
+            root_instances = [inst for inst in ir.instances if not inst.sheet or inst.sheet == "root"]
             root_ir = SchematicIR(title=ir.title, rev=ir.rev, company=ir.company,
                                   embedded_lib_symbols=ir.embedded_lib_symbols)
             root_ir.sheets = ir.sheets
-            root_ir.wires = list(ir.root_wires)
-            root_ir.labels = list(ir.root_labels)
+            root_ir.wires = list(ir.root_wires) + [w for w in ir.wires if not w.sheet or w.sheet == "root"]
+            root_ir.labels = list(ir.root_labels) + [lb for lb in ir.labels if not lb.sheet or lb.sheet == "root"]
+            root_ir.power_ports = [p for p in ir.power_ports if not p.sheet or p.sheet == "root"]
+            root_ir.no_connects = [nc for nc in ir.no_connects if not nc.sheet or nc.sheet == "root"]
+            root_ir.buses = [b for b in ir.buses if not b.sheet or b.sheet == "root"]
+            root_ir.bus_entries = [e for e in ir.bus_entries if not e.sheet or e.sheet == "root"]
+            root_ir.instances = root_instances
+            if root_instances:
+                root_ids = [inst.lib_id for inst in root_instances]
+                root_ids.extend(p.lib_id for p in root_ir.power_ports)
+                root_cached = embed_used_lib_symbols(root_ids, pin_type_overrides=type_ov)
+                if root_cached:
+                    root_ir.embedded_lib_symbols = (root_ir.embedded_lib_symbols or "") + root_cached
             from openhac.schematic.layout import _paper_for_ir
             root_ir.paper = _paper_for_ir(root_ir)
             _write_sheet_body(

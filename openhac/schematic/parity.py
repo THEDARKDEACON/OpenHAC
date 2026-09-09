@@ -95,9 +95,19 @@ def assert_graph_schematic_parity(circuit_or_nets, ir, *, include_power: bool = 
 
     if hasattr(circuit_or_nets, "nets"):
         nets = list(getattr(circuit_or_nets, "nets", []) or [])
+    elif hasattr(circuit_or_nets, "modules"):
+        from openhac.schematic.collect import collect_parts_and_nets
+        _, nets = collect_parts_and_nets(circuit_or_nets)
     else:
         nets = list(circuit_or_nets or [])
     power_nets = {p.net for p in ir.power_ports}
+    names_on_ir = {lb.name for lb in ir.labels}
+    wires_on_ir = list(ir.wires)
+    if getattr(ir, "child_sheets", None):
+        for child in ir.child_sheets.values():
+            power_nets.update(p.net for p in child.power_ports)
+            names_on_ir.update(lb.name for lb in child.labels)
+            wires_on_ir.extend(child.wires)
 
     for net in nets:
         if is_nc_net(net):
@@ -115,7 +125,6 @@ def assert_graph_schematic_parity(circuit_or_nets, ir, *, include_power: bool = 
                 )
             continue
         if len(pins) >= 3:
-            names_on_ir = {lb.name for lb in ir.labels}
             if nn not in names_on_ir:
                 raise SchematicGenerationError(
                     f"SSO-001: fanout net {nn!r} has no schematic labels."
@@ -123,8 +132,8 @@ def assert_graph_schematic_parity(circuit_or_nets, ir, *, include_power: bool = 
             continue
         # fanout 2: wire or labels
         if len(pins) == 2:
-            has_wire = bool(ir.wires)
-            has_lab = any(lb.name == nn for lb in ir.labels)
+            has_wire = bool(wires_on_ir)
+            has_lab = nn in names_on_ir
             if not has_wire and not has_lab:
                 raise SchematicGenerationError(
                     f"SSO-001: net {nn!r} {members} has neither wire nor label."

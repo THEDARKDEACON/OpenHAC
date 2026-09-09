@@ -61,6 +61,7 @@ class NetLabel:
     kind: str = "local"  # local | hierarchical | global
     sheet: str = ""
     owner_ref: str = ""
+    shape: str = "passive"  # input | output | bidirectional | tri_state | passive
 
 
 @dataclass
@@ -89,6 +90,7 @@ class HierPin:
     x: float
     y: float
     rot: int = 180  # 0=right, 90=top, 180=left, 270=bottom
+    shape: str = ""
 
 
 @dataclass

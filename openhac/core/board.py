@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import logging
 import os
 from pathlib import Path
+from typing import Any
 
 from openhac.core.net import Net, Bus
 from .base import Module, UnconnectedInterfaceError
@@ -699,6 +702,11 @@ class Board:
             rec["documentation_note"] = str(documentation_note).strip()
         self._dfm_references.append(rec)
         return path
+
+    def add_constraint(self, constraint: Any):
+        """Add a first-class Constraint or legacy constraint dict to the board."""
+        self.constraints.append(constraint)
+        return constraint
 
     def constrain_distance_min(self, item_a, item_b, min_distance_mm):
         self.constraints.append({'type': 'distance_min', 'args': (item_a, item_b, min_distance_mm)})

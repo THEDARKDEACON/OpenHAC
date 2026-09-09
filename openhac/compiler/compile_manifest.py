@@ -1134,6 +1134,14 @@ def write_compile_manifest(
         write_sipi_handoff_json(base, project_name, board)
     except Exception:
         pass
+    try:
+        from openhac.compiler.kicad_rules import generate_kicad_dru
+        from openhac.compiler.elaborator import elaborate
+        cir = elaborate(board=board)
+        if cir.constraints:
+            generate_kicad_dru(cir.constraints, out_path=base / f"{project_name}.kicad_dru")
+    except Exception as exc:
+        logger.debug("KiCad DRU export skipped: %s", exc)
     if generate_bom:
         _write_bom_alternates_json(base, project_name, board)
     _write_bom_expand_hint_md(base, project_name, board)
