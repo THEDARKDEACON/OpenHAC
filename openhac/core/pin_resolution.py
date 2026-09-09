@@ -23,9 +23,10 @@ logger = logging.getLogger("openhac.core")
 
 
 def _fabrication_mode() -> bool:
-    """True when OPENHAC_COMPILE_GOAL is fabrication (FAB-001 fail-closed)."""
-    g = (os.environ.get("OPENHAC_COMPILE_GOAL") or "").strip().lower()
-    return g in ("fabrication", "fab", "push_button_fab", "push-button-fab", "pushbuttonfab")
+    """True when fabrication fail-closed policy applies (FAB-001)."""
+    from openhac.core.policy import is_fabrication_mode
+
+    return is_fabrication_mode()
 
 
 def _strict_pinout() -> bool:
@@ -124,8 +125,9 @@ def get_pins_from_data(
             from openhac.compiler.kicad_sym_pinpos import pinout_from_kicad_symbol_id
             po = pinout_from_kicad_symbol_id(ks)
             if not po and sku.upper().startswith("C") and sku[1:].isdigit():
-                from openhac.schematic.util import truthy_env
-                if not truthy_env("OPENHAC_NO_NETWORK"):
+                from openhac.database.enrich import network_allowed
+
+                if network_allowed():
                     try:
                         from openhac.database.jlc2kicad_integration import generate_symbol_from_lcsc
                         res = generate_symbol_from_lcsc(sku)

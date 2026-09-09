@@ -199,7 +199,9 @@ def _vendor_lib_id(part) -> str | None:
             return f"{lcsc}:{lcsc}"
 
     # Zero-Touch JIT: Automatically download if component is missing from disk
-    if not truthy_env("OPENHAC_NO_NETWORK"):
+    from openhac.database.enrich import network_allowed
+
+    if network_allowed():
         try:
             from openhac.database.jlc2kicad_integration import generate_symbol_from_lcsc
             res = generate_symbol_from_lcsc(lcsc)

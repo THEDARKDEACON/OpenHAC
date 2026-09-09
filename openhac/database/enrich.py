@@ -146,16 +146,19 @@ def network_allowed() -> bool:
     - ``OPENHAC_NO_NETWORK`` is set, or
     - deterministic mode without ``OPENHAC_ALLOW_NETWORK``, or
     - fabrication compile goal without ``OPENHAC_ALLOW_NETWORK`` (FAB-010).
+
+    Fabrication is detected via :func:`openhac.core.policy.is_fabrication_mode`
+    (env, active Board stamp, or compile context) — not env alone.
     """
     if _truthy(os.environ.get("OPENHAC_NO_NETWORK")):
         return False
     allow_break_glass = _truthy(os.environ.get("OPENHAC_ALLOW_NETWORK"))
     if _truthy(os.environ.get("OPENHAC_DETERMINISTIC")) and not allow_break_glass:
         return False
-    goal = (os.environ.get("OPENHAC_COMPILE_GOAL") or "").strip().lower()
-    if goal in ("fabrication", "fab", "push_button_fab", "push-button-fab", "pushbuttonfab"):
-        if not allow_break_glass:
-            return False
+    from openhac.core.policy import is_fabrication_mode
+
+    if is_fabrication_mode() and not allow_break_glass:
+        return False
     return True
 
 

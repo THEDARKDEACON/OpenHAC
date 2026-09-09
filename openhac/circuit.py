@@ -23,8 +23,9 @@ def empty_native_circuit_is_error(*, signoff: bool = False) -> bool:
         return True
     if _env_truthy("OPENHAC_SPICE_SIGNOFF") or _env_truthy("OPENHAC_SCHEMATIC_SIGNOFF"):
         return True
-    goal = (os.environ.get("OPENHAC_COMPILE_GOAL") or "").strip().lower()
-    return goal in ("fabrication", "fab", "push_button_fab", "push-button-fab", "pushbuttonfab")
+    from openhac.core.policy import is_fabrication_mode
+
+    return is_fabrication_mode()
 
 
 def get_default_circuit():

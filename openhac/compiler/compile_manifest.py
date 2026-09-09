@@ -172,6 +172,8 @@ def _deterministic_manifest_enabled() -> bool:
 
 def _compile_env_flags() -> dict[str, bool]:
     """Snapshot of common OPENHAC_* toggles for audit (LIB-003 / SW-006)."""
+    from openhac.core.policy import is_fabrication_mode
+
     return {
         "openhac_deterministic": _truthy_env("OPENHAC_DETERMINISTIC"),
         "openhac_skip_layout": _truthy_env("OPENHAC_SKIP_LAYOUT"),
@@ -180,7 +182,7 @@ def _compile_env_flags() -> dict[str, bool]:
         "openhac_allow_risky_parts": _truthy_env("OPENHAC_ALLOW_RISKY_PARTS"),
         "openhac_require_verified_parts": _truthy_env("OPENHAC_REQUIRE_VERIFIED_PARTS"),
         "openhac_schematic_stub_only": _truthy_env("OPENHAC_SCHEMATIC_STUB_ONLY"),
-        "openhac_compile_goal_fabrication": os.environ.get("OPENHAC_COMPILE_GOAL", "").strip().lower() in ("fabrication", "fab"),
+        "openhac_compile_goal_fabrication": is_fabrication_mode(),
         "openhac_deterministic_uuids": _truthy_env("OPENHAC_DETERMINISTIC_UUIDS"),
         "openhac_deterministic_schematic": _truthy_env("OPENHAC_DETERMINISTIC_SCHEMATIC"),
         "openhac_deterministic_manifest": _truthy_env("OPENHAC_DETERMINISTIC_MANIFEST"),
@@ -1489,6 +1491,12 @@ def write_compile_manifest(
             _backend = "native"
     except Exception:
         _backend = "unknown"
+    try:
+        from openhac.core.base import invented_pin_part_count
+
+        n_inv = invented_pin_part_count()
+    except Exception:
+        n_inv = 0
     manifest["fab_audit"] = {
         "schema_ref": "openhac.fab_audit.v1",
         "compile_goal": _goal,
@@ -1502,19 +1510,12 @@ def write_compile_manifest(
         "via_count": _pm.get("via_count"),
         "footprint_count": _pm.get("footprint_count"),
         "kicad_pcb_drc_report": _drc_rep,
-        "gates_passed": bool(_goal != "fabrication" or (not _omitted and not _enrich_fail)),
+        "invented_pin_parts": n_inv,
+        "gates_passed": bool(
+            _goal != "fabrication" or (not _omitted and not _enrich_fail and not n_inv)
+        ),
     }
-    try:
-        from openhac.core.base import _IMPLICIT_PIN_EVENTS
-
-        invented = [
-            e for e in (_IMPLICIT_PIN_EVENTS or []) if e.get("invented")
-        ]
-        n_inv = len({str(e.get("generic_name") or "") for e in invented if e.get("generic_name")})
-        manifest["fab_audit"]["invented_pin_parts"] = n_inv
-        manifest["invented_pin_parts"] = n_inv
-    except Exception:
-        manifest["invented_pin_parts"] = 0
+    manifest["invented_pin_parts"] = n_inv
     _pms = getattr(board, "_last_phase_ms", None)
     if isinstance(_pms, dict) and _pms and not _truthy_env("OPENHAC_DETERMINISTIC"):
         manifest["compile_pipeline_phase_ms"] = dict(_pms)

@@ -22,15 +22,12 @@ logger = logging.getLogger("openhac.core")
 
 def _is_production_mode(host_board=None) -> bool:
     """True when compiling under strict production / fabrication mode."""
-    goal = os.environ.get("OPENHAC_COMPILE_GOAL", "").strip().lower()
-    if goal in ("fabrication", "fab", "push_button_fab", "push-button-fab", "pushbuttonfab"):
+    from openhac.core.policy import is_fabrication_mode
+
+    if is_fabrication_mode(board=host_board):
         return True
-    if host_board is not None:
-        bg = str(getattr(host_board, "compile_goal", "") or "").strip().lower()
-        if bg in ("fabrication", "fab", "push_button_fab", "push-button-fab", "pushbuttonfab"):
-            return True
-        if getattr(host_board, "strict_mode", False):
-            return True
+    if host_board is not None and getattr(host_board, "strict_mode", False):
+        return True
     return False
 
 

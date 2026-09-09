@@ -585,9 +585,29 @@ def phase_pinout_coverage(state: CompileState) -> None:
 
     In fabrication mode we treat missing explicit pinout as build-stopping: designs
     using named pins (e.g. `part['VIN']`) cannot be trusted when pin names are
-    synthesized from footprint heuristics.
+    synthesized from footprint heuristics. Implicit/invented pins from
+    ``Component.__getitem__`` also fail closed (FAB-001).
     """
-    # Allow opting out explicitly.
+    if state.compile_goal == "fabrication":
+        try:
+            from openhac.core.base import invented_pin_events, invented_pin_part_count
+
+            n_inv = invented_pin_part_count()
+            if n_inv:
+                sample = invented_pin_events()[:8]
+                detail = "; ".join(
+                    f"{e.get('generic_name') or '?'}[{e.get('pin_name') or '?'}]" for e in sample
+                )
+                raise RuntimeError(
+                    f"FAB-001: {n_inv} part(s) used invented/implicit pins under fabrication "
+                    f"(examples: {detail}). Enrich pinout_json or wire only known pads."
+                )
+        except RuntimeError:
+            raise
+        except Exception:
+            pass
+
+    # Allow opting out of the missing-pinout_json scan explicitly.
     gate = state.quality_gates.get("require_explicit_pinout_json", None)
     if gate is False:
         return

@@ -21,14 +21,9 @@ def _artifact_path(project_name: str, suffix: str, output_dir: str | os.PathLike
 
 
 def _normalize_compile_goal(v: str | None) -> str:
-    s = str(v or "").strip().lower()
-    if not s:
-        return "handoff"
-    if s in ("handoff", "hand-off", "hand_off", "kicad", "review"):
-        return "handoff"
-    if s in ("fabrication", "fab", "push_button_fab", "push-button-fab", "pushbuttonfab"):
-        return "fabrication"
-    raise ValueError(f"compile_goal must be 'handoff' or 'fabrication', got {v!r}")
+    from openhac.core.policy import normalize_compile_goal
+
+    return normalize_compile_goal(v)
 
 
 class Board:
@@ -157,6 +152,11 @@ class Board:
         #: Env ``OPENHAC_COMPILE_GOAL`` overrides when set for the run.
         _cg_env = os.environ.get("OPENHAC_COMPILE_GOAL", "").strip()
         self.compile_goal: str = _normalize_compile_goal(_cg_env or compile_goal)
+        # Stamp design-level goal so construction-time gates see Board(compile_goal=...)
+        # without requiring the CLI to set env first (FAB policy split-brain fix).
+        from openhac.core.policy import set_design_compile_goal
+
+        set_design_compile_goal(self.compile_goal)
         _sso_env = os.environ.get("OPENHAC_SCHEMATIC_SIGNOFF", "").strip().lower() in ("1", "true", "yes", "on")
         self.schematic_signoff: bool = bool((quality_gates or {}).get("schematic_signoff")) or _sso_env
         _sps_env = os.environ.get("OPENHAC_SPICE_SIGNOFF", "").strip().lower() in ("1", "true", "yes", "on")
@@ -284,8 +284,9 @@ class Board:
 
     def effective_compile_goal(self) -> str:
         """Return the compile goal, honoring env override."""
-        env = os.environ.get("OPENHAC_COMPILE_GOAL", "").strip()
-        return _normalize_compile_goal(env or getattr(self, "compile_goal", None))
+        from openhac.core.policy import resolve_compile_goal
+
+        return resolve_compile_goal(board=self)
 
     def _propagate_board_ref(self, module):
         """Stamp *module* and nested :class:`Module` children with ``_openhac_host_board`` (this board)."""
@@ -969,6 +970,9 @@ class Board:
             catalog_overlay_paths=co_paths,
         )
         tok = compile_context_set(ctx)
+        from openhac.core.policy import restore_compile_goal_env, sync_compile_goal_env
+
+        _goal_owned, _goal_prev = sync_compile_goal_env(self.effective_compile_goal())
         try:
             try:
                 self.bbox_padding_mm = float(bbox_padding_mm or 0.0)
@@ -1069,6 +1073,13 @@ class Board:
             logger.error("COMPILER ABORTED DUE TO PHYSICS RULES OR PIPELINE ERROR: %s", e)
             raise
         finally:
+            try:
+                from openhac.core.base import clear_implicit_pin_events
+
+                clear_implicit_pin_events()
+            except Exception:
+                pass
+            restore_compile_goal_env(_goal_owned, _goal_prev)
             compile_context_reset(tok)
 
     def simulate(

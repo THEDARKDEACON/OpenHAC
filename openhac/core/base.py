@@ -50,6 +50,27 @@ logger = logging.getLogger("openhac.core")
 _IMPLICIT_PIN_EVENTS: list[dict] = []
 
 
+def clear_implicit_pin_events() -> None:
+    """Reset invent/implicit pin audit events (call at end of each compile)."""
+    _IMPLICIT_PIN_EVENTS.clear()
+
+
+def invented_pin_events() -> list[dict]:
+    """Return events stamped with ``invented: True``."""
+    return [e for e in (_IMPLICIT_PIN_EVENTS or []) if e.get("invented")]
+
+
+def invented_pin_part_count() -> int:
+    """Distinct generic_name count among invented-pin events."""
+    return len(
+        {
+            str(e.get("generic_name") or "")
+            for e in invented_pin_events()
+            if e.get("generic_name")
+        }
+    )
+
+
 # (Exceptions and _component_pin_access_aliases now imported from submodules above.)
 
 
@@ -480,14 +501,15 @@ class Component:
             )
             import os
 
-            goal = (os.environ.get("OPENHAC_COMPILE_GOAL") or "").strip().lower()
             strict_db = (os.environ.get("OPENHAC_STRICT_DB_WRITES") or "").strip().lower() in (
                 "1",
                 "true",
                 "yes",
                 "on",
             )
-            if goal in ("fabrication", "fab") or strict_db:
+            from openhac.core.policy import is_fabrication_mode
+
+            if is_fabrication_mode() or strict_db:
                 logger.exception("Failed to cache live lookup for %r", generic_name)
                 raise PartDatabaseWriteError(msg) from e
             logger.warning("%s (%s)", msg, e)
@@ -593,13 +615,14 @@ class Component:
             ):
                 raise
             raw_allow = (os.environ.get("OPENHAC_ALLOW_IMPLICIT_PINS") or "").strip().lower()
-            raw_goal = (os.environ.get("OPENHAC_COMPILE_GOAL") or "").strip().lower()
             # Defaults:
             # - fabrication: implicit pins are OFF unless explicitly enabled
             # - handoff/unspecified: implicit pins are ON unless explicitly disabled
             allow_explicit = raw_allow in ("1", "true", "yes", "on")
             deny_explicit = raw_allow in ("0", "false", "no", "off")
-            in_fabrication = raw_goal == "fabrication"
+            from openhac.core.policy import is_fabrication_mode
+
+            in_fabrication = is_fabrication_mode(board=self._active_host_board())
             allow_implicit = allow_explicit or (not deny_explicit and not in_fabrication)
             pinout_json = None
             symbol_data = None
@@ -628,6 +651,7 @@ class Component:
                         "generic_name": str(getattr(self, "generic_name", "") or ""),
                         "refdes": str(getattr(self.part, "refdes", "") or ""),
                         "pin_name": str(key),
+                        "invented": True,
                     }
                 )
             except Exception:

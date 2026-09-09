@@ -961,7 +961,9 @@ def _check_voltage_safety(board) -> None:
                     pass
     
     if violations:
-        if getattr(board, "strict_mode", False) or os.environ.get("OPENHAC_COMPILE_GOAL") == "fabrication":
+        from openhac.core.policy import is_fabrication_mode
+
+        if getattr(board, "strict_mode", False) or is_fabrication_mode(board=board):
             raise ERCDomainMismatchError("ERC-003 Voltage Domain Safety Violations:\n" + "\n".join(violations))
         for v in violations:
             logger.warning(f"ERC Warning: {v}")
