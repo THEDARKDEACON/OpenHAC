@@ -32,6 +32,7 @@ def symbol_library_search_paths() -> list[Path]:
         if p:
             paths.append(Path(p).expanduser().resolve())
     for key in (
+        "KICAD10_SYMBOL_DIR",
         "KICAD9_SYMBOL_DIR",
         "KICAD8_SYMBOL_DIR",
         "KICAD7_SYMBOL_DIR",

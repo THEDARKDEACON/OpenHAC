@@ -81,7 +81,8 @@ def _title_block(f, title: str, rev: str, company: str = "") -> None:
 
 
 def _header(f, file_uuid: str, ir: SchematicIR, extra_power_syms: str) -> None:
-    f.write("(kicad_sch (version 20231120) (generator openhac)\n")
+    fmt_date = getattr(ir, "kicad_format_date", 20231120) or 20231120
+    f.write(f"(kicad_sch (version {fmt_date}) (generator openhac)\n")
     f.write(f'  (uuid "{file_uuid}")\n')
     paper = str(getattr(ir, "paper", None) or "A4")
     f.write(f'  (paper "{kicad_string_escape(paper)}")\n')
@@ -336,8 +337,9 @@ def _write_openhac_power_lib(sch_path: Path, ir: SchematicIR, extra_power: str, 
             merged = merged[:-1]
         dest.write_text(merged + "".join(bodies) + ")\n", encoding="utf-8")
     else:
+        fmt_date = getattr(ir, "kicad_format_date", 20231120) or 20231120
         dest.write_text(
-            "(kicad_symbol_lib (version 20231120) (generator openhac)\n"
+            f"(kicad_symbol_lib (version {fmt_date}) (generator openhac)\n"
             + "".join(bodies)
             + ")\n",
             encoding="utf-8",
@@ -402,7 +404,7 @@ def generate_schematic(
     if gen_path is None and parts:
         outp = Path(output_path)
         gen_path = str(outp.with_suffix(".openhac-generated.kicad_sym"))
-        gp, embed_auto = write_generated_symbol_library(gen_path, parts, nickname="OpenHaC", signoff=signoff)
+        gp, embed_auto = write_generated_symbol_library(gen_path, parts, nickname="OpenHaC", signoff=signoff, board=board)
         gen_path = gp
         if embed is None:
             embed = embed_auto
@@ -471,8 +473,12 @@ def generate_schematic(
                     child_ids, pin_type_overrides=type_ov,
                 ) or ""
             root_instances = [inst for inst in ir.instances if not inst.sheet or inst.sheet == "root"]
-            root_ir = SchematicIR(title=ir.title, rev=ir.rev, company=ir.company,
-                                  embedded_lib_symbols=ir.embedded_lib_symbols)
+            root_ir = SchematicIR(
+                title=ir.title, rev=ir.rev, company=ir.company,
+                embedded_lib_symbols=ir.embedded_lib_symbols,
+                kicad_format_date=ir.kicad_format_date,
+                kicad_major_version=ir.kicad_major_version,
+            )
             root_ir.sheets = ir.sheets
             root_ir.wires = list(ir.root_wires) + [w for w in ir.wires if not w.sheet or w.sheet == "root"]
             root_ir.labels = list(ir.root_labels) + [lb for lb in ir.labels if not lb.sheet or lb.sheet == "root"]

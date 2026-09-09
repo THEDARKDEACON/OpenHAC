@@ -70,6 +70,7 @@ class Board:
         power_net_prefixes: tuple[str, ...] | list[str] | None = None,
         variant: str | None = None,
         hierarchical_schematic: bool = False,
+        target_kicad: int | str | None = None,
     ):
         # Strict mode enforces real components only - no synthetic parts allowed
         if strict:
@@ -178,6 +179,8 @@ class Board:
             hierarchical_schematic
             or os.environ.get("OPENHAC_SCHEMATIC_HIERARCHICAL", "").strip().lower() in ("1", "true", "yes", "on")
         )
+        from openhac.core.kicad_version import resolve_target_kicad_version
+        self.target_kicad_version = resolve_target_kicad_version(explicit_target=target_kicad, board=self)
         if tpm:
             parsed_tpm: dict[str, int] = {}
             for k, v in tpm.items():
@@ -897,7 +900,11 @@ class Board:
         placement_intent: bool = False,
         require_testpoints: bool = False,
         variant: str | None = None,
+        target_kicad: int | str | None = None,
     ):
+        if target_kicad is not None:
+            from openhac.core.kicad_version import resolve_target_kicad_version
+            self.target_kicad_version = resolve_target_kicad_version(explicit_target=target_kicad, board=self)
         if schematic_signoff:
             self.schematic_signoff = True
             export_schematic = True

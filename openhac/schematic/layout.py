@@ -494,8 +494,17 @@ def build_ir(
     title = str(getattr(board, "project_name", None) or "OpenHaC")
     rev = str(getattr(board, "release_tag", None) or "v1.0")
     company = str(getattr(board, "company", None) or getattr(board, "manufacturer", None) or "")
-    ir = SchematicIR(title=title, rev=rev, company=company, embedded_lib_symbols=embedded_lib_symbols,
-                     generated_sym_path=generated_sym_path)
+    from openhac.core.kicad_version import resolve_target_kicad_version
+    target_kicad = resolve_target_kicad_version(board=board)
+    ir = SchematicIR(
+        title=title,
+        rev=rev,
+        company=company,
+        embedded_lib_symbols=embedded_lib_symbols,
+        generated_sym_path=generated_sym_path,
+        kicad_format_date=target_kicad.sch_format_date,
+        kicad_major_version=target_kicad.major,
+    )
 
     sheet_names = sorted({sheet_field(p) for p in parts if sheet_field(p)})
     if circuit_ir is not None and hasattr(circuit_ir, "modules") and circuit_ir.modules:

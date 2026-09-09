@@ -129,3 +129,5 @@ class SchematicIR:
     root_wires: list[WireSeg] = field(default_factory=list)
     root_labels: list[NetLabel] = field(default_factory=list)
     overlay_sexp: list[str] = field(default_factory=list)
+    kicad_format_date: int = 20231120
+    kicad_major_version: int = 8

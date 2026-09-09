@@ -319,6 +319,7 @@ def write_generated_symbol_library(
     nickname: str = "OpenHaC",
     signoff: bool = False,
     only_synth_lib_ids: set[str] | None = None,
+    board: Any = None,
 ) -> tuple[str | None, str | None]:
     """Write project-local .kicad_sym for parts that need OpenHaC: boxes."""
     part_list = list(getattr(parts, "parts", None) or parts or [])
@@ -355,7 +356,9 @@ def write_generated_symbol_library(
 
     out = Path(output_path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    text = "(kicad_symbol_lib (version 20231120) (generator openhac)\n" + "".join(chunks) + ")\n"
+    from openhac.core.kicad_version import resolve_target_kicad_version
+    fmt_date = resolve_target_kicad_version(board=board).sch_format_date
+    text = f"(kicad_symbol_lib (version {fmt_date}) (generator openhac)\n" + "".join(chunks) + ")\n"
     out.write_text(text, encoding="utf-8")
 
     def _nest(body: str) -> str:

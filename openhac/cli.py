@@ -173,6 +173,7 @@ def _preview_compile_once(args, *, name: str, out_dir: str, overlay_paths: list)
         catalog_overlay_paths=tuple(merged_overlays) if merged_overlays else (),
         schematic_signoff=False,
         compile_profile="preview_pcb" if bool(getattr(args, "pcb", False)) else "preview",
+        target_kicad=getattr(args, "target_kicad", None),
     )
     sch = _preview_artifact(out_dir, name, ".kicad_sch")
     if not os.path.isfile(sch):
@@ -369,10 +370,25 @@ def cmd_compile(args):
     _prev_spice_signoff = os.environ.get("OPENHAC_SPICE_SIGNOFF")
     _prev_spice_vendor = os.environ.get("OPENHAC_SPICE_VENDOR_DIR")
     _prev_catalog_overlay = os.environ.get("OPENHAC_CATALOG_OVERLAY")
-    _kicad_sym_keys = ("KICAD9_SYMBOL_DIR", "KICAD8_SYMBOL_DIR", "KICAD7_SYMBOL_DIR", "KICAD6_SYMBOL_DIR")
-    _kicad_fp_keys = ("KICAD9_FOOTPRINT_DIR", "KICAD8_FOOTPRINT_DIR", "KICAD_FOOTPRINT_DIR")
+    _prev_target_kicad = os.environ.get("OPENHAC_TARGET_KICAD")
+    _kicad_sym_keys = (
+        "KICAD10_SYMBOL_DIR",
+        "KICAD9_SYMBOL_DIR",
+        "KICAD8_SYMBOL_DIR",
+        "KICAD7_SYMBOL_DIR",
+        "KICAD6_SYMBOL_DIR",
+    )
+    _kicad_fp_keys = (
+        "KICAD10_FOOTPRINT_DIR",
+        "KICAD9_FOOTPRINT_DIR",
+        "KICAD8_FOOTPRINT_DIR",
+        "KICAD_FOOTPRINT_DIR",
+    )
     _prev_kicad_sym = {k: os.environ.get(k) for k in _kicad_sym_keys}
     _prev_kicad_fp = {k: os.environ.get(k) for k in _kicad_fp_keys}
+
+    if getattr(args, "target_kicad", None):
+        os.environ["OPENHAC_TARGET_KICAD"] = str(getattr(args, "target_kicad"))
 
     Component.allow_risky_part_lookups = bool(getattr(args, "allow_risky_parts", False))
     Component.require_kicad_symbols = bool(getattr(args, "strict_kicad", False))
@@ -625,6 +641,7 @@ def cmd_compile(args):
             placement_intent=bool(getattr(args, "placement_intent", False)),
             require_testpoints=bool(getattr(args, "require_testpoints", False)),
             variant=getattr(args, "variant", None),
+            target_kicad=getattr(args, "target_kicad", None),
         )
         logger.info("Compilation complete.")
         try:
@@ -744,6 +761,10 @@ def cmd_compile(args):
                 os.environ.pop(k, None)
             else:
                 os.environ[k] = prev
+        if _prev_target_kicad is None:
+            os.environ.pop("OPENHAC_TARGET_KICAD", None)
+        else:
+            os.environ["OPENHAC_TARGET_KICAD"] = _prev_target_kicad
         if _prev_strict_jit is None:
             os.environ.pop("OPENHAC_STRICT_JIT", None)
         else:
@@ -1422,7 +1443,7 @@ def _quiet_skidl_logging(verbose: bool = False) -> None:
     logging.getLogger("skidl").setLevel(logging.WARNING)
 
 
-def main():
+def main(argv=None):
     from openhac.version_info import get_version
 
     load_repo_dotenv(quiet=True)
@@ -1539,6 +1560,12 @@ def main():
         default=None,
         metavar="DIR",
         help="Override KiCad footprint library root for this run (sets KICAD8_FOOTPRINT_DIR)",
+    )
+    p_compile.add_argument(
+        "--target-kicad",
+        default=None,
+        choices=("6", "7", "8", "9", "10", "auto"),
+        help="Target KiCad version for schematic/PCB compatibility (6, 7, 8, 9, 10, or auto). Sets OPENHAC_TARGET_KICAD.",
     )
     p_compile.add_argument(
         "--no-schematic",
@@ -1832,6 +1859,12 @@ def main():
         "--no-browser",
         action="store_true",
         help="With --watch, print the SVG viewer URL but do not open a browser",
+    )
+    p_preview.add_argument(
+        "--target-kicad",
+        default=None,
+        choices=("6", "7", "8", "9", "10", "auto"),
+        help="Target KiCad version for schematic/PCB compatibility (6, 7, 8, 9, 10, or auto). Sets OPENHAC_TARGET_KICAD.",
     )
     p_preview.set_defaults(func=cmd_preview)
 
@@ -2190,7 +2223,7 @@ def main():
     p_pinit.add_argument("-o", "--output", default=None, help="Overlay JSON path")
     p_pinit.set_defaults(func=cmd_pinout_init)
 
-    args = parser.parse_args()
+    args = parser.parse_args(argv)
     _setup_logging(verbose=args.verbose)
 
     _prev_db_path = os.environ.get("OPENHAC_DB_PATH")

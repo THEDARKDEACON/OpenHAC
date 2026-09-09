@@ -71,12 +71,18 @@ def load_repo_dotenv(*, quiet: bool = True) -> None:
 
 
 def apply_kicad_env_aliases() -> None:
-    """Mirror ``KICAD9_*`` into legacy env names that component libraries probe at import time.
+    """Mirror KiCad environment variables across all versions (6, 7, 8, 9, 10).
 
-    Auto-detects standard system installs (/usr/share/kicad) when not explicitly set in env.
+    Auto-detects standard system installs across platforms when not explicitly set in env.
     Call this immediately after :func:`load_repo_dotenv`.
     """
-    sym = (os.environ.get("KICAD9_SYMBOL_DIR") or "").strip()
+    try:
+        from openhac.core.kicad_version import apply_universal_kicad_env
+        apply_universal_kicad_env()
+    except Exception as e:
+        logger.debug("apply_universal_kicad_env failed: %s", e)
+
+    sym = (os.environ.get("KICAD_SYMBOL_DIR") or os.environ.get("KICAD9_SYMBOL_DIR") or "").strip()
     if not sym and Path("/usr/share/kicad/symbols").is_dir():
         sym = "/usr/share/kicad/symbols"
         os.environ["KICAD9_SYMBOL_DIR"] = sym
@@ -84,16 +90,27 @@ def apply_kicad_env_aliases() -> None:
     if sym:
         for key in (
             "KICAD_SYMBOL_DIR",
-            "KICAD6_SYMBOL_DIR",
-            "KICAD7_SYMBOL_DIR",
+            "KICAD10_SYMBOL_DIR",
+            "KICAD9_SYMBOL_DIR",
             "KICAD8_SYMBOL_DIR",
+            "KICAD7_SYMBOL_DIR",
+            "KICAD6_SYMBOL_DIR",
         ):
             os.environ.setdefault(key, sym)
 
-    fp = (os.environ.get("KICAD9_FOOTPRINT_DIR") or "").strip()
+    fp = (os.environ.get("KICAD_FOOTPRINT_DIR") or os.environ.get("KICAD9_FOOTPRINT_DIR") or "").strip()
     if not fp and Path("/usr/share/kicad/footprints").is_dir():
         fp = "/usr/share/kicad/footprints"
         os.environ["KICAD9_FOOTPRINT_DIR"] = fp
 
     if fp:
-        os.environ.setdefault("KICAD_FOOTPRINT_DIR", fp)
+        for key in (
+            "KICAD_FOOTPRINT_DIR",
+            "KICAD10_FOOTPRINT_DIR",
+            "KICAD9_FOOTPRINT_DIR",
+            "KICAD8_FOOTPRINT_DIR",
+            "KICAD7_FOOTPRINT_DIR",
+            "KICAD6_FOOTPRINT_DIR",
+        ):
+            os.environ.setdefault(key, fp)
+
