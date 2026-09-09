@@ -69,6 +69,7 @@ class Board:
         jlc_class_line_limits: dict[str, int] | None = None,
         power_net_prefixes: tuple[str, ...] | list[str] | None = None,
         variant: str | None = None,
+        hierarchical_schematic: bool = False,
     ):
         # Strict mode enforces real components only - no synthetic parts allowed
         if strict:
@@ -173,6 +174,10 @@ class Board:
         self.bom_profile: str | None = _bp
         tpm = test_point_min_count_by_net
         self.test_point_min_count_by_net: dict[str, int] | None = None
+        self.hierarchical_schematic: bool = bool(
+            hierarchical_schematic
+            or os.environ.get("OPENHAC_SCHEMATIC_HIERARCHICAL", "").strip().lower() in ("1", "true", "yes", "on")
+        )
         if tpm:
             parsed_tpm: dict[str, int] = {}
             for k, v in tpm.items():

@@ -592,6 +592,9 @@ def cmd_compile(args):
         overlay_paths = [str(p) for p in sidecar.overlay_paths] + list(
             getattr(args, "catalog_overlay", None) or []
         )
+        if getattr(args, "hierarchical_schematic", False) or getattr(board, "hierarchical_schematic", False):
+            board.hierarchical_schematic = True
+            os.environ["OPENHAC_SCHEMATIC_HIERARCHICAL"] = "1"
         board.compile(
             project_name=name,
             generate_bom=True,
@@ -1547,6 +1550,12 @@ def main():
         action="store_true",
         help="SSO: require EE-stamped .kicad_sch (library/pinout symbols, graph parity, kicad-cli sch erc). "
         "Forces schematic export even under --production.",
+    )
+    p_compile.add_argument(
+        "--hierarchical-schematic",
+        "--hierarchical",
+        action="store_true",
+        help="Generate professional multi-sheet hierarchical KiCad schematics partitioned by subsystem modules.",
     )
     p_compile.add_argument(
         "--spice-signoff",

@@ -1160,14 +1160,32 @@ def _check_power_sequencing(board) -> list[str]:
     for mod in board._get_all_modules():
         for comp in mod.components:
             name = str(getattr(comp, 'generic_name', '') or '').lower()
-            if 'ldo' in name:
+            mpn = str(getattr(comp, 'mpn', '') or '').lower()
+            pnames = set()
+            try:
+                pins = getattr(comp, 'pins', {})
+                pnames = {str(k).upper() for k in (pins.keys() if isinstance(pins, dict) else [])}
+            except Exception:
+                pass
+            if (
+                'ldo' in name
+                or 'linear' in name
+                or 'ams1117' in name
+                or 'ldo' in mpn
+                or 'ams1117' in mpn
+                or ('VIN' in pnames and 'VOUT' in pnames)
+            ):
                 has_ldo = True
-            if 'buck' in name:
+            if 'buck' in name or 'buck' in mpn:
                 has_buck = True
         # Check for analog sensors (IMU, baro, mag)
         if any(x in mod.name.lower() for x in ['imu', 'baro', 'mag', 'sensor']):
             has_analog_sensor = True
     
+    # Check declared rail conversions
+    if getattr(board, "declared_rail_conversions", None):
+        has_ldo = True
+
     # If we have both buck and LDO, the LDO should feed analog sensors
     if has_buck and has_ldo and has_analog_sensor:
         logger.info("Power architecture check: Buck -> LDO -> Analog sensors detected (good for noise isolation).")
