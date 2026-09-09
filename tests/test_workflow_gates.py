@@ -368,6 +368,15 @@ def test_live010_ipc_best_effort(tmp_path):
     assert ok["attempted"] is True
     assert ok["reloaded"] is True
 
+    # kipy-style client with get_board().revert()
+    kipy_client = MagicMock(spec=["get_board"])
+    mock_board = MagicMock(spec=["revert"])
+    kipy_client.get_board.return_value = mock_board
+    ok_kipy = try_pcb_revert_via_ipc(pcb, sockets=found, client=kipy_client)
+    assert ok_kipy["attempted"] is True
+    assert ok_kipy["reloaded"] is True
+    mock_board.revert.assert_called_once()
+
     boom = MagicMock()
     boom.revert_pcb.side_effect = RuntimeError("ipc down")
     err = try_pcb_revert_via_ipc(pcb, sockets=found, client=boom)

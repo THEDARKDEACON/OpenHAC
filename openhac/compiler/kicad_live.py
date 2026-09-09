@@ -87,7 +87,7 @@ def watch_debounce_s(*, pcb: bool = False) -> float:
     return 0.8 if pcb else 0.4
 
 
-KICAD_API_SOCK_GLOB = "api-*.sock"
+KICAD_API_SOCK_GLOB = "api*.sock"
 _DEFAULT_KICAD_API_DIR = "/tmp/kicad"
 
 
@@ -145,6 +145,14 @@ def try_pcb_revert_via_ipc(
             ok = bool(ipc_client.revert_pcb(str(pcb_path)))
         elif hasattr(ipc_client, "reload_board"):
             ok = bool(ipc_client.reload_board(str(pcb_path)))
+        elif hasattr(ipc_client, "get_board"):
+            try:
+                board = ipc_client.get_board()
+                if board is not None and hasattr(board, "revert"):
+                    board.revert()
+                    ok = True
+            except Exception as e:
+                logger.debug("kipy board revert via IPC failed: %s", e)
         elif callable(ipc_client):
             ok = bool(ipc_client(str(pcb_path), found))
         else:
@@ -161,18 +169,19 @@ def try_pcb_revert_via_ipc(
 
 def _default_kicad_ipc_client():
     """Import kicad-python IPC client if present. Never imports pcbnew SaveBoard."""
-    try:
-        import importlib
+    import importlib
 
-        mod = importlib.import_module("kicad")
-    except Exception:
-        return None
-    for name in ("KiCad", "Client"):
-        cls = getattr(mod, name, None)
-        if cls is None:
-            continue
+    for mod_name in ("kipy", "kicad"):
         try:
-            return cls()
+            mod = importlib.import_module(mod_name)
         except Exception:
             continue
+        for name in ("KiCad", "Client"):
+            cls = getattr(mod, name, None)
+            if cls is None:
+                continue
+            try:
+                return cls()
+            except Exception:
+                continue
     return None

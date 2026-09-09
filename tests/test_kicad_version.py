@@ -142,6 +142,45 @@ def test_schematic_emission_target_version():
         assert "(version 20250101)" in content10
 
 
+def test_pcb_io_sexp_plugin_resolves_on_kicad10():
+    """KiCad 10 renamed PluginFind → FindPlugin; OpenHaC must resolve either."""
+    import pcbnew
+
+    from openhac.compiler.pcb_placement import _get_kicad_sexp_plugin
+
+    plugin = _get_kicad_sexp_plugin(pcbnew)
+    assert plugin is not None
+    assert hasattr(plugin, "FootprintLoad")
+
+
+def test_kicad_ipc_placement_backend_env(monkeypatch):
+    from openhac.compiler import kicad_ipc_placement as ipc
+
+    monkeypatch.setenv("OPENHAC_PLACEMENT_BACKEND", "ipc")
+    assert ipc.placement_backend() == "ipc"
+    monkeypatch.setenv("OPENHAC_PLACEMENT_BACKEND", "swig")
+    assert ipc.placement_backend() == "swig"
+    monkeypatch.delenv("OPENHAC_PLACEMENT_BACKEND", raising=False)
+    assert ipc.placement_backend() == "auto"
+
+
+def test_cea_farm_controller_builds():
+    """Smoke: CEA example elaborates without importing pcbnew layout."""
+    import importlib.util
+    from pathlib import Path
+
+    path = Path(__file__).resolve().parents[1] / "examples" / "complex_cea_farm_controller.py"
+    spec = importlib.util.spec_from_file_location("cea_farm", path)
+    mod = importlib.util.module_from_spec(spec)
+    assert spec.loader is not None
+    spec.loader.exec_module(mod)
+    b = mod.board
+    assert b.target_kicad_version.major == 10
+    n = sum(len(m.components) for m in b._get_all_modules())
+    assert n >= 80
+    assert len(b._get_all_modules()) >= 40
+
+
 def test_board_compile_target_kicad_kwarg():
     """Verify that Board.compile(target_kicad=...) overrides the default target version."""
     b = Board((50, 50))

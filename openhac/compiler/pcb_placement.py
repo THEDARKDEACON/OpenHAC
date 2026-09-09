@@ -570,7 +570,34 @@ def apply_pcbnew_pack_to_module_bboxes(board) -> int:
 
 
 def _get_kicad_sexp_plugin(pcbnew):
-    return pcbnew.PCB_IO_MGR.PluginFind(pcbnew.PCB_IO_MGR.KICAD_SEXP)
+    """Return a KiCad S-expression PCB/footprint I/O plugin across KiCad versions.
+
+    KiCad ≤9 exposes ``PCB_IO_MGR.PluginFind``; KiCad 10 renamed it to ``FindPlugin``.
+    As a last resort, construct ``PCB_IO_KICAD_SEXPR`` directly.
+    """
+    mgr = getattr(pcbnew, "PCB_IO_MGR", None)
+    if mgr is not None:
+        kicad_sexp = getattr(mgr, "KICAD_SEXP", None)
+        for meth_name in ("FindPlugin", "PluginFind"):
+            meth = getattr(mgr, meth_name, None)
+            if callable(meth) and kicad_sexp is not None:
+                try:
+                    plugin = meth(kicad_sexp)
+                    if plugin is not None:
+                        return plugin
+                except Exception as e:
+                    logger.debug("PCB_IO_MGR.%s failed: %s", meth_name, e)
+    sexpr_cls = getattr(pcbnew, "PCB_IO_KICAD_SEXPR", None)
+    if sexpr_cls is not None:
+        try:
+            return sexpr_cls()
+        except Exception as e:
+            logger.debug("PCB_IO_KICAD_SEXPR() failed: %s", e)
+    raise AttributeError(
+        "No KiCad S-expression PCB I/O plugin available "
+        "(tried PCB_IO_MGR.FindPlugin/PluginFind and PCB_IO_KICAD_SEXPR). "
+        "Install matching pcbnew bindings for your KiCad major version."
+    )
 
 
 def _pad_keys(pad) -> list[str]:

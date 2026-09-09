@@ -670,6 +670,12 @@ def generate_layout(netlist_path: str, output_pcb_path: str, board):
 
         pcbnew.SaveBoard(output_pcb_path, pcb)
         try:
+            from openhac.compiler.kicad_ipc_placement import maybe_sync_after_layout
+
+            maybe_sync_after_layout(output_pcb_path, board)
+        except Exception as e:
+            logger.debug("KiCad IPC post-layout sync skipped: %s", e)
+        try:
             from openhac.compiler.kicad_artwork import graph_net_names_from_board, splice_pcb_artwork_file
 
             splice_pcb_artwork_file(output_pcb_path, overlay, graph_net_names_from_board(board))
