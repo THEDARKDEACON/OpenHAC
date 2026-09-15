@@ -148,7 +148,7 @@
           "pin_type": "power_in"
         },
         {
-          "pin_number": "S1",
+          "pin_number": "SH",
           "signal_name": "SHIELD",
           "pin_type": "passive"
         }

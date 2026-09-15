@@ -118,7 +118,7 @@ class UsbJack(Module):
             self.usb[p] += self.vbus
         for p in ("A1", "A12", "B1", "B12"):
             self.usb[p] += self.gnd
-        self.usb["S1"] += self.gnd
+        self.usb["SH"] += self.gnd
         self.pwr = self.declare_interface("pwr_5v", self.vbus, self.gnd)
         self.draws_from("VBUS_5V", ma=50)
 

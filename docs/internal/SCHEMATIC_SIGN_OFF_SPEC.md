@@ -260,7 +260,17 @@ Stretch: multi-unit symbols, DeMorgan, overlay JSON `net → power lib_id` map b
 | **Acceptance criteria** | 3-pin signal net has labels and no requirement for a 3-segment spanning tree; 2-pin axis-aligned net has one wire. |
 | **Approach** | `layout.py` connectivity pass. |
 
-### SSO-023…029 — Reserved
+### SSO-023 — Passive / decoupling local wires
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | Affinity placement clusters R/C next to ICs, but SSO-022 still leaves nearby passives as stub+label islands (fanout ≥ 3) or unaligned fanout-2 labels. Decoupling caps on rail/GND get power ports only — no drawn tie to the IC. |
+| **Target state** | After SSO-022: short orthogonal (or L-bend) wires from nearby 2-pin passives to the nearest same-sheet IC/anchor pin within `OPENHAC_SCHEMATIC_PASSIVE_WIRE_MM` (default ~45.72 mm). Remove the passive’s stub+label; keep IC labels on fanout ≥ 3. Decoupling C (one rail + one GND pin) gets short wires to the nearest IC that shares both nets. Kill-switch: `OPENHAC_SCHEMATIC_PASSIVE_WIRES=0`. Does **not** change PCB/netlist/CIR or reopen full spanning trees. |
+| **Acceptance criteria** | Fixture IC+R on a shared signal within threshold: ≥1 pin-to-pin wire and no local label owned by the R. Fixture IC+C on `3V3`/`GND`: ≥1 rail or GND wire from C toward the IC. With kill-switch off, SSO-022-only labels remain. |
+| **Approach** | `openhac/schematic/passive_wires.py` post-pass from `build_ir` after the SSO-022 loop. |
+
+### SSO-024…029 — Reserved
 
 Stretch: bus entry graphics for `NET[7..0]`. v1 may label bus nets as ordinary labels.
 
@@ -288,9 +298,64 @@ Stretch: bus entry graphics for `NET[7..0]`. v1 may label bus nets as ordinary l
 | **Acceptance criteria** | `schematic_geometry` / parsed file match IR wires and labels. |
 | **Approach** | `openhac/schematic/ir.py`, `emit_kicad.py`. |
 
-### SSO-032…039 — Reserved
+### SSO-032 — Placement API fence (component XY only)
 
-Stretch: auto page size beyond A4, collision-free label placement solver.
+| Field | Content |
+|-------|---------|
+| **Severity** | P0 |
+| **Problem** | Improving schematic readability risks accidental changes to emitter connectivity, IR shapes, parity, collect/resolve, or PCB/compile phases. |
+| **Current state** | Symbol `(x,y)` comes from the module-column placer inside `openhac/schematic/layout.py` `build_ir`. |
+| **Target state** | Only `build_ir` instance `(x,y)` (and pin world coords derived from those poses) may change for schematic placement work. Emitter dump, IR dataclass field set, graph↔sch parity rules, collect/resolve, PCB placement, netlist/BOM/CIR, and compile phase order **must not** change behavior. |
+| **Acceptance criteria** | Diff / review gate: placement PRs touch placer entry points under `openhac/schematic/` (e.g. `layout.py` place helpers); no behavioral edits to `emit_kicad.py` connectivity, `parity.py` rules, `pcb_placement.py`, or `compile_pipeline` phase list. Existing SSO-001 / SSO-040 tests remain the electrical gates. |
+| **Approach** | Extract column place into `place_columns`; add `place_affinity`; `build_ir` selects via env (**SSO-035**). Keep **SSO-022** fanout policy unchanged in this batch. |
+
+### SSO-033 — On-sheet AABB
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P0 |
+| **Problem** | Column dumps push symbol instances past the sheet border; EE opens a drawing with parts off-page. |
+| **Current state** | Fixed column pitch / part gaps; paper size may grow, but packing still skews to a sparse left stack. |
+| **Target state** | After place, every symbol instance (body bbox estimated from resolved pin extents, else a conservative default box) lies inside the chosen sheet paper AABB (with the same margin policy as today’s ISO sheet picker). No “column dumps” past the sheet edge. |
+| **Acceptance criteria** | Unit test: affinity (default) place on a multi-IC fixture reports zero instances outside paper; regression asserts column escape hatch can still be forced (**SSO-035**) without affecting PCB artifacts. |
+| **Approach** | Affinity place then clamp / reflow into paper; reuse existing sheet-size selection in `layout.py`. |
+
+### SSO-034 — Affinity placer
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P0 |
+| **Problem** | Module-column placement ignores net geometry; related passives sit far from ICs; sheets look like a 1D list. |
+| **Current state** | Left→right flow columns (power / compute / IO) and vertical stacks per `OpenHaC_Module`. |
+| **Target state** | Native connectivity-aware placer (algorithm *inspired by* SKiDL force/affinity packing — **no** SKiDL runtime dependency, **no** `OPENHAC_LEGACY_SKIDL` dual-graph path): connected parts attract; `OpenHaC_Module` soft clustering; overlap repulsion; snap to the existing 50 mil / 1.27 mm grid (`snap`). Deterministic under `OPENHAC_DETERMINISTIC=1` / schematic deterministic envs. |
+| **Acceptance criteria** | On a small golden (e.g. `sso041_signoff_node` or equivalent fixture), mean distance between parts that share a non-power signal net is strictly smaller under `affinity` than under `columns`. Placement is bit-stable across two runs with deterministic env set. |
+| **Approach** | `place_affinity` in `openhac/schematic/`; same inputs/outputs as `place_columns` (`part → (x, y, rot)`). **Do not** reinvent PCB Z3 placement. |
+
+### SSO-035 — Legacy column escape
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | Flipping the default placer can surprise boards mid-release. |
+| **Current state** | Only column placer exists. |
+| **Target state** | `OPENHAC_SCHEMATIC_PLACE=columns` restores the current column placer for **one release** after affinity becomes default. Default becomes `affinity` once **SSO-036** goldens are green. Documented in README / `.env.example` env tables. |
+| **Acceptance criteria** | Env `columns` vs `affinity` (or unset→affinity after flip) selects placer; USER_GUIDE/README lists the variable; deprecation note that `columns` may be removed after one release. |
+| **Approach** | Branch at start of place in `build_ir`; no second emitter path. |
+
+### SSO-036 — CI invariants for placement
+
+| Field | Content |
+|-------|---------|
+| **Severity** | P1 |
+| **Problem** | Placement changes can silently regress ERC, parity, or off-page packing. |
+| **Current state** | Schematic tests cover SSO-022, geometry round-trip, and sign-off goldens; no on-sheet AABB or affinity-vs-columns distance gate. |
+| **Target state** | (1) Existing SSO / schematic tests stay green. (2) New tests: on-sheet AABB (**SSO-033**) + affinity packs net-mates closer than column baseline (**SSO-034**) on `sso041` / small fixture. (3) `examples/complex_rs485_node.py` under `--schematic-signoff --skip-layout --no-route` (or equivalent) remains KiCad ERC-clean when that job runs. |
+| **Acceptance criteria** | CI jobs listed in acceptance pass; default flip to `affinity` only after this row is **Done**. |
+| **Approach** | `tests/test_schematic_layout.py` (or sibling); optional matrix entry — must not weaken fab `--require-all` (still 2R / **FAB-051**). |
+
+### SSO-037…039 — Reserved
+
+Stretch (not this batch): collision-free ref/value text solver; auto page-size beyond current ISO pick; optional SKiDL-subprocess schematic backend. **SSO-022** fanout policy and text-overlap polish remain **non-goals** for **SSO-032…036** — EE nudge / LIVE artwork overlay stays the drawing polish path.
 
 ---
 
@@ -369,6 +434,11 @@ flowchart LR
     SSO022[SSO-022]
     SSO030[SSO-030]
     SSO031[SSO-031]
+    SSO032[SSO-032]
+    SSO033[SSO-033]
+    SSO034[SSO-034]
+    SSO035[SSO-035]
+    SSO036[SSO-036]
   end
   subgraph ci [CI_docs]
     SSO040[SSO-040]

@@ -66,6 +66,8 @@ openhac compile hello_world.py
 
 If the board ships `{stem}.openhac-seed.json` or `{stem}.openhac.json` beside the `.py`, those parts are loaded before the script runs. `openhac sync` is warehouse maintenance, not a compile prerequisite.
 
+Schematic **symbol placement** (where parts sit on the sheet) is separate from PCB placement and from net/label policy. Affinity packing (**SSO-032…036**) may cluster connected parts on-sheet; set `OPENHAC_SCHEMATIC_PLACE=columns` for the legacy column placer. Fanout still follows **SSO-022** (labels vs short wires); **SSO-023** draws short wires from nearby passives / decoupling caps to the IC (`OPENHAC_SCHEMATIC_PASSIVE_WIRES=0` to disable). Overlapping ref/value text is not auto-solved — nudge in KiCad after `--schematic-signoff`. Spec: [SCHEMATIC_SIGN_OFF_SPEC.md](internal/SCHEMATIC_SIGN_OFF_SPEC.md).
+
 ### Optional CLI flags:
 - `--auto-enrich-board`: Fetches missing footprints and 3D models from LCSC/EasyEDA (needs network).
 - `--name <name>`: Sets the output project name.

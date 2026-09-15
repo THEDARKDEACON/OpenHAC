@@ -7,11 +7,11 @@ OpenHaC is a strongly-typed **Hardware Description Language (HDL)** and **compil
 - **Circuit Intermediate Representation (CIR)** — Immutable, hermetic hardware DAG (`CircuitIR`, `ComponentNode`, `NetNode`, `ConstraintNode`) ensuring thread-safe, deterministic compilation.
 - **Strongly-Typed Protocols & ERC** — Directional types (`Input`, `Output`, `InOut`, `OpenDrain`), protocols (`I2C`, `SPI`, `UART`, `SWD`, `JTAG`), electrical domains (`PowerDomain`, `DigitalDomain`, `AnalogDomain`, `DifferentialPair`), and static Electrical Rules Checking (`ERC-001` driver contention, `ERC-002` floating inputs, `ERC-003` domain mismatch).
 - **Generative Passive Synthesis** — Standard IEC 60063 decade solvers (E6/E12/E24/E96) for optimal resistor dividers, RC/LC filters, and synchronous buck converter passives (`VoltageDividerModule`, `RCLowPassFilterModule`).
-- **First-Class Physical Constraints** — `@constraint` engine with first-class `DifferentialPairConstraint`, `ClearanceConstraint`, `TraceWidthConstraint`, and `KeepoutConstraint` compiled directly into KiCad 8/9 custom DRC text rules (`.kicad_dru`) and FreeRouting DSN rules.
+- **First-Class Physical Constraints** — `@constraint` engine with first-class `DifferentialPairConstraint`, `ClearanceConstraint`, `TraceWidthConstraint`, and `KeepoutConstraint` compiled directly into KiCad 8/9/10 custom DRC text rules (`.kicad_dru`) and FreeRouting DSN rules.
 - **FPGA & Digital HDL Co-Design** — Verilog / SystemVerilog RTL port parsing and automated physical constraint synthesis for AMD/Xilinx Vivado (`.xdc`), Gowin EDA (`.cst`), Lattice Radiant (`.pdc`), and Intel Quartus Prime (`.qsf`).
 - **`.net` / `.csv`** — Netlist and BOM (LCSC-oriented fields when available).
 - **`.kicad_pcb`** — Automated component placement, pad nets, and optional FreeRouting autoroute.
-- **`.kicad_sch` / `.kicad_pro`** — Schematic + project (off by default under `--production`; required under `--schematic-signoff`).
+- **`.kicad_sch` / `.kicad_pro`** — Schematic + project (off by default under `--production`; required under `--schematic-signoff`). Symbol XY uses connectivity-aware **affinity** packing (**SSO-032…036**); fanout follows **SSO-022** (labels vs short wires); nearby passives / decoupling get local wires (**SSO-023**). See [SCHEMATIC_SIGN_OFF_SPEC.md](docs/internal/SCHEMATIC_SIGN_OFF_SPEC.md).
 - **`.cir`** — SPICE decks from `Board.simulate()` or `openhac compile --run-ngspice` / `--spice-signoff`. With `--spice-signoff`, fail-closed Kirchhoff + vendor/physics models + ngspice OP windows ([SPICE_SIGN_OFF_SPEC.md](docs/internal/SPICE_SIGN_OFF_SPEC.md)).
 - **Fab bundle** — Gerbers / drill / position via `openhac export fab` (after a successful PCB).
 - **`.dsn`** — Specctra for FreeRouting. Compile writes one; after KiCad placement edits use `openhac export dsn` so IPC widths are not flattened to 0.2 mm.
@@ -27,8 +27,8 @@ Compilation is isolated and thread-safe via `with DesignContext():`, with native
 ## Requirements
 
 - **Python** 3.11+
-- **KiCad** with **Python bindings** (`import pcbnew`) for layout/schematic — not only `kicad-cli` on `PATH`
-- **Footprint libraries:** set `KICAD8_FOOTPRINT_DIR`, `KICAD9_FOOTPRINT_DIR`, or `KICAD_FOOTPRINT_DIR` to the directory that contains `*.pretty` trees (e.g. `/usr/share/kicad/footprints` on Linux)
+- **KiCad** 8/9/10 with **Python bindings** (`import pcbnew`) for layout/schematic — not only `kicad-cli` on `PATH`
+- **Footprint libraries:** set `KICAD8_FOOTPRINT_DIR`, `KICAD9_FOOTPRINT_DIR`, `KICAD10_FOOTPRINT_DIR`, or `KICAD_FOOTPRINT_DIR` to the directory that contains `*.pretty` trees (e.g. `/usr/share/kicad/footprints` on Linux)
 - **ngspice (optional):** on `PATH` for `--run-ngspice` (`simulate` or `compile`) and required for `--spice-signoff`
 - **FreeRouting (optional):** JRE + `FREEROUTING_JAR`. KiCad **9** has no `kicad-cli pcb export-dsn`; OpenHaC falls back to `pcbnew.ExportSpecctraDSN` / `ImportSpecctraSES` for the DSN/SES round trip.
 
@@ -77,6 +77,9 @@ Runtime deps: **`requirements.txt`**. Package metadata / extras: **`pyproject.to
 | `OPENHAC_NO_BUNDLED_CATALOG_OVERLAYS` | `1` = do not merge bundled `package_catalog_overlays/*.json` (use your own overlays only) |
 | `OPENHAC_PRODUCTION_SCHEMATIC` | `1` = keep schematic export when using `--production` (default off) |
 | `OPENHAC_SCHEMATIC_SIGNOFF` | `1` = same as CLI `--schematic-signoff` (export + KiCad ERC + SSO gates) |
+| `OPENHAC_SCHEMATIC_PLACE` | Schematic **symbol XY** placer only (**SSO-032…036**): `affinity` (connectivity-aware; default after goldens) or `columns` (legacy module-column escape, one release). Does **not** change SSO-022 fanout/labels, PCB place, or electrical SoT. |
+| `OPENHAC_SCHEMATIC_PASSIVE_WIRES` | `0` = disable **SSO-023** short wires from nearby passives / decoupling caps (default on). |
+| `OPENHAC_SCHEMATIC_PASSIVE_WIRE_MM` | Max pin-to-pin distance (mm) for SSO-023 local wires (default `45.72`). |
 | `OPENHAC_SPICE_SIGNOFF` | `1` = same as CLI `--spice-signoff` (Kirchhoff deck + ngspice + probes/benches) |
 | `OPENHAC_SPICE_VENDOR_DIR` | Directory of vendor `.lib` / `.subckt` files (not shipped in git) |
 | `OPENHAC_ALLOW_BEHAVIORAL_SPICE_MODELS` | `1` = allow `kind=behavioral` models under spice sign-off (not physics-correct) |
@@ -141,14 +144,24 @@ OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_production.py --require-all --f
 Matrix: [docs/internal/PRODUCTION_VALIDATION.md](docs/internal/PRODUCTION_VALIDATION.md).  
 Golden board: `tests/fixtures/fab_golden_board.py` (also mirrored at `examples/fab_golden_resistor_bridge.py`).
 
-**Complex multi-IC stress boards** (7 fab examples + optional LCSC live-API board):
+**Complex multi-IC stress boards** (fab matrix + optional LCSC live-API board):
 
 ```bash
 OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_complex_boards.py --place
 python3 scripts/ci_validate_complex_boards.py --api --only lcsc_api_mixed   # live jlcsearch
 ```
 
-Examples: `complex_esp32_devkit_node.py`, `complex_stm32_can_node.py`, `complex_rs485_node.py`, `complex_esp32c3_usb_node.py`, `complex_sensor_hub.py`, `complex_industrial_mesh_gateway.py`, `complex_amr_compute_brick.py`, `complex_lcsc_api_mixed_node.py`, `complex_grid_edge_rtu.py` (`openhac compile examples/complex_grid_edge_rtu.py` — catalog from `complex_grid_edge_rtu.openhac.json`, not `_offline_parts`, not in the default `--production` matrix).  
+Default fab-matrix examples: `complex_esp32_devkit_node.py`, `complex_stm32_can_node.py`, `complex_rs485_node.py`, `complex_esp32c3_usb_node.py`, `complex_sensor_hub.py`, `complex_industrial_mesh_gateway.py`, `complex_amr_compute_brick.py`, `complex_lcsc_api_mixed_node.py`.
+
+Additional boards (not all in the default `--production` matrix):
+
+| Example | Notes |
+|---------|--------|
+| `complex_grid_edge_rtu.py` | Catalog from `complex_grid_edge_rtu.openhac.json` (not `_offline_parts`) |
+| `complex_bess_plant_controller.py` | BESS plant controller; optional `complex_bess_plant_controller.openhac.json` |
+| `complex_cea_farm_controller.py` | CEA / farm controller |
+| `complex_zx7_400mini_welder.py` | Multi-sheet ZX7-400MINI LCD welder interconnect (affinity + SSO-023 smoke) |
+
 See the “Complex multi-IC boards” section in PRODUCTION_VALIDATION.md.
 
 ### JLC / LCSC boards — simple workflow
@@ -193,7 +206,33 @@ OPENHAC_SKIP_LAYOUT=1 openhac compile examples/complex_iot_edge_node_jlc_only.py
   --pre-seed-file seeds/demo_components.json
 ```
 
-**Schematic appearance:** Auto-generated schematics can look crowded (overlapping text, `C?`/`U?` until you run **Tools → Annotate Schematic** in KiCad). That is mostly layout and annotation in KiCad, not the same problem as footprint pad mismatches. The steps above address **correctness** (nets ↔ pads ↔ DB); cleaning the drawing is a separate KiCad editing step.
+### Schematics (placement + local wires)
+
+Schematic **symbol XY** is separate from PCB place and from electrical SoT:
+
+| Knob | Default | Role |
+|------|---------|------|
+| `OPENHAC_SCHEMATIC_PLACE` | `affinity` | Connectivity-aware packing (**SSO-032…036**). Use `columns` for the legacy module-column escape. |
+| `OPENHAC_SCHEMATIC_PASSIVE_WIRES` | on | Short ortho / L wires from nearby 2-pin passives and decoupling caps to an IC (**SSO-023**). Set `0` for SSO-022 labels-only. |
+| `OPENHAC_SCHEMATIC_PASSIVE_WIRE_MM` | `45.72` | Max pin-to-pin distance (mm) for SSO-023. |
+| `OPENHAC_SCHEMATIC_MULTI_SHEET` | auto (≥25 parts) | Force multi-sheet with `=1`, or single-sheet with `OPENHAC_SCHEMATIC_SINGLE_SHEET=1`. |
+
+Fanout policy (**SSO-022**) is unchanged: fanout ≥ 3 → net labels (ICs keep labels); fanout 2 → axis-aligned wire when possible. SSO-023 does **not** draw spanning trees across the sheet. Text overlap / `C?`/`U?` refs still need KiCad annotate / nudge — not auto-solved.
+
+Smoke (netlist + schematic, no PCB):
+
+```bash
+# RS-485 node (A4 affinity + passive wires)
+OPENHAC_NO_NETWORK=1 OPENHAC_SCHEMATIC_PLACE=affinity \
+  openhac compile examples/complex_rs485_node.py --name rs485 -o /tmp/openhac_rs485 --skip-layout
+
+# ZX7 welder (multi-sheet)
+OPENHAC_NO_NETWORK=1 OPENHAC_SCHEMATIC_MULTI_SHEET=1 OPENHAC_SCHEMATIC_PLACE=affinity \
+  openhac compile examples/complex_zx7_400mini_welder.py --name zx7_400mini_welder \
+  --target-kicad 10 --compile-goal handoff --no-route --skip-layout -o /tmp/openhac_zx7
+```
+
+Spec: [SCHEMATIC_SIGN_OFF_SPEC.md](docs/internal/SCHEMATIC_SIGN_OFF_SPEC.md). Guide: [USER_GUIDE.md](docs/USER_GUIDE.md).
 
 ---
 
@@ -240,10 +279,12 @@ Run `openhac compile --help` for the full list. Common flags:
 
 **Environment (not on the CLI):** placement (`OPENHAC_PLACEMENT_*`), PCB overlap checks (`OPENHAC_PCB_CHECK_FP_OVERLAP`, `OPENHAC_FP_OVERLAP_CLEARANCE_MM`), strict pin↔pad (`OPENHAC_STRICT_FOOTPRINT_PIN_PAD`), schematic spacing / embed (`OPENHAC_SCHEMATIC_*`), FreeRouting timeout (`OPENHAC_FREEROUTING_TIMEOUT_S`). See **`.env.example`**. Compile also writes **`*.openhac-pin-pad-report.json`** (preflight pin keys vs `.kicad_mod` pads) when layout runs.
 
-Schematic readability defaults:
+Schematic readability defaults (see **Schematics** above for affinity / SSO-023):
 
 - **Multi-sheet**: auto-enabled when part count ≥ `OPENHAC_SCHEMATIC_MULTI_SHEET_MIN_PARTS` (default 25). Force on with `OPENHAC_SCHEMATIC_MULTI_SHEET=1`, or force single-sheet with `OPENHAC_SCHEMATIC_SINGLE_SHEET=1`.
 - **Strict schematic pinout**: set `OPENHAC_SCHEMATIC_STRICT=1` (or `--schematic-strict`) to block implicit pins (recommended for documentation builds).
+- **Affinity / columns**: `OPENHAC_SCHEMATIC_PLACE=affinity` (default) or `columns`.
+- **Passive local wires**: on by default; `OPENHAC_SCHEMATIC_PASSIVE_WIRES=0` restores labels-only.
 
 Auto board sizing (when `Board(size_mm=None)`):
 
@@ -284,6 +325,9 @@ openhac compile my_design.py -o build --bbox-padding-mm 1.0 --deoverlap-iters 40
 
 # Schematic ERC, then optional JSON report
 openhac compile my_design.py -o build --kicad-erc --kicad-erc-json
+
+# Schematic-only iteration (affinity place + SSO-023; no PCB)
+OPENHAC_SCHEMATIC_PLACE=affinity openhac compile my_design.py -o build --skip-layout
 
 # After PCB compile, analog-island SPICE into the same -o dir
 openhac compile my_design.py -o build --spice-signoff --spice-island Ldo3V3 --spice-vendor-dir spice_vendor/
@@ -463,12 +507,14 @@ openhac/
   core/           # Base Component, Module, Board, DesignContext, Protocols, Domains, Constraints
   ir/             # Circuit Intermediate Representation (CircuitIR, ComponentNode, NetNode, ConstraintNode)
   compiler/       # Elaborator, DRC/ERC rules, parametric solvers, FPGA exporter, KiCad rules, netlist, layout, SPICE
+  schematic/      # Schematic IR, affinity place (SSO-032…036), fanout (SSO-022), passive wires (SSO-023), KiCad emit
   stdlib/         # Standard library hardware modules (MCU, Power, Sensors, Interfaces)
   database/       # SQLite catalog, sync_jlc, seed, 3D model fills
-tests/            # Unit tests (protocols, CIR, synthesis, DRC, fab gates)
+tests/            # Unit tests (protocols, CIR, synthesis, DRC, fab gates, schematic layout)
 scripts/          # CI smoke, fab gate validator, report build
 examples/         # Sample boards and reference implementations
 docs/             # Specifications, architecture, user guides
+seeds/            # Optional SQLite seed JSON for offline demos
 ```
 
 ---

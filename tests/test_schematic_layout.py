@@ -118,6 +118,7 @@ def test_multisheet_child_keeps_off_pin_labels(tmp_path: Path, monkeypatch):
 def test_power_and_io_modules_use_wide_columns(tmp_path, monkeypatch):
     monkeypatch.chdir(tmp_path)
     monkeypatch.setenv("OPENHAC_SCHEMATIC_SINGLE_SHEET", "1")
+    monkeypatch.setenv("OPENHAC_SCHEMATIC_PLACE", "columns")  # SSO-035: column pitch escape
     vcc = Net("3V3")
     sig = Net("USB_DP")
 
@@ -362,3 +363,188 @@ def test_instance_reference_uses_part_ref_not_library_placeholder(tmp_path, monk
     text = out.read_text(encoding="utf-8")
     assert '(property "Reference" "R12"' in text
     assert '(property "Reference" "R12" (id 0)' not in text
+
+
+def _affinity_fixture_parts():
+    """IC + local passives sharing signal nets (SSO-034 / SSO-036)."""
+    from openhac.core.base import Module
+
+    class Core(Module):
+        def __init__(self):
+            super().__init__("Core")
+            self.u = self.add(Part("Device", "R", value="IC", ref="U1"))  # stand-in body
+            self.r1 = self.add(Part("Device", "R", value="10k", ref="R1"))
+            self.r2 = self.add(Part("Device", "R", value="10k", ref="R2"))
+            self.c1 = self.add(Part("Device", "R", value="100n", ref="C1"))
+            sig = Net("SIG")
+            boot = Net("BOOT")
+            gnd = Net("GND")
+            # Pretend pin 1/2 as signal mates; GND is power-ish for util.
+            self.u[1] += sig
+            self.r1[1] += sig
+            self.r1[2] += gnd
+            self.u[2] += boot
+            self.r2[1] += boot
+            self.r2[2] += gnd
+            self.c1[1] += sig
+            self.c1[2] += gnd
+
+    m = Core()
+    return [m.u, m.r1, m.r2, m.c1]
+
+
+def test_sso034_affinity_packs_signal_mates_closer_than_columns(monkeypatch):
+    """SSO-034 / SSO-036: affinity mean signal-pair distance < columns."""
+    monkeypatch.setenv("OPENHAC_DETERMINISTIC", "1")
+    from openhac.schematic.place import (
+        mean_signal_pair_distance,
+        place_affinity,
+        place_columns,
+    )
+
+    parts = _affinity_fixture_parts()
+    pos_a, _ = place_affinity(parts, resolver=None, board=None)
+    pos_c, _ = place_columns(parts, resolver=None, board=None)
+    da = mean_signal_pair_distance(pos_a, parts)
+    dc = mean_signal_pair_distance(pos_c, parts)
+    assert da > 0 and dc > 0
+    assert da < dc, f"affinity {da:.2f} should be < columns {dc:.2f}"
+
+
+def test_sso033_affinity_instances_on_a4(monkeypatch):
+    """SSO-033: affinity place keeps estimated bboxes inside A4."""
+    monkeypatch.setenv("OPENHAC_DETERMINISTIC", "1")
+    from openhac.schematic.place import (
+        _part_cell_size,
+        instance_bboxes_outside_paper,
+        place_affinity,
+    )
+
+    parts = _affinity_fixture_parts()
+    # Add more modules so columns would sprawl; affinity should stay compact.
+    extras = []
+    for i in range(6):
+        r = Part("Device", "R", value="1k", ref=f"R1{i}")
+        extras.append(r)
+    all_parts = parts + extras
+    pos, _ = place_affinity(all_parts, resolver=None, board=None)
+    sizes = {p: _part_cell_size(p) for p in all_parts}
+    bad = instance_bboxes_outside_paper(pos, sizes, paper="A4")
+    assert not bad, f"off-sheet: {[str(getattr(p, 'ref', p)) for p in bad]}"
+
+
+def test_sso035_columns_escape_env(monkeypatch):
+    from openhac.schematic.place import assign_positions, schematic_place_mode
+
+    monkeypatch.setenv("OPENHAC_SCHEMATIC_PLACE", "columns")
+    assert schematic_place_mode() == "columns"
+    parts = _affinity_fixture_parts()
+    pos, rot = assign_positions(parts, resolver=None, board=None)
+    assert len(pos) == len(parts)
+    assert len(rot) == len(parts)
+
+
+def test_sso034_affinity_deterministic(monkeypatch):
+    monkeypatch.setenv("OPENHAC_DETERMINISTIC", "1")
+    monkeypatch.delenv("OPENHAC_SCHEMATIC_PLACE", raising=False)
+    from openhac.schematic.place import place_affinity
+
+    parts = _affinity_fixture_parts()
+    a1, _ = place_affinity(parts, resolver=None)
+    a2, _ = place_affinity(parts, resolver=None)
+    for p in parts:
+        assert a1[p] == a2[p]
+
+
+def test_sso023_passive_local_wire_clears_r_label(tmp_path, monkeypatch):
+    """SSO-023: nearby R on fanout≥3 signal gets a wire to U; R label dropped."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENHAC_DETERMINISTIC", "1")
+    monkeypatch.setenv("OPENHAC_SCHEMATIC_STUB_ONLY", "1")
+    monkeypatch.setenv("OPENHAC_SCHEMATIC_PLACE", "affinity")
+    monkeypatch.delenv("OPENHAC_SCHEMATIC_PASSIVE_WIRES", raising=False)
+
+    class Core(Module):
+        def __init__(self):
+            super().__init__("Core")
+            self.u = self.add(Part("Device", "R", value="IC", ref="U1"))
+            self.r1 = self.add(Part("Device", "R", value="10k", ref="R1"))
+            self.r2 = self.add(Part("Device", "R", value="10k", ref="R2"))
+            sig = Net("SIG")
+            self.u[1] += sig
+            self.r1[1] += sig
+            self.r2[1] += sig
+
+    b = Board((50, 50))
+    b.add_module(Core())
+    from openhac.schematic.collect import collect_parts_and_nets
+
+    parts, nets = collect_parts_and_nets(b)
+    ir = build_ir(parts, nets, b)
+    sig_wires = [w for w in ir.wires if w.net == "SIG" and abs(w.x1 - w.x2) + abs(w.y1 - w.y2) > 3.0]
+    assert sig_wires, "expected local wire(s) on SIG beyond stubs"
+    r_labels = [lb for lb in ir.labels if lb.name == "SIG" and lb.owner_ref in ("R1", "R2")]
+    assert len(r_labels) < 2, "at least one nearby R stub label should clear after local wire"
+    u_labels = [lb for lb in ir.labels if lb.name == "SIG" and lb.owner_ref == "U1"]
+    assert u_labels, "U1 keeps SSO-022 label on fanout≥3"
+
+
+def test_sso023_passive_wires_kill_switch(tmp_path, monkeypatch):
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENHAC_DETERMINISTIC", "1")
+    monkeypatch.setenv("OPENHAC_SCHEMATIC_STUB_ONLY", "1")
+    monkeypatch.setenv("OPENHAC_SCHEMATIC_PASSIVE_WIRES", "0")
+
+    class Core(Module):
+        def __init__(self):
+            super().__init__("Core")
+            self.u = self.add(Part("Device", "R", value="IC", ref="U1"))
+            self.r1 = self.add(Part("Device", "R", value="10k", ref="R1"))
+            self.r2 = self.add(Part("Device", "R", value="10k", ref="R2"))
+            sig = Net("SIG")
+            self.u[1] += sig
+            self.r1[1] += sig
+            self.r2[1] += sig
+
+    b = Board((50, 50))
+    b.add_module(Core())
+    from openhac.schematic.collect import collect_parts_and_nets
+
+    parts, nets = collect_parts_and_nets(b)
+    ir = build_ir(parts, nets, b)
+    labels = [lb for lb in ir.labels if lb.name == "SIG"]
+    assert len(labels) >= 3
+    long_wires = [
+        w for w in ir.wires
+        if w.net == "SIG" and abs(w.x1 - w.x2) + abs(w.y1 - w.y2) > 5.0
+    ]
+    assert not long_wires
+
+
+def test_sso023_decoupling_wires_to_ic(tmp_path, monkeypatch):
+    """SSO-023: C on 3V3/GND near U gets ortho wires toward IC power pins."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("OPENHAC_DETERMINISTIC", "1")
+    monkeypatch.setenv("OPENHAC_SCHEMATIC_STUB_ONLY", "1")
+    monkeypatch.setenv("OPENHAC_SCHEMATIC_PLACE", "affinity")
+    monkeypatch.delenv("OPENHAC_SCHEMATIC_PASSIVE_WIRES", raising=False)
+
+    class Core(Module):
+        def __init__(self):
+            super().__init__("Core")
+            self.u = self.add(Part("Device", "R", value="IC", ref="U1"))
+            self.c1 = self.add(Part("Device", "C", value="100n", ref="C1"))
+            vcc, gnd = Net("3V3"), Net("GND")
+            self.u[1] += vcc
+            self.u[2] += gnd
+            self.c1[1] += vcc
+            self.c1[2] += gnd
+
+    b = Board((50, 50))
+    b.add_module(Core())
+    from openhac.schematic.collect import collect_parts_and_nets
+
+    parts, nets = collect_parts_and_nets(b)
+    ir = build_ir(parts, nets, b)
+    power_wires = [w for w in ir.wires if w.net in ("3V3", "GND")]
+    assert power_wires, "expected decoupling wire(s) on 3V3 and/or GND"

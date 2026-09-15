@@ -1,0 +1,4 @@
+{
+  "schema": "openhac.board-sidecars.v1",
+  "vendor_cassettes": "../tests/fixtures/vendor"
+}

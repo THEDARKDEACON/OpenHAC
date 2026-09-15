@@ -1,52 +1,41 @@
 #!/usr/bin/env python3
 """
-complex_amr_compute_brick.py — Factory AMR / AGV compute brick (compiler ceiling)
+complex_cea_farm_controller.py — Controlled-Environment Agriculture (CEA) farm brick
 
-A 6-layer, triple-MCU motion brick that is *not* another radio gateway.
-It exists to stress OpenHaC APIs the industrial mesh example does not hit:
+A dense multi-MCU greenhouse / vertical-farm controller that pushes OpenHaC:
+dual MCU, 4 schematic sheets, Bus daisy-chain, RS-485 Modbus, CAN, LoRa, I2C mux,
+opto float switches, FET pumps/grow-channels, analog soil island, USB-C + 24 V PDN.
 
-  • Board(layers=6) + inner pours In1–In4
-  • Bus() for daisy-chained 74HC595 outputs
-  • route_differential_pair + declare_length_match_intent (USB D+/D−)
-  • declare_net_tie / analog_ground vs digital_ground (AGND star)
-  • declare_stackup_reference
-  • ferrite + fuse + inductor on the 24 V PDN
-  • 4 schematic sheets (POWER / COMPUTE / IOEXP / FIELD)
-  • I2C mux with *per-channel* nets (not one shared I2C fabric)
-  • CH340C USB-UART, W25Q SPI flash, TXS0108, MCP4725, DS3231, 2N7002
+Inspired by real open hardware (topology only — stock KiCad / offline pinouts):
 
-Inspired by real open hardware (topology only — stock KiCad parts):
+  • GreenOS — ESP32 greenhouse + Modbus soil + safe-fail watchdog
+    https://github.com/secretengineer/GreenOS
+  • IoT Smart Greenhouse — ESP32-S3 + co-MCU + RS-485 valve boards
+    https://github.com/IoT-Smart-Greenhouse/iot-greenhouse-controller-pcb
+  • Sankhya Farms sensor node — ESP32-S3 + RS-485 Modbus soil probes
+    https://sankhyafarms.com/open-hardware
+  • Iguana (Hackaday) — ESP32 + LoRa + RS-485 + pump FET + OLED + RTC + µSD
+    https://hackaday.io/project/194101-iguana
 
-  • linorobot2 / ROS 2 base controllers — MCU + encoder + motor FET
-  • OpenBot / Donkeycar compute hats — ESP companion + STM32 motion
-  • industrial AGV CAN + RS-485 field buses
+Architecture (4-layer PCB, target KiCad 10):
+  24 V fused farm rail + USB-C debug → 5 V / 3.3 V / 1.8 V
+  ESP32-S3  — Wi-Fi edge, OLED HMI, µSD, LoRa, I2C mux climate fabric, 595 lighting
+  ESP32-C3  — safety / e-stop / heartbeat UART (GreenOS-style co-controller)
+  Field     — RS-485 Modbus valves/soil, CAN service cart, opto DI, FET pumps
+  Analog    — ADS1115 + MCP4725 on AGND (net-tied)
 
-Architecture:
-  24 V fused/filtered input + USB-C debug → 5 V / 3.3 V / 1.8 V
-  ESP32-S3  — nav / logging, I2C mux, SPI flash, 595 daisy, USB via CH340
-  STM32F103 — motion: CAN + RS-485 + opto DIs + FET driver
-  ESP32-C3  — safety / heartbeat UART to STM32
-  Analog island (ADS1115 + MCP4725) on AGND, net-tied to GND
+Schematic sheets: POWER / EDGE / CLIMATE / FIELD
 
-Caller / stress test only — no compiler special-cases for AMR/CH340/PCA9548.
-Offline pinouts + stock KiCad footprints → fabrication placeable.
+KiCad 10 layout uses pcbnew ``FindPlugin`` (not PluginFind). With KiCad GUI open
+and Preferences → Plugins → Enable API, set OPENHAC_PLACEMENT_BACKEND=auto|ipc
+to reload/sync footprint positions via kipy after emit.
 
-Compile (logic + schematic sign-off)::
+Compile::
 
-    OPENHAC_NO_NETWORK=1 OPENHAC_SCHEMATIC_MULTI_SHEET=1 python3 -m openhac.cli compile \\
-      examples/complex_amr_compute_brick.py --name amr_compute_brick \\
-      --production --compile-goal fabrication --skip-layout --schematic-signoff \\
-      -o /tmp/openhac_amr
-
-Analog island (when vendor LDO models exist; does not require ESP32/STM32 SPICE)::
-
-    openhac simulate examples/complex_amr_compute_brick.py --spice-signoff \\
-      --spice-island Ldo5VFrom24 --spice-island Ldo3V3 --spice-island Ldo1V8 --spice-island LdoCaps \\
-      --spice-vendor-dir spice_vendor -o /tmp/openhac_amr --name amr_compute_brick
-
-Place uses the complex-board packing knobs (see ``scripts/ci_validate_complex_boards.py``)::
-
-    OPENHAC_NO_NETWORK=1 python3 scripts/ci_validate_complex_boards.py --place --only amr_compute_brick
+    OPENHAC_NO_NETWORK=1 OPENHAC_SCHEMATIC_MULTI_SHEET=1 OPENHAC_PLACEMENT_BACKEND=auto \
+      python3 -m openhac.cli compile examples/complex_cea_farm_controller.py \
+      --name cea_farm_controller --target-kicad 10 --compile-goal handoff \
+      --no-route -o /tmp/openhac_cea
 """
 
 from __future__ import annotations
@@ -96,6 +85,9 @@ from _offline_parts import (
     TXS0108E,
     USB_C_HRO,
     W25Q32JVSS,
+    RFM9X_LORA,
+    MICROSD,
+    SSD1306_OLED,
     XTAL_8MHZ,
     mk_component as _mk,
 )
@@ -142,9 +134,9 @@ class UsbCcStraps(Module):
         self.pwr = self.declare_interface("pwr_5v", self.vbus, self.gnd)
 
 
-class Industrial24VIn(Module):
+class Farm24VIn(Module):
     def __init__(self) -> None:
-        super().__init__("Industrial24VIn")
+        super().__init__("Farm24VIn")
         self.v24, self.gnd = Net("VIN_24V"), Net("GND")
         self.sense = Net("VIN_24V_SENSE")
         self.hdr = self.add(_mk("HDR_24V", HEADER_1x04))
@@ -273,6 +265,9 @@ class Esp32S3Module(Module):
         self.i2c_sda, self.i2c_scl = Net("I2C_SDA"), Net("I2C_SCL")
         self.spi_mosi, self.spi_miso, self.spi_sck = Net("SPI_MOSI"), Net("SPI_MISO"), Net("SPI_SCK")
         self.flash_cs = Net("FLASH_CS")
+        self.lora_cs = Net("LORA_CS")
+        self.lora_dio0 = Net("LORA_DIO0")
+        self.sd_cs = Net("SD_CS")
         self.shift_rclk = Net("SHIFT_RCLK")
         self.enc = [Net(f"ENC_A{i}") for i in range(1, 5)]
         self.m = self.add(_mk("ESP32_S3", ESP32_S3_WROOM1))
@@ -291,6 +286,9 @@ class Esp32S3Module(Module):
         self.m[13] += self.spi_miso  # IO19
         self.m[12] += self.spi_sck  # IO8
         self.m[18] += self.flash_cs  # IO10
+        self.m[19] += self.lora_cs  # IO11
+        self.m[20] += self.lora_dio0  # IO12
+        self.m[21] += self.sd_cs  # IO13
         self.m[22] += self.shift_rclk  # IO14
         self.m[17] += self.enc[0]  # IO9
         self.m[4] += self.enc[1]  # IO4
@@ -317,9 +315,9 @@ class EspLocalCaps(Module):
         self.pwr = self.declare_interface("pwr_3v3", self.v3v3, self.gnd)
 
 
-class Esp32C3Safety(Module):
+class Esp32C3Watchdog(Module):
     def __init__(self) -> None:
-        super().__init__("Esp32C3Safety")
+        super().__init__("Esp32C3Watchdog")
         self.v3v3, self.gnd = Net("3V3"), Net("GND")
         self.en = Net("C3_EN")
         self.tx, self.rx = Net("C3_UART_TX"), Net("C3_UART_RX")
@@ -596,9 +594,9 @@ class TxsEncoder(Module):
         self.pwr_5 = self.declare_interface("pwr_5v", self.v5, self.gnd)
 
 
-class MotorFet(Module):
+class PumpAndLightFets(Module):
     def __init__(self) -> None:
-        super().__init__("MotorFet")
+        super().__init__("PumpAndLightFets")
         self.gnd = Net("GND")
         self.v5 = Net("VBUS_5V")
         self.gate = Net("MOT_FET_G")
@@ -723,9 +721,9 @@ class OptoInput(Module):
         self.pwr = self.declare_interface("pwr_3v3", self.v3v3, self.gnd)
 
 
-class FieldDiHeader(Module):
+class FloatSwitchHeader(Module):
     def __init__(self) -> None:
-        super().__init__("FieldDiHeader")
+        super().__init__("FloatSwitchHeader")
         self.h = self.add(_mk("HDR_DI", HEADER_1x06))
         self.h[1] += Net("DI0_FIELD_P")
         self.h[2] += Net("DI0_FIELD_N")
@@ -878,17 +876,70 @@ class DebugHeader(Module):
         self.pwr = self.declare_interface("pwr_3v3", self.v3v3, self.gnd)
 
 
+class LoraRadio(Module):
+    """Iguana / FarmBot-style LoRa uplink (SPI)."""
+
+    def __init__(self) -> None:
+        super().__init__("LoraRadio")
+        self.v3v3, self.gnd = Net("3V3"), Net("GND")
+        self.mosi, self.miso, self.sck = Net("SPI_MOSI"), Net("SPI_MISO"), Net("SPI_SCK")
+        self.cs = Net("LORA_CS")
+        self.dio0 = Net("LORA_DIO0")
+        self.m = self.add(_mk("RFM95", RFM9X_LORA))
+        self.m[13] += self.v3v3
+        for p in (1, 14, 15, 16):
+            self.m[p] += self.gnd
+        self.m[3] += self.mosi
+        self.m[2] += self.miso
+        self.m[4] += self.sck
+        self.m[5] += self.cs
+        self.m[7] += self.dio0
+        self.m.nc_unused_pins()
+        self.pwr = self.declare_interface("pwr_3v3", self.v3v3, self.gnd)
+
+
+class OledHmi(Module):
+    def __init__(self) -> None:
+        super().__init__("OledHmi")
+        self.v3v3, self.gnd = Net("3V3"), Net("GND")
+        self.sda, self.scl = Net("I2C_SDA"), Net("I2C_SCL")
+        self.m = self.add(_mk("OLED", SSD1306_OLED))
+        self.m[1] += self.v3v3
+        self.m[2] += self.gnd
+        self.m[7] += self.scl
+        self.m[8] += self.sda
+        self.m.nc_unused_pins()
+        self.pwr = self.declare_interface("pwr_3v3", self.v3v3, self.gnd)
+
+
+class SdCard(Module):
+    def __init__(self) -> None:
+        super().__init__("SdCard")
+        self.v3v3, self.gnd = Net("3V3"), Net("GND")
+        self.mosi, self.miso, self.sck = Net("SPI_MOSI"), Net("SPI_MISO"), Net("SPI_SCK")
+        self.cs = Net("SD_CS")
+        self.m = self.add(_mk("MICROSD", MICROSD))
+        self.m[4] += self.v3v3
+        self.m[6] += self.gnd
+        self.m[3] += self.mosi
+        self.m[7] += self.miso
+        self.m[5] += self.sck
+        self.m[2] += self.cs
+        self.m.nc_unused_pins()
+        self.pwr = self.declare_interface("pwr_3v3", self.v3v3, self.gnd)
+
+
 # ---------------------------------------------------------------------------
 # Board assembly
 # ---------------------------------------------------------------------------
 
 
 def build_board() -> Board:
-    board = Board(size_mm=None, layers=6, compile_goal="fabrication", strict=False)
+    board = Board(size_mm=None, layers=4, compile_goal="handoff", strict=False, target_kicad=10)
 
     usb = UsbJack()
     cc = UsbCcStraps()
-    vin24 = Industrial24VIn()
+    vin24 = Farm24VIn()
     pdn = PdnFilter24()
     buck5 = Ldo5VFrom24()
     ldo = Ldo3V3()
@@ -898,7 +949,7 @@ def build_board() -> Board:
 
     esp = Esp32S3Module()
     espc = EspLocalCaps()
-    c3 = Esp32C3Safety()
+    c3 = Esp32C3Watchdog()
     c3c = C3LocalCaps()
     stm = Lqfp48Core()
     stmc = Stm32LocalCaps()
@@ -916,7 +967,7 @@ def build_board() -> Board:
     pu4 = I2cPullups("I2cPullups4", "I2C4_SDA", "I2C4_SCL")
     pu5 = I2cPullups("I2cPullups5", "I2C5_SDA", "I2C5_SCL")
     txs = TxsEncoder()
-    fet = MotorFet()
+    fet = PumpAndLightFets()
 
     can = CanPhy()
     cant = CanTerm()
@@ -926,13 +977,16 @@ def build_board() -> Board:
     rsh = Rs485Header()
     o0 = OptoInput("OptoInput0", "OPTO_DI0", "0")
     o1 = OptoInput("OptoInput1", "OPTO_DI1", "1")
-    dih = FieldDiHeader()
+    dih = FloatSwitchHeader()
     baro = BaroChip()
     imu = ImuChip()
     ee = EepromChip()
     dac = DacChip()
     rtc = RtcChip()
     adc = AdcChip()
+    lora = LoraRadio()
+    oled = OledHmi()
+    sd = SdCard()
     leds = StatusLeds()
     dbg = DebugHeader()
 
@@ -941,7 +995,7 @@ def build_board() -> Board:
         esp, espc, c3, c3c, stm, stmc, xtal, ch340, flash,
         sh, mux, pu, pu0, pu1, pu2, pu3, pu4, pu5, txs, fet,
         can, cant, canh, rs, rst, rsh, o0, o1, dih,
-        baro, imu, ee, dac, rtc, adc, leds, dbg,
+        baro, imu, ee, dac, rtc, adc, lora, oled, sd, leds, dbg,
     )
     for m in modules:
         board.add_module(m)
@@ -950,13 +1004,16 @@ def build_board() -> Board:
         "POWER", usb, cc, vin24, pdn, buck5, ldo, ldo18, ldoc, agnd,
     )
     board.set_schematic_sheet(
-        "COMPUTE", esp, espc, c3, c3c, stm, stmc, xtal, ch340, flash, leds, dbg,
+        "EDGE", esp, espc, c3, c3c, stm, stmc, xtal, ch340, flash, leds, dbg,
     )
-    board.set_schematic_sheet("IOEXP", sh, mux, pu, pu0, pu1, pu2, pu3, pu4, pu5, txs, fet)
+    board.set_schematic_sheet(
+        "CLIMATE",
+        sh, mux, pu, pu0, pu1, pu2, pu3, pu4, pu5, txs, fet,
+        baro, imu, ee, rtc, lora, oled, sd,
+    )
     board.set_schematic_sheet(
         "FIELD",
-        can, cant, canh, rs, rst, rsh, o0, o1, dih,
-        baro, imu, ee, dac, rtc, adc,
+        can, cant, canh, rs, rst, rsh, o0, o1, dih, dac, adc,
     )
 
     usb.usb["A5"] += cc.cc1
@@ -977,7 +1034,7 @@ def build_board() -> Board:
     for m in (
         esp, espc, c3, c3c, stm, stmc, flash, sh, mux,
         pu, pu0, pu1, pu2, pu3, pu4, pu5, txs,
-        can, rs, rst, o0, o1, baro, imu, ee, rtc, leds, dbg,
+        can, rs, rst, o0, o1, baro, imu, ee, rtc, lora, oled, sd, leds, dbg,
     ):
         board.connect(ldo.pwr_out, m.pwr)
     # DAC / ADC sit on AGND — 3V3 merges by net name; do not zip AGND into GND.
@@ -1001,7 +1058,7 @@ def build_board() -> Board:
     board.declare_stackup_reference(
         Path(__file__).resolve().parents[1] / "docs" / "stackup_template.yaml",
         role="si_documentation",
-        documentation_note="6-layer AMR brick; YAML is the 4-layer SI template (edit for fab).",
+        documentation_note="4-layer CEA farm brick; YAML is the 4-layer SI template (edit for fab).",
     )
 
     board.constrain_distance_min(usb, esp, min_distance_mm=5.0)
@@ -1032,6 +1089,9 @@ def build_board() -> Board:
     pu5.cluster_with(adc)
     agnd.cluster_with(adc)
     fet.cluster_with(stm)
+    lora.cluster_with(esp)
+    oled.cluster_with(esp)
+    sd.cluster_with(esp)
     leds.cluster_with(esp)
     dbg.cluster_with(esp)
 
@@ -1039,13 +1099,11 @@ def build_board() -> Board:
     board.declare_copper_pour_intent(usb.gnd, layer="B.Cu", purpose="ground")
     board.declare_copper_pour_intent(usb.gnd, layer="In1.Cu", purpose="ground_plane")
     board.declare_copper_pour_intent(ldo.v3v3, layer="In2.Cu", purpose="power_plane")
-    board.declare_copper_pour_intent(usb.gnd, layer="In3.Cu", purpose="ground_plane")
-    board.declare_copper_pour_intent(ldo18.v1v8, layer="In4.Cu", purpose="power_plane")
 
     board.set_net_current(usb.vbus, 1.5, note="USB-C + local 5V rail")
     board.set_net_current(ldo.v3v3, 1.0, note="shared 3V3 digital")
     board.set_net_current(ldo18.v1v8, 0.2, note="1.8V analog/helper")
-    board.set_net_current(vin24.v24, 0.8, note="industrial 24V input")
+    board.set_net_current(vin24.v24, 0.8, note="farm 24V input")
     board.set_net_current(usb.gnd, 2.0, note="return")
 
     return board
@@ -1056,5 +1114,5 @@ board = build_board()
 if __name__ == "__main__":
     n = sum(len(m.components) for m in board._get_all_modules())
     nmod = len(board._get_all_modules())
-    print(f"AMR / AGV compute brick: {n} components across {nmod} modules (4 schematic sheets, 6 layers)")
-    print("Stresses: Bus, USB diff pair, AGND net-tie, 6-layer pours, I2C mux channels, triple MCU")
+    print(f"CEA farm controller: {n} components across {nmod} modules (4 schematic sheets, 4 layers, KiCad 10)")
+    print("Stresses: Bus, USB diff pair, AGND net-tie, I2C mux, LoRa+µSD+OLED, RS-485/CAN, FET actuators")

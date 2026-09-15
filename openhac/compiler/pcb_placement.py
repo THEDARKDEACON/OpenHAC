@@ -259,6 +259,8 @@ def _pin_synonyms_for_matching(pnum: str, pname: str) -> set[str]:
         (("sbu2",), ("SBU2",)),
         (("vbus",), ("VBUS", "A4", "B4", "A9", "B9")),
         (("gnd", "ground"), ("GND", "A1", "B1", "A12", "B12")),
+        # KiCad HRO TYPE-C-31-M-12 pad is SH; older catalogs / symbols used S1.
+        (("shield", "s1", "sh"), ("SH", "S1", "SHIELD")),
     )
     for keys, vals in usb_pairs:
         if any(k in blob for k in keys):

@@ -169,7 +169,7 @@ def _usb_c_pins() -> list[dict[str, str]]:
         _pin("B8", "SBU2", "bidirectional"),
         _pin("B9", "VBUS_B9", "power_in"),
         _pin("B12", "GND_B12", "power_in"),
-        _pin("S1", "SHIELD", "passive"),
+        _pin("SH", "SHIELD", "passive"),
     ]
 
 

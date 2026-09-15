@@ -45,7 +45,7 @@ def test_bundled_usb_c_hro_keeps_kicad_pads() -> None:
     assert row.get("easyeda_sku") == "C165948"
     po = json.loads(row["pinout_json"])
     nums = {p["num"] for p in po}
-    assert "A1" in nums and "A4" in nums and "S1" in nums
+    assert "A1" in nums and "A4" in nums and "SH" in nums
 
 
 def test_bundled_microsd_has_easyeda_sku() -> None:

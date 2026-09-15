@@ -343,3 +343,18 @@ z3_cache.json
 # - Do NOT add blanket "tests/" / "scripts/" / "examples/" rules — that hides new CI
 #   fixtures and forces `git add -f` for every new file.
 /docs/obsidian/
+.kiro/
+.venv/
+.vscode/
+.idea/
+.pytest_cache/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+.tox/
+.nox/
+.pytest_tmp/
+junit.xml
+*.cover
+*.py,cover

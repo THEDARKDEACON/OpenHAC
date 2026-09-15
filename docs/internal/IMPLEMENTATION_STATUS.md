@@ -1,6 +1,6 @@
 # Implementation status (OpenHaC)
 
-Track record of fixes applied against [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md) (Phase-1), [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md) (Phase-2), [SCHEMATIC_SIGN_OFF_SPEC.md](./SCHEMATIC_SIGN_OFF_SPEC.md) (**SSO-***), [SPICE_SIGN_OFF_SPEC.md](./SPICE_SIGN_OFF_SPEC.md) (**SPS-***), [LIVE_KICAD_SPEC.md](./LIVE_KICAD_SPEC.md) (**LIVE-***), [CATALOG_DEPTH_SPEC.md](./CATALOG_DEPTH_SPEC.md) (**CAT-*** / **3D-*** / **SPS-05x**), [WORKFLOW_GATES_SPEC.md](./WORKFLOW_GATES_SPEC.md) (**ECO-*** / **LOCK-*** / **MFG-010** / **PWR-010** / **PIN-001** / **VAR-001** / **LIVE-010** / **PLC-001** / **TST-001** / **GLD-001**), and [COMPONENT_AGNOSTIC_SPEC.md](./COMPONENT_AGNOSTIC_SPEC.md) (**UNF-***). Live follow-on work is the [component-agnostic UNF table](#component-agnostic-library-unf) (Open). The [Sep 2026 job spec](#audit-follow-on-job-spec-sep-2026) below is **closed** history. Update this file when you close spec items.
+Track record of fixes applied against [PRODUCTION_READINESS_SPEC.md](./PRODUCTION_READINESS_SPEC.md) (Phase-1), [FABRICATION_READINESS_SPEC.md](./FABRICATION_READINESS_SPEC.md) (Phase-2), [SCHEMATIC_SIGN_OFF_SPEC.md](./SCHEMATIC_SIGN_OFF_SPEC.md) (**SSO-***), [SPICE_SIGN_OFF_SPEC.md](./SPICE_SIGN_OFF_SPEC.md) (**SPS-***), [LIVE_KICAD_SPEC.md](./LIVE_KICAD_SPEC.md) (**LIVE-***), [CATALOG_DEPTH_SPEC.md](./CATALOG_DEPTH_SPEC.md) (**CAT-*** / **3D-*** / **SPS-05x**), [WORKFLOW_GATES_SPEC.md](./WORKFLOW_GATES_SPEC.md) (**ECO-*** / **LOCK-*** / **MFG-010** / **PWR-010** / **PIN-001** / **VAR-001** / **LIVE-010** / **PLC-001** / **TST-001** / **GLD-001**), and [COMPONENT_AGNOSTIC_SPEC.md](./COMPONENT_AGNOSTIC_SPEC.md) (**UNF-***). Live follow-on work is the [component-agnostic UNF table](#component-agnostic-library-unf) (Open). Schematic affinity placement (**SSO-032…036**) is **Done** — see [Schematic affinity placement](#schematic-affinity-placement-sso-032036). The [Sep 2026 job spec](#audit-follow-on-job-spec-sep-2026) below is **closed** history. Update this file when you close spec items.
 
 ---
 
@@ -27,6 +27,26 @@ Python remains the HDL. Part identity is a catalog row, a board overlay / sideca
 | **UNF-013** | P2 | Open | Bundled SPICE `D_1N4007` / PC817 / AD620 documented as physics aliases |
 
 **Open in this batch:** **13**. Spec landed 6 Sep 2026. No compiler behavior change until the implement batch.
+
+## Schematic affinity placement (SSO-032…036)
+
+Normative tables: [SCHEMATIC_SIGN_OFF_SPEC.md](./SCHEMATIC_SIGN_OFF_SPEC.md) (**SSO-032…036**). Connectivity-aware schematic **component XY placement only** (SKiDL-inspired affinity packing). Does **not** reopen closed SSO-001…031 / 040…050 electrical rows. Does **not** change **SSO-022** fanout policy, PCB placement, netlist/BOM/CIR, or fab gates. No SKiDL runtime dependency; no `OPENHAC_LEGACY_SKIDL` dual-graph path (**FAB-004**). Text/field collision solver is **out of scope** (EE nudge / LIVE overlay).
+
+**Claim:** Python remains the HDL. Native graph remains compile SoT. Affinity place only moves symbol instances on the sheet; KiCad ERC + graph↔sch parity remain the stamp gates.
+
+**Execution order:** SSO-032 fence → SSO-034 placer + SSO-033 on-sheet → SSO-036 CI → flip default → SSO-035 document `columns` escape (one release).
+
+**Out of scope:** SSO-037+ text collision; changing SSO-022; PCB Z3 / FreeRouting; SKiDL subprocess backend; UNF catalog work.
+
+| Spec ID | Pri | Status | One-line target |
+|---------|-----|--------|-----------------|
+| **SSO-032** | P0 | Done | Placement API fence: only `build_ir` instance `(x,y)` may change |
+| **SSO-033** | P0 | Done | All symbol instances inside sheet paper AABB after place |
+| **SSO-034** | P0 | Done | Native affinity placer (attract / cluster / repel / grid snap); deterministic |
+| **SSO-035** | P1 | Done | `OPENHAC_SCHEMATIC_PLACE=columns` escape one release; default `affinity` |
+| **SSO-036** | P1 | Done | Existing SSO tests green + on-sheet/affinity CI + RS-485 sch ERC |
+
+**Open in this batch:** **0**. Implemented 15 Sep 2026 (`openhac/schematic/place.py`; default `affinity`; `columns` escape). Tests: `tests/test_schematic_layout.py` SSO-033/034/035/036. RS-485 `--schematic-signoff --skip-layout` ERC-clean on A4 under affinity.
 
 ## Audit follow-on job spec (Sep 2026)
 
@@ -73,7 +93,7 @@ Normative executable backlog from the Sep 2026 code, overfitting, live-schematic
 
 **Open in this batch:** **0**. Closed 4 Sep 2026 (`pytest tests/`: 640 passed, 6 skipped; mypy island exit 0). **CODE-001:** env restore shipped; `pcbnew.SaveBoard` remains in-process (SIGSEGV is not catchable). **PERF-008:** stretch partial — `generate_layout` board reused into autoroute, not through zone fill.
 
-Follow-on (not a reopen of FAB/PERF): live KiCad artwork overlay — [LIVE_KICAD_SPEC.md](./LIVE_KICAD_SPEC.md) (**LIVE-001…008**). Catalog depth, 3D pointers, and SPICE operator follow-on — [CATALOG_DEPTH_SPEC.md](./CATALOG_DEPTH_SPEC.md) (**CAT-001…015**, **3D-001…006**, **SPS-050…057**). Operator workflow gates — [WORKFLOW_GATES_SPEC.md](./WORKFLOW_GATES_SPEC.md) (**ECO-001**, **LOCK-001**, **MFG-010**, **PWR-010**, **PIN-001**, **VAR-001**, **LIVE-010**, **PLC-001**, **TST-001**, **GLD-001**). Component-agnostic leftover (does **not** reopen **LIB-007** / **CODE-003** / **SCH-006** / **ABC-046** / **CODE-004**): [COMPONENT_AGNOSTIC_SPEC.md](./COMPONENT_AGNOSTIC_SPEC.md) (**UNF-001…013**). Does not reopen **SPS-010…044**. HTTP fetch of vendor SPICE `.lib` stays out of scope (**SPS-019** reserved unused).
+Follow-on (not a reopen of FAB/PERF): live KiCad artwork overlay — [LIVE_KICAD_SPEC.md](./LIVE_KICAD_SPEC.md) (**LIVE-001…008**). Catalog depth, 3D pointers, and SPICE operator follow-on — [CATALOG_DEPTH_SPEC.md](./CATALOG_DEPTH_SPEC.md) (**CAT-001…015**, **3D-001…006**, **SPS-050…057**). Operator workflow gates — [WORKFLOW_GATES_SPEC.md](./WORKFLOW_GATES_SPEC.md) (**ECO-001**, **LOCK-001**, **MFG-010**, **PWR-010**, **PIN-001**, **VAR-001**, **LIVE-010**, **PLC-001**, **TST-001**, **GLD-001**). Component-agnostic leftover (does **not** reopen **LIB-007** / **CODE-003** / **SCH-006** / **ABC-046** / **CODE-004**): [COMPONENT_AGNOSTIC_SPEC.md](./COMPONENT_AGNOSTIC_SPEC.md) (**UNF-001…013**). Schematic affinity **symbol XY** placement (does **not** reopen SSO-022 / PCB / fab): [Schematic affinity placement](#schematic-affinity-placement-sso-032036) (**SSO-032…036**). Does not reopen **SPS-010…044**. HTTP fetch of vendor SPICE `.lib` stays out of scope (**SPS-019** reserved unused).
 
 ---
 
@@ -535,14 +555,20 @@ Normative spec: [SCHEMATIC_SIGN_OFF_SPEC.md](./SCHEMATIC_SIGN_OFF_SPEC.md). Addi
 | **SSO-020** | Done | `no_connect` from pin type / unconnected / NC net on flat and hierarchical sheets. |
 | **SSO-021** | Done | `power:PWR_FLAG` instanced per power/GND net on the sheet. |
 | **SSO-022** | Done | Fanout ≥ 3 uses labels; fanout 2 uses a wire when axis-aligned. |
+| **SSO-023** | Done | Nearby passives / decoupling C get short local wires; IC labels kept on fanout ≥ 3. Kill-switch `OPENHAC_SCHEMATIC_PASSIVE_WIRES=0`. |
 | **SSO-030** | Done | Multi-sheet hierarchy; hier pin type from net pin types. |
 | **SSO-031** | Done | Schematic IR then emit; title block has no “Fabrication Ready” slogan. |
+| **SSO-032** | Done | Placement API fence — `openhac/schematic/place.py` via `assign_positions`. |
+| **SSO-033** | Done | Affinity packs into ISO paper (A4 smoke on RS-485). |
+| **SSO-034** | Done | Native affinity placer (no SKiDL runtime). |
+| **SSO-035** | Done | `OPENHAC_SCHEMATIC_PLACE=columns` escape; default `affinity`. |
+| **SSO-036** | Done | Layout tests + RS-485 sch ERC under affinity. |
 | **SSO-040** | Done | `--schematic-signoff` forces schematic + `kicad-cli sch erc`. |
 | **SSO-041** | Done | Shipped smoke exists. **Sep 2026 reopen:** CI still compiles `complex_rs485_node.py`; target remains `examples/sso041_signoff_node.py` — see job spec above. |
 | **SSO-042** | Done | Grep gate for `_resistor_graphic` / `_detect_symbol_type`. |
 | **SSO-050** | Done | SCOPE / FAB-040 / README / this table. |
 
-**SSO open (v1 table):** **0 / 16** closed IDs. **Sep 2026 reopen:** **SSO-012** (preview SVG) and **SSO-041** (CI golden path) — see [Audit follow-on job spec](#audit-follow-on-job-spec-sep-2026). Stretch reserved: SSO-013…019 / 023…029 / 032…039.
+**SSO open (v1 closed IDs):** historical **0 / 16**. **SSO-023** passive local wires **Done** (15 Sep 2026). **SSO-032…036:** **Done** (15 Sep 2026). Stretch reserved: SSO-024…029 (bus graphics); SSO-037…039 (text collision / page-size / SKiDL backend). **Sep 2026 reopen history:** **SSO-012** / **SSO-041** — see [Audit follow-on job spec](#audit-follow-on-job-spec-sep-2026).
 
 ### Phase-2 Fabrication Readiness (FAB-* IDs)
 

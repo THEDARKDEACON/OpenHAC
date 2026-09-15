@@ -120,7 +120,7 @@ USB_C_HRO_PINS: dict[int | str, tuple[str, str]] = {
     "B8": ("SBU2", "bidirectional"),
     "B9": ("VBUS", "power_in"),
     "B12": ("GND", "power_in"),
-    "S1": ("SHIELD", "passive"),
+    "SH": ("SHIELD", "passive"),
 }
 
 USB_C_HRO = offline_part(
@@ -1039,6 +1039,7 @@ AD620 = offline_part(
 )
 AD620["spice_include"] = "ad620.cir"
 AD620["spice_subckt"] = "AD620"
+
 
 
 def mk_component(name: str, data: dict):

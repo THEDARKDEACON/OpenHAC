@@ -1,8 +1,9 @@
-"""Schematic placement and connectivity IR (SSO-002, SSO-022, SSO-031)."""
+"""Schematic placement and connectivity IR (SSO-002, SSO-022, SSO-023, SSO-031)."""
 
 from __future__ import annotations
 
 import os
+from typing import Any
 
 from openhac.schematic.ir import (
     BusEntry,
@@ -23,6 +24,13 @@ from openhac.schematic.resolve import (
     schematic_symbol_lib_key,
 )
 from openhac.schematic.kicad_links import sheet_instance_uuid, symbol_instance_uuid
+from openhac.schematic.place import (  # SSO-032…036
+    _CELL_H_PAD_MM,
+    _COL_PITCH_MM,
+    _MOD_GAP_MM,
+    _PART_GAP_MM,
+    assign_positions as _assign_positions,
+)
 from openhac.schematic.util import (
     bus_member_prefix,
     is_gnd_net_name,
@@ -84,12 +92,20 @@ def pin_world_xy(pin, part, origin: tuple[float, float], rot: float, resolver, s
     return origin[0] + rdx, origin[1] - rdy, prot + rot
 
 
-# 50 mil grid. Stubs must not land on a neighbor pin (column pitch / part gap).
+# 50 mil stub length (column pitch lives in schematic.place for SSO-035).
 _STUB_MM = 2.54
-_COL_PITCH_MM = 152.4
-_PART_GAP_MM = 20.32
-_MOD_GAP_MM = 38.1
-_CELL_H_PAD_MM = 20.32
+
+
+def _flow_from_tag(tag: str) -> int | None:
+    from openhac.schematic.place import _flow_from_tag as _ft
+
+    return _ft(tag)
+
+
+def _flow_column(mod_name: str, board) -> int:
+    from openhac.schematic.place import _flow_column as _fc
+
+    return _fc(mod_name, board)
 
 
 def _stub_delta_from_rot(prot: float) -> tuple[float, float]:
@@ -206,108 +222,6 @@ def _separate_colliding_nets(ir: SchematicIR) -> None:
         if moved:
             _stretch_wire_to_label(ir, lb, nx, ny)
             lb.x, lb.y = nx, ny
-
-
-def _flow_from_tag(tag: str) -> int | None:
-    t = str(tag or "").strip().lower()
-    if t in ("0", "power", "pwr", "left"):
-        return 0
-    if t in ("2", "io", "right"):
-        return 2
-    if t in ("1", "compute", "mid", "middle"):
-        return 1
-    return None
-
-
-def _flow_column(mod_name: str, board) -> int:
-    """0=power/left, 1=compute/mid, 2=IO/right — from module tags / interface kinds."""
-    if board is not None:
-        for m in getattr(board, "modules", []) or []:
-            if str(getattr(m, "name", "")) != mod_name:
-                continue
-            tagged = _flow_from_tag(getattr(m, "schematic_flow", None) or "")
-            if tagged is not None:
-                return tagged
-            kinds = []
-            for d in (
-                getattr(m, "required_interfaces", {}) or {},
-                getattr(m, "optional_interfaces", {}) or {},
-            ):
-                for iface in d.values():
-                    kinds.append(str(getattr(iface, "kind", "") or getattr(iface, "name", "") or "").lower())
-            blob = " ".join(kinds)
-            left = any(t in blob for t in ("pwr", "power", "supply", "vin", "vbat"))
-            right = any(t in blob for t in ("uart", "spi", "i2c", "can", "usb", "gpio", "io"))
-            if left and not right:
-                return 0
-            if right and not left:
-                return 2
-            break
-    if os.environ.get("OPENHAC_SCHEMATIC_FLOW_NAME_TOKENS", "").strip().lower() in (
-        "1",
-        "true",
-        "yes",
-        "on",
-    ):
-        keys = [str(mod_name or "").lower()]
-        blob = " ".join(keys)
-        left = any(
-            t in blob
-            for t in ("pwr", "power", "vcc", "3v3", "gnd", "vbus", "vin", "ldo", "reg", "supply", "batt")
-        )
-        right = any(
-            t in blob
-            for t in ("uart", "spi", "i2c", "can", "rs485", "usb", "gpio", "jtag", "header", "conn", "eth", "io")
-        )
-        if left and not right:
-            return 0
-        if right and not left:
-            return 2
-    return 1
-
-
-def _assign_positions(parts, resolver, board=None, overlay=None) -> dict:
-    """Module-grouped left-to-right flow columns; 50 mil snap. No NetworkX.
-
-    LIVE-002: overlay symbol ``(at x y rot)`` wins for surviving refdes.
-    """
-    groups: dict[str, list] = {}
-    for p in parts:
-        groups.setdefault(module_field(p), []).append(p)
-    names = sorted(groups.keys(), key=lambda s: (not s, s))
-    cols: dict[int, list[str]] = {0: [], 1: [], 2: []}
-    for m in names:
-        cols[_flow_column(m, board)].append(m)
-    positions: dict = {}
-    rotations: dict = {}
-    for col, mod_names in cols.items():
-        cur_mod_y = 25.4
-        px_base = 40.64 + col * _COL_PITCH_MM
-        for m in mod_names:
-            m_parts = sorted(groups[m], key=lambda p: (str(part_ref(p)).upper(), getattr(p, "_part_id", 0)))
-            cur_y = 0.0
-            for p in m_parts:
-                rot = part_rotation_deg(p)
-                n_pins = max(len(iter_pins(p)), 2)
-                cell_h = min(150.0, max(25.4, (n_pins / 2) * 5.08 + _CELL_H_PAD_MM))
-                px, py = px_base, cur_mod_y + cur_y
-                pins = iter_pins(p)
-                if pins and resolver is not None:
-                    dx, dy, _ = pin_offset(resolver, p, pins[0], symbol_name=schematic_symbol_lib_key(p))
-                    rdx, rdy = rotate_offset(dx, dy, rot)
-                    px = snap(px + rdx) - rdx
-                    py = snap(py - rdy) + rdy
-                positions[p] = (px, py)
-                rotations[p] = rot
-                cur_y += cell_h + _PART_GAP_MM
-            cur_mod_y += cur_y + _MOD_GAP_MM
-    if overlay is None and board is not None:
-        overlay = getattr(board, "_kicad_artwork_overlay", None)
-    if overlay is not None:
-        from openhac.compiler.kicad_artwork import apply_symbol_overlay
-
-        apply_symbol_overlay(positions, rotations, parts, overlay)
-    return positions, rotations
 
 
 def _collect_bus_groups(nets: list) -> dict[str, list]:
@@ -663,6 +577,12 @@ def build_ir(
             else:
                 _stub_label(a)
                 _stub_label(b)
+
+    # SSO-023: short wires from nearby passives / decoupling caps (emit only).
+    from openhac.schematic.passive_wires import apply_decoupling_wires, apply_passive_local_wires
+
+    apply_passive_local_wires(ir, nets)
+    apply_decoupling_wires(ir, nets, parts)
 
     inst_xy = {inst.ref: (inst.x, inst.y) for inst in ir.instances}
     for prefix, members in bus_groups.items():

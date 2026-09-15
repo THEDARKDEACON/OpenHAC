@@ -1,0 +1,2222 @@
+[
+  {
+    "generic_name": "STM32F407VET6",
+    "kicad_symbol": "MCU_ST_STM32F4:STM32F407VETx",
+    "kicad_footprint": "Package_QFP:LQFP-100_14x14mm_P0.5mm",
+    "db_category": "Microcontrollers",
+    "product": {
+      "manufacturer_part_number": "STM32F407VET6",
+      "manufacturer": {
+        "name": "STMicroelectronics"
+      },
+      "digi_key_part_number": "497-F407VE",
+      "product_description": "PLC-class Cortex-M4",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/497-F407VE",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Microcontrollers"
+      },
+      "package_type": {
+        "name": "LQFP-100"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "PE2",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "PE3",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "3",
+          "signal_name": "PE4",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "4",
+          "signal_name": "PE5",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "5",
+          "signal_name": "PE6",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "6",
+          "signal_name": "VBAT",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "7",
+          "signal_name": "PC13",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "8",
+          "signal_name": "PC14",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "9",
+          "signal_name": "PC15",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "10",
+          "signal_name": "VSS_10",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "11",
+          "signal_name": "VDD",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "12",
+          "signal_name": "PH0",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "13",
+          "signal_name": "PH1",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "14",
+          "signal_name": "NRST",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "15",
+          "signal_name": "PC0",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "16",
+          "signal_name": "PC1",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "17",
+          "signal_name": "PC2",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "18",
+          "signal_name": "PC3",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "19",
+          "signal_name": "VDD_19",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "20",
+          "signal_name": "VSSA",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "21",
+          "signal_name": "VREF+",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "22",
+          "signal_name": "VDDA",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "23",
+          "signal_name": "PA0",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "24",
+          "signal_name": "PA1",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "25",
+          "signal_name": "PA2",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "26",
+          "signal_name": "PA3",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "27",
+          "signal_name": "VSS_27",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "28",
+          "signal_name": "VDD_28",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "29",
+          "signal_name": "PA4",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "30",
+          "signal_name": "PA5",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "31",
+          "signal_name": "PA6",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "32",
+          "signal_name": "PA7",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "33",
+          "signal_name": "PC4",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "34",
+          "signal_name": "PC5",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "35",
+          "signal_name": "PB0",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "36",
+          "signal_name": "PB1",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "37",
+          "signal_name": "PB2",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "38",
+          "signal_name": "PE7",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "39",
+          "signal_name": "PE8",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "40",
+          "signal_name": "PE9",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "41",
+          "signal_name": "PE10",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "42",
+          "signal_name": "PE11",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "43",
+          "signal_name": "PE12",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "44",
+          "signal_name": "PE13",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "45",
+          "signal_name": "PE14",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "46",
+          "signal_name": "PE15",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "47",
+          "signal_name": "PB10",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "48",
+          "signal_name": "PB11",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "49",
+          "signal_name": "VCAP_1",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "50",
+          "signal_name": "VDD_50",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "51",
+          "signal_name": "PB12",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "52",
+          "signal_name": "PB13",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "53",
+          "signal_name": "PB14",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "54",
+          "signal_name": "PB15",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "55",
+          "signal_name": "PD8",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "56",
+          "signal_name": "PD9",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "57",
+          "signal_name": "PD10",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "58",
+          "signal_name": "PD11",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "59",
+          "signal_name": "PD12",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "60",
+          "signal_name": "PD13",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "61",
+          "signal_name": "PD14",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "62",
+          "signal_name": "PD15",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "63",
+          "signal_name": "PC6",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "64",
+          "signal_name": "PC7",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "65",
+          "signal_name": "PC8",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "66",
+          "signal_name": "PC9",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "67",
+          "signal_name": "PA8",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "68",
+          "signal_name": "PA9",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "69",
+          "signal_name": "PA10",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "70",
+          "signal_name": "PA11",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "71",
+          "signal_name": "PA12",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "72",
+          "signal_name": "PA13",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "73",
+          "signal_name": "VCAP_2",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "74",
+          "signal_name": "VSS_74",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "75",
+          "signal_name": "VDD_75",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "76",
+          "signal_name": "PA14",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "77",
+          "signal_name": "PA15",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "78",
+          "signal_name": "PC10",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "79",
+          "signal_name": "PC11",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "80",
+          "signal_name": "PC12",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "81",
+          "signal_name": "PD0",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "82",
+          "signal_name": "PD1",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "83",
+          "signal_name": "PD2",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "84",
+          "signal_name": "PD3",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "85",
+          "signal_name": "PD4",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "86",
+          "signal_name": "PD5",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "87",
+          "signal_name": "PD6",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "88",
+          "signal_name": "PD7",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "89",
+          "signal_name": "PB3",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "90",
+          "signal_name": "PB4",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "91",
+          "signal_name": "PB5",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "92",
+          "signal_name": "PB6",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "93",
+          "signal_name": "PB7",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "94",
+          "signal_name": "BOOT0",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "95",
+          "signal_name": "PB8",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "96",
+          "signal_name": "PB9",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "97",
+          "signal_name": "PE0",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "98",
+          "signal_name": "PE1",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "99",
+          "signal_name": "VSS_99",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "100",
+          "signal_name": "VDD_100",
+          "pin_type": "power_in"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "STM32G474CET6",
+    "kicad_symbol": "MCU_ST_STM32G4:STM32G474CETx",
+    "kicad_footprint": "Package_QFP:LQFP-48_7x7mm_P0.5mm",
+    "db_category": "Microcontrollers",
+    "product": {
+      "manufacturer_part_number": "STM32G474CET6",
+      "manufacturer": {
+        "name": "STMicroelectronics"
+      },
+      "digi_key_part_number": "497-G474CE",
+      "product_description": "Power-conversion MCU",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/497-G474CE",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Microcontrollers"
+      },
+      "package_type": {
+        "name": "LQFP-48"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "VBAT",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "PC13",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "3",
+          "signal_name": "PC14",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "4",
+          "signal_name": "PC15",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "5",
+          "signal_name": "PF0",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "6",
+          "signal_name": "PF1",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "7",
+          "signal_name": "NRST",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "8",
+          "signal_name": "PA0",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "9",
+          "signal_name": "PA1",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "10",
+          "signal_name": "PA2",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "11",
+          "signal_name": "PA3",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "12",
+          "signal_name": "PA4",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "13",
+          "signal_name": "PA5",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "14",
+          "signal_name": "PA6",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "15",
+          "signal_name": "PA7",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "16",
+          "signal_name": "PB0",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "17",
+          "signal_name": "PB1",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "18",
+          "signal_name": "PB2",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "19",
+          "signal_name": "VSSA",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "20",
+          "signal_name": "VREF+",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "21",
+          "signal_name": "VDDA",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "22",
+          "signal_name": "PB10",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "23",
+          "signal_name": "VSS",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "24",
+          "signal_name": "VDD",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "25",
+          "signal_name": "PB11",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "26",
+          "signal_name": "PB12",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "27",
+          "signal_name": "PB13",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "28",
+          "signal_name": "PB14",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "29",
+          "signal_name": "PB15",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "30",
+          "signal_name": "PA8",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "31",
+          "signal_name": "PA9",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "32",
+          "signal_name": "PA10",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "33",
+          "signal_name": "PA11",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "34",
+          "signal_name": "PA12",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "35",
+          "signal_name": "VSS_2",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "36",
+          "signal_name": "VDD_2",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "37",
+          "signal_name": "PA13",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "38",
+          "signal_name": "PA14",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "39",
+          "signal_name": "PA15",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "40",
+          "signal_name": "PB3",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "41",
+          "signal_name": "PB4",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "42",
+          "signal_name": "PB5",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "43",
+          "signal_name": "PB6",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "44",
+          "signal_name": "PB7",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "45",
+          "signal_name": "PB8",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "46",
+          "signal_name": "PB9",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "47",
+          "signal_name": "VSS_3",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "48",
+          "signal_name": "VDD_3",
+          "pin_type": "power_in"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "ESP32_C3_WROOM_02",
+    "kicad_symbol": "RF_Module:ESP32-C3-WROOM-02",
+    "kicad_footprint": "RF_Module:ESP32-C3-WROOM-02",
+    "db_category": "RF Modules",
+    "product": {
+      "manufacturer_part_number": "ESP32-C3-WROOM-02",
+      "manufacturer": {
+        "name": "Espressif"
+      },
+      "digi_key_part_number": "ESP-C3-WROOM",
+      "product_description": "Safety co-MCU",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/ESP-C3-WROOM",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "RF Modules"
+      },
+      "package_type": {
+        "name": "ESP32-C3-WROOM-02"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "3V3",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "EN",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "3",
+          "signal_name": "IO4",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "4",
+          "signal_name": "IO5",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "5",
+          "signal_name": "IO6",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "6",
+          "signal_name": "IO7",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "7",
+          "signal_name": "IO8",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "8",
+          "signal_name": "IO9",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "9",
+          "signal_name": "GND",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "10",
+          "signal_name": "IO10",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "11",
+          "signal_name": "IO20",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "12",
+          "signal_name": "IO21",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "13",
+          "signal_name": "IO18",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "14",
+          "signal_name": "IO19",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "15",
+          "signal_name": "IO3",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "16",
+          "signal_name": "IO2",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "17",
+          "signal_name": "IO1",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "18",
+          "signal_name": "IO0",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "19",
+          "signal_name": "GND_EP",
+          "pin_type": "power_in"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "ISO1050DUB",
+    "kicad_symbol": "Interface_CAN_LIN:ISO1050DUB",
+    "kicad_footprint": "Package_SO:SOP-8_6.62x9.15mm_P2.54mm",
+    "db_category": "Interface",
+    "product": {
+      "manufacturer_part_number": "ISO1050DUB",
+      "manufacturer": {
+        "name": "Texas Instruments"
+      },
+      "digi_key_part_number": "296-ISO1050",
+      "product_description": "Isolated CAN",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/296-ISO1050",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Interface"
+      },
+      "package_type": {
+        "name": "SOP-8"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "VCC1",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "RXD",
+          "pin_type": "output"
+        },
+        {
+          "pin_number": "3",
+          "signal_name": "TXD",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "4",
+          "signal_name": "GND1",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "5",
+          "signal_name": "GND2",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "6",
+          "signal_name": "CANL",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "7",
+          "signal_name": "CANH",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "8",
+          "signal_name": "VCC2",
+          "pin_type": "power_in"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "SENSOR_BME280",
+    "kicad_symbol": "Sensor:BME280",
+    "kicad_footprint": "Package_LGA:Bosch_LGA-8_2.5x2.5mm_P0.65mm_ClockwisePinNumbering",
+    "db_category": "Sensors",
+    "product": {
+      "manufacturer_part_number": "BME280",
+      "manufacturer": {
+        "name": "Bosch"
+      },
+      "digi_key_part_number": "BME280-ND",
+      "product_description": "P/H/T sensor",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/BME280-ND",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Sensors"
+      },
+      "package_type": {
+        "name": "LGA-8"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "GND",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "CSB",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "3",
+          "signal_name": "SDI",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "4",
+          "signal_name": "SCK",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "5",
+          "signal_name": "SDO",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "6",
+          "signal_name": "VDDIO",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "7",
+          "signal_name": "GND7",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "8",
+          "signal_name": "VDD",
+          "pin_type": "power_in"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "SENSOR_SCD41",
+    "kicad_symbol": "Sensor_Gas:SCD41-D-R2",
+    "kicad_footprint": "Sensor:Sensirion_SCD4x-1EP_10.1x10.1mm_P1.25mm_EP4.8x4.8mm",
+    "db_category": "Sensors",
+    "product": {
+      "manufacturer_part_number": "SCD41-D-R2",
+      "manufacturer": {
+        "name": "Sensirion"
+      },
+      "digi_key_part_number": "SCD41-ND",
+      "product_description": "CO2 sensor",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/SCD41-ND",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Sensors"
+      },
+      "package_type": {
+        "name": "SCD4x"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "NC1",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "NC2",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "3",
+          "signal_name": "NC3",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "4",
+          "signal_name": "NC4",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "5",
+          "signal_name": "NC5",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "6",
+          "signal_name": "GND",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "7",
+          "signal_name": "VDD",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "8",
+          "signal_name": "NC8",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "9",
+          "signal_name": "SCL",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "10",
+          "signal_name": "SDA",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "11",
+          "signal_name": "NC11",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "12",
+          "signal_name": "NC12",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "13",
+          "signal_name": "NC13",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "14",
+          "signal_name": "NC14",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "15",
+          "signal_name": "NC15",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "16",
+          "signal_name": "NC16",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "17",
+          "signal_name": "NC17",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "18",
+          "signal_name": "NC18",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "19",
+          "signal_name": "VDD2",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "20",
+          "signal_name": "GND2",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "21",
+          "signal_name": "GND3",
+          "pin_type": "power_in"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "SENSOR_INA219",
+    "kicad_symbol": "Sensor_Energy:INA219AxD",
+    "kicad_footprint": "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm",
+    "db_category": "Sensors",
+    "product": {
+      "manufacturer_part_number": "INA219AID",
+      "manufacturer": {
+        "name": "Texas Instruments"
+      },
+      "digi_key_part_number": "296-INA219",
+      "product_description": "I2C power monitor",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/296-INA219",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Sensors"
+      },
+      "package_type": {
+        "name": "SOIC-8"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "A1",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "A0",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "3",
+          "signal_name": "SDA",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "4",
+          "signal_name": "SCL",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "5",
+          "signal_name": "VS",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "6",
+          "signal_name": "GND",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "7",
+          "signal_name": "IN-",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "8",
+          "signal_name": "IN+",
+          "pin_type": "passive"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "SENSOR_MAX31855",
+    "kicad_symbol": "Sensor_Temperature:MAX31855KASA",
+    "kicad_footprint": "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm",
+    "db_category": "Sensors",
+    "product": {
+      "manufacturer_part_number": "MAX31855KASA+",
+      "manufacturer": {
+        "name": "Analog Devices"
+      },
+      "digi_key_part_number": "MAX31855-ND",
+      "product_description": "Thermocouple digitizer",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/MAX31855-ND",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Sensors"
+      },
+      "package_type": {
+        "name": "SOIC-8"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "GND",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "T-",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "3",
+          "signal_name": "T+",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "4",
+          "signal_name": "VCC",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "5",
+          "signal_name": "SCK",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "6",
+          "signal_name": "CS",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "7",
+          "signal_name": "SO",
+          "pin_type": "output"
+        },
+        {
+          "pin_number": "8",
+          "signal_name": "NC",
+          "pin_type": "no_connect"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "SENSOR_ACS712_20A",
+    "kicad_symbol": "Sensor_Current:ACS712xLCTR-20A",
+    "kicad_footprint": "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm",
+    "db_category": "Sensors",
+    "product": {
+      "manufacturer_part_number": "ACS712ELCTR-20A-T",
+      "manufacturer": {
+        "name": "Allegro"
+      },
+      "digi_key_part_number": "620-ACS712",
+      "product_description": "20A hall current",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/620-ACS712",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Sensors"
+      },
+      "package_type": {
+        "name": "SOIC-8"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "IP+",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "IP+_2",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "3",
+          "signal_name": "IP-",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "4",
+          "signal_name": "IP-_2",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "5",
+          "signal_name": "GND",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "6",
+          "signal_name": "FILTER",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "7",
+          "signal_name": "VIOUT",
+          "pin_type": "output"
+        },
+        {
+          "pin_number": "8",
+          "signal_name": "VCC",
+          "pin_type": "power_in"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "SENSOR_LM75B",
+    "kicad_symbol": "Sensor_Temperature:LM75B",
+    "kicad_footprint": "Package_SO:SOIC-8_3.9x4.9mm_P1.27mm",
+    "db_category": "Sensors",
+    "product": {
+      "manufacturer_part_number": "LM75BDP",
+      "manufacturer": {
+        "name": "NXP"
+      },
+      "digi_key_part_number": "568-LM75B",
+      "product_description": "Board temp sensor",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/568-LM75B",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Sensors"
+      },
+      "package_type": {
+        "name": "SOIC-8"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "SDA",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "SCL",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "3",
+          "signal_name": "OS",
+          "pin_type": "open_collector"
+        },
+        {
+          "pin_number": "4",
+          "signal_name": "GND",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "5",
+          "signal_name": "A2",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "6",
+          "signal_name": "A1",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "7",
+          "signal_name": "A0",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "8",
+          "signal_name": "VS",
+          "pin_type": "power_in"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "SENSOR_TMP117",
+    "kicad_symbol": "Sensor_Temperature:TMP117xxDRV",
+    "kicad_footprint": "Package_SON:WSON-6-1EP_2x2mm_P0.65mm_EP1x1.6mm",
+    "db_category": "Sensors",
+    "product": {
+      "manufacturer_part_number": "TMP117AIDRVR",
+      "manufacturer": {
+        "name": "Texas Instruments"
+      },
+      "digi_key_part_number": "296-TMP117",
+      "product_description": "Precision temp",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/296-TMP117",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Sensors"
+      },
+      "package_type": {
+        "name": "WSON-6"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "SCL",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "GND",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "3",
+          "signal_name": "ALERT",
+          "pin_type": "open_collector"
+        },
+        {
+          "pin_number": "4",
+          "signal_name": "ADD0",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "5",
+          "signal_name": "V+",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "6",
+          "signal_name": "SDA",
+          "pin_type": "bidirectional"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "W5500_ETH",
+    "kicad_symbol": "Interface_Ethernet:W5500",
+    "kicad_footprint": "Package_QFP:LQFP-48_7x7mm_P0.5mm",
+    "db_category": "Interface",
+    "product": {
+      "manufacturer_part_number": "W5500",
+      "manufacturer": {
+        "name": "WIZnet"
+      },
+      "digi_key_part_number": "W5500-ND",
+      "product_description": "Ethernet MAC/PHY",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/W5500-ND",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Interface"
+      },
+      "package_type": {
+        "name": "LQFP-48"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "11",
+          "signal_name": "MOSI",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "12",
+          "signal_name": "SCLK",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "13",
+          "signal_name": "SCS",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "15",
+          "signal_name": "RST",
+          "pin_type": "input"
+        },
+        {
+          "pin_number": "16",
+          "signal_name": "MISO",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "24",
+          "signal_name": "VDD",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "25",
+          "signal_name": "GND",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "32",
+          "signal_name": "TXN",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "33",
+          "signal_name": "TXP",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "34",
+          "signal_name": "RXN",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "35",
+          "signal_name": "RXP",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "42",
+          "signal_name": "VDD2",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "43",
+          "signal_name": "GND2",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "1",
+          "signal_name": "NC1",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "NC2",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "3",
+          "signal_name": "NC3",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "4",
+          "signal_name": "NC4",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "5",
+          "signal_name": "NC5",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "6",
+          "signal_name": "NC6",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "7",
+          "signal_name": "NC7",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "8",
+          "signal_name": "NC8",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "9",
+          "signal_name": "NC9",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "10",
+          "signal_name": "NC10",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "14",
+          "signal_name": "NC14",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "17",
+          "signal_name": "NC17",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "18",
+          "signal_name": "NC18",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "19",
+          "signal_name": "NC19",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "20",
+          "signal_name": "NC20",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "21",
+          "signal_name": "NC21",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "22",
+          "signal_name": "NC22",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "23",
+          "signal_name": "NC23",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "26",
+          "signal_name": "NC26",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "27",
+          "signal_name": "NC27",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "28",
+          "signal_name": "NC28",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "29",
+          "signal_name": "NC29",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "30",
+          "signal_name": "NC30",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "31",
+          "signal_name": "NC31",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "36",
+          "signal_name": "NC36",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "37",
+          "signal_name": "NC37",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "38",
+          "signal_name": "NC38",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "39",
+          "signal_name": "NC39",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "40",
+          "signal_name": "NC40",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "41",
+          "signal_name": "NC41",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "44",
+          "signal_name": "NC44",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "45",
+          "signal_name": "NC45",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "46",
+          "signal_name": "NC46",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "47",
+          "signal_name": "NC47",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "48",
+          "signal_name": "NC48",
+          "pin_type": "no_connect"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "RJ45_MAGJACK",
+    "kicad_symbol": "Connector:RJ45_Hanrun_HR911105A_Horizontal",
+    "kicad_footprint": "Connector_RJ:RJ45_Hanrun_HR911105A_Horizontal",
+    "db_category": "Connectors",
+    "product": {
+      "manufacturer_part_number": "HR911105A",
+      "manufacturer": {
+        "name": "Hanrun"
+      },
+      "digi_key_part_number": "HR911105A-ND",
+      "product_description": "RJ45 magjack",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/HR911105A-ND",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Connectors"
+      },
+      "package_type": {
+        "name": "RJ45"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "TD_P",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "TD_N",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "3",
+          "signal_name": "RD_P",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "4",
+          "signal_name": "NC4",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "5",
+          "signal_name": "NC5",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "6",
+          "signal_name": "RD_N",
+          "pin_type": "bidirectional"
+        },
+        {
+          "pin_number": "7",
+          "signal_name": "NC7",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "8",
+          "signal_name": "NC8",
+          "pin_type": "no_connect"
+        },
+        {
+          "pin_number": "9",
+          "signal_name": "GND",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "10",
+          "signal_name": "GND2",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "11",
+          "signal_name": "VCC_LED",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "12",
+          "signal_name": "LED",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "SH",
+          "signal_name": "SHIELD",
+          "pin_type": "passive"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "AMS1117_1V8",
+    "kicad_symbol": "Regulator_Linear:AMS1117-1.8",
+    "kicad_footprint": "Package_TO_SOT_SMD:SOT-223-3_TabPin2",
+    "db_category": "PMIC - Voltage Regulators",
+    "product": {
+      "manufacturer_part_number": "AMS1117-1.8",
+      "manufacturer": {
+        "name": "AMS"
+      },
+      "digi_key_part_number": "296-AMS1117-18",
+      "product_description": "1.8V LDO",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/296-AMS1117-18",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "PMIC - Voltage Regulators"
+      },
+      "package_type": {
+        "name": "SOT-223"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "GND",
+          "pin_type": "power_in"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "VOUT",
+          "pin_type": "power_out"
+        },
+        {
+          "pin_number": "3",
+          "signal_name": "VIN",
+          "pin_type": "power_in"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "FUSE_0805",
+    "kicad_symbol": "Device:Fuse",
+    "kicad_footprint": "Fuse:Fuse_0805_2012Metric",
+    "db_category": "Circuit Protection",
+    "product": {
+      "manufacturer_part_number": "F0603",
+      "manufacturer": {
+        "name": "Littelfuse"
+      },
+      "digi_key_part_number": "F0603-ND",
+      "product_description": "SMD fuse",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/F0603-ND",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Circuit Protection"
+      },
+      "package_type": {
+        "name": "0805"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "1",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "2",
+          "pin_type": "passive"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "FERRITE_0805",
+    "kicad_symbol": "Device:FerriteBead",
+    "kicad_footprint": "Inductor_SMD:L_0805_2012Metric",
+    "db_category": "Filters",
+    "product": {
+      "manufacturer_part_number": "BLM21",
+      "manufacturer": {
+        "name": "Murata"
+      },
+      "digi_key_part_number": "BLM21-ND",
+      "product_description": "Ferrite bead",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/BLM21-ND",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Filters"
+      },
+      "package_type": {
+        "name": "0805"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "1",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "2",
+          "pin_type": "passive"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "L_0805_10UH",
+    "kicad_symbol": "Device:L",
+    "kicad_footprint": "Inductor_SMD:L_0805_2012Metric",
+    "db_category": "Inductors",
+    "product": {
+      "manufacturer_part_number": "LQH2MCN100",
+      "manufacturer": {
+        "name": "Murata"
+      },
+      "digi_key_part_number": "LQH2M-ND",
+      "product_description": "10uH inductor",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/LQH2M-ND",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Inductors"
+      },
+      "package_type": {
+        "name": "0805"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "1",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "2",
+          "pin_type": "passive"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "NETTIE_2",
+    "kicad_symbol": "Device:NetTie_2",
+    "kicad_footprint": "NetTie:NetTie-2_SMD_Pad2.0mm",
+    "db_category": "Connectors",
+    "product": {
+      "manufacturer_part_number": "NetTie_2",
+      "manufacturer": {
+        "name": "KiCad"
+      },
+      "digi_key_part_number": "NT2-ND",
+      "product_description": "Net tie",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/NT2-ND",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Connectors"
+      },
+      "package_type": {
+        "name": "NetTie"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "1",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "2",
+          "pin_type": "passive"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "HDR_1x08",
+    "kicad_symbol": "Connector:Conn_01x08_Pin",
+    "kicad_footprint": "Connector_PinHeader_2.54mm:PinHeader_1x08_P2.54mm_Vertical",
+    "db_category": "Connectors",
+    "product": {
+      "manufacturer_part_number": "HDR-1x08",
+      "manufacturer": {
+        "name": "Generic"
+      },
+      "digi_key_part_number": "HDR8-ND",
+      "product_description": "1x8 header",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/HDR8-ND",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Connectors"
+      },
+      "package_type": {
+        "name": "PinHeader 2.54mm"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "1",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "2",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "3",
+          "signal_name": "3",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "4",
+          "signal_name": "4",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "5",
+          "signal_name": "5",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "6",
+          "signal_name": "6",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "7",
+          "signal_name": "7",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "8",
+          "signal_name": "8",
+          "pin_type": "passive"
+        }
+      ]
+    }
+  },
+  {
+    "generic_name": "HDR_1x10",
+    "kicad_symbol": "Connector:Conn_01x10_Pin",
+    "kicad_footprint": "Connector_PinHeader_2.54mm:PinHeader_1x10_P2.54mm_Vertical",
+    "db_category": "Connectors",
+    "product": {
+      "manufacturer_part_number": "HDR-1x10",
+      "manufacturer": {
+        "name": "Generic"
+      },
+      "digi_key_part_number": "HDR10-ND",
+      "product_description": "1x10 header",
+      "quantity_available": 1000,
+      "product_url": "https://www.digikey.com/en/products/detail/HDR10-ND",
+      "primary_datasheet_url": "https://example.invalid/ds.pdf",
+      "rohs_status": "RoHS Compliant",
+      "lead_free": true,
+      "category": {
+        "name": "Connectors"
+      },
+      "package_type": {
+        "name": "PinHeader 2.54mm"
+      },
+      "lifecycle_status": "Active",
+      "pinout": [
+        {
+          "pin_number": "1",
+          "signal_name": "1",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "2",
+          "signal_name": "2",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "3",
+          "signal_name": "3",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "4",
+          "signal_name": "4",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "5",
+          "signal_name": "5",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "6",
+          "signal_name": "6",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "7",
+          "signal_name": "7",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "8",
+          "signal_name": "8",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "9",
+          "signal_name": "9",
+          "pin_type": "passive"
+        },
+        {
+          "pin_number": "10",
+          "signal_name": "10",
+          "pin_type": "passive"
+        }
+      ]
+    }
+  }
+]
